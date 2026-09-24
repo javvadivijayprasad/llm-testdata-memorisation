@@ -1,0 +1,186 @@
+{
+  "req": {
+    "id": "R-FLASKR-014",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "authn",
+    "title": "Login required for delete",
+    "statement": "The system shall redirect anonymous users to /auth/login when they POST /<id>/delete.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "login required for delete"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "302 redirect"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /<id>/delete"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-014",
+    "reasoning": "R-FLASKR-014 requires that anonymous (unauthenticated) users who POST to /<id>/delete are redirected to /auth/login. The test suite covers: (1) positive case \u2014 anonymous POST to a valid post id triggers a 302 redirect to /auth/login; (2) negative case \u2014 an authenticated user POSTing to delete their own post succeeds (not redirected to login), confirming the guard only fires for anonymous users; (3) boundary case \u2014 anonymous POST to post id=1 (lowest valid id in dataset) still redirects; (4) state-transition case \u2014 user logs out then attempts delete, confirming session state drives the redirect; (5) decision-table case \u2014 anonymous POST to a non-existent post id still redirects to login before any 404 logic fires. All assertions use exact status codes and exact Location header values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_anonymous_delete_redirects_to_login",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Database pre-loaded with seed data (post id=2 exists, author_id=1)",
+          "No session cookie present (anonymous client)"
+        ],
+        "actions": [
+          "POST /2/delete without any session cookie"
+        ],
+        "expected": [
+          "HTTP 302 response",
+          "Location header equals /auth/login"
+        ],
+        "trace": [
+          "R-FLASKR-014: anonymous POST /<id>/delete must redirect to /auth/login"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_anonymous_delete_redirects_to_login():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/2/delete')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'\n\ntest_anonymous_delete_redirects_to_login()"
+      },
+      {
+        "name": "test_authenticated_delete_does_not_redirect_to_login",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Database pre-loaded with seed data (post id=2 exists, author_id=1, user Rahul/stone)",
+          "Client logs in as Rahul (author of post 2)"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "POST /2/delete with active session"
+        ],
+        "expected": [
+          "Login returns HTTP 302 to /",
+          "Delete returns HTTP 302 to / (not to /auth/login)"
+        ],
+        "trace": [
+          "R-FLASKR-014: authenticated users must NOT be redirected to /auth/login on delete"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_authenticated_delete_does_not_redirect_to_login():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    login_r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert login_r.status_code == 302\n    assert login_r.headers['Location'] == '/'\n    r = client.post('/2/delete')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    assert r.headers['Location'] != '/auth/login'\n\ntest_authenticated_delete_does_not_redirect_to_login()"
+      },
+      {
+        "name": "test_anonymous_delete_post_id_1_boundary_redirects_to_login",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Database pre-loaded with seed data (post id=1 is the lowest valid id)",
+          "No session cookie present (anonymous client)"
+        ],
+        "actions": [
+          "POST /1/delete without any session cookie (boundary: lowest post id)"
+        ],
+        "expected": [
+          "HTTP 302 response",
+          "Location header equals /auth/login"
+        ],
+        "trace": [
+          "R-FLASKR-014: redirect must fire for the minimum valid post id (id=1)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_anonymous_delete_post_id_1_boundary_redirects_to_login():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/1/delete')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'\n\ntest_anonymous_delete_post_id_1_boundary_redirects_to_login()"
+      },
+      {
+        "name": "test_logout_then_delete_redirects_to_login",
+        "kind": "negative",
+        "heuristic": "STC",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Database pre-loaded with seed data",
+          "Client logs in as Rahul then logs out (session cleared)"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "GET /auth/logout to clear session",
+          "POST /2/delete with cleared session"
+        ],
+        "expected": [
+          "Logout returns HTTP 302",
+          "Delete after logout returns HTTP 302",
+          "Location header after delete equals /auth/login"
+        ],
+        "trace": [
+          "R-FLASKR-014: state transition logged-in -> logged-out -> anonymous must still redirect on delete"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_logout_then_delete_redirects_to_login():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    login_r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert login_r.status_code == 302\n    logout_r = client.get('/auth/logout')\n    assert logout_r.status_code == 302\n    r = client.post('/2/delete')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'\n\ntest_logout_then_delete_redirects_to_login()"
+      },
+      {
+        "name": "test_anonymous_delete_nonexistent_post_redirects_to_login",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Database pre-loaded with seed data (post id=99999 does not exist)",
+          "No session cookie present (anonymous client)"
+        ],
+        "actions": [
+          "POST /99999/delete without any session cookie"
+        ],
+        "expected": [
+          "HTTP 302 response (login_required fires before 404 lookup)",
+          "Location header equals /auth/login"
+        ],
+        "trace": [
+          "R-FLASKR-014: login_required decorator fires before get_post(), so even a missing post id redirects anonymous users to /auth/login"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_anonymous_delete_nonexistent_post_redirects_to_login():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/99999/delete')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'\n\ntest_anonymous_delete_nonexistent_post_redirects_to_login()"
+      },
+      {
+        "name": "test_anonymous_delete_highest_post_id_redirects_to_login",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Database pre-loaded with seed data (post id=20 is the highest seeded id)",
+          "No session cookie present (anonymous client)"
+        ],
+        "actions": [
+          "POST /20/delete without any session cookie (boundary: highest seeded post id)"
+        ],
+        "expected": [
+          "HTTP 302 response",
+          "Location header equals /auth/login"
+        ],
+        "trace": [
+          "R-FLASKR-014: redirect must fire for the maximum seeded post id (id=20)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_anonymous_delete_highest_post_id_redirects_to_login():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/20/delete')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'\n\ntest_anonymous_delete_highest_post_id_redirects_to_login()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-014",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 0,
+  "verify_violations": [
+    "[logical] test[3] negative kind but heuristic=STC"
+  ],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8441,
+    "output_tokens": 2829,
+    "latency_ms": 34268,
+    "wall_ms": 34268,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-014\",\n  \"reasoning\": \"R-FLASKR-014 requires that anonymous (unauthenticated) users who POST to /<id>/delete are redirected to /auth/login. The test suite covers: (1) positive case \u2014 anonymous POST to a valid post id triggers a 302 redirect to /auth/login; (2) negative case \u2014 an authenticated user POSTing to delete their own post succeeds (not redirected to login), confirming the guard only fires for anonymous users; (3) boundary case \u2014 anonymous POST to post id=1 (lowest valid id in dataset) still redirects; (4) state-transition case \u2014 user logs out then attempts delete, confirming session state drives the redirect; (5) decision-table case \u2014 anonymous POST to a non-existent post id still redirects to login before any 404 logic fires. All assertions use exact status codes and exact Location header values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_anonymous_delete_redirects_to_login\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App initialised with TESTING=True and a fresh temp database\",\n        \"Database pre-loaded with seed data (post id=2 exists, author_id=1)\",\n        \"No session cookie present (anonymous client)\"\n      ],\n      \"actions\": [\n        \"POST /2/delete without any session cookie\"\n      ],\n      \"expected\": [\n        \"HTTP 302 response\",\n        \"Location header equals /auth/login\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-014: anonymous POST /<id>/delete must redirect to /auth/login\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_anonymous_delete_redirects_to_login():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/2/delete')\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/auth/login'\\n\\ntest_anonymous_delete_redirects_to_login()\"\n    },\n    {\n      \"name\": \"test_authenticated_delete_does_not_redirect_to_login\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"DT\",\n      \"preconditions\": [\n        \"App initialised with TESTING=True and a fresh temp database\",\n        \"Database pre-loaded with seed data (post id=2 exists, author_id=1, user Rahul/stone)\",\n        \"Client logs in as Rahul (author of post 2)\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul, password=stone\",\n        \"POST /2/delete with active session\"\n      ],\n      \"expected\": [\n        \"Login returns HTTP 302 to /\",\n        \"Delete returns HTTP 302 to / (not to /auth/login)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-014: authenticated users must NOT be redirected to /auth/login on delete\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_authenticated_delete_does_not_redirect_to_login():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    login_r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert login_r.status_code == 302\\n    assert login_r.headers['Location'] == '/'\\n    r = client.post('/2/delete')\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/'\\n    assert r.headers['Location'] != '/auth/login'\\n\\ntest_authenticated_delete_does_not_redirect_to_login()\"\n    },\n    {\n      \"name\": \"test_anonymous_delete_post_id_1_boundary_redirects_to_login\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"App initialised with TESTING=True and a fresh temp database\",\n        \"Database pre-loaded with seed data (post id=1 is the lowest valid id)\",\n        \"No session cookie present (anonymous client)\"\n      ],\n      \"actions\": [\n  "
+  }
+}

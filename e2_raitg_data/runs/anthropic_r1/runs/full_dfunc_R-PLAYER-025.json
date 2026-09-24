@@ -1,0 +1,125 @@
+{
+  "req": {
+    "id": "R-PLAYER-025",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "functional",
+    "title": "Empty player list returns empty array",
+    "statement": "The system shall respond to GET /players when the table is empty with HTTP 200 and an empty JSON array.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "empty player list returns empty array"
+    ],
+    "expected_outcomes": [
+      "HTTP 200",
+      "[]"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "GET /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-025",
+    "reasoning": "R-PLAYER-025 requires GET /players/ to return HTTP 200 and an empty JSON array when the player table is empty. Three test cases are designed: (1) a positive EP test confirming the nominal empty-table response, (2) a boundary BVA test verifying the exact transition from zero rows to one row (the boundary between empty and non-empty), and (3) a negative NEG test confirming that a wrong HTTP method (POST without body) returns a client error (4xx), not 200. All tests use FastAPI TestClient in-process, mock the database session dependency to control table state precisely, and assert exact values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_get_players_empty_table_returns_200_and_empty_array",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Player table is empty (no rows)",
+          "Cache is cleared before the request"
+        ],
+        "actions": [
+          "Override generate_async_session dependency to return a session backed by an in-memory SQLite database with no player rows",
+          "Clear the in-memory cache",
+          "Send GET /players/"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body is exactly the JSON empty array []",
+          "Response Content-Type contains application/json"
+        ],
+        "trace": [
+          "R-PLAYER-025: HTTP 200 + empty array when table is empty"
+        ],
+        "executable": "import asyncio\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession\nfrom sqlalchemy.orm import sessionmaker\nfrom main import app\nfrom databases.player_database import Base, generate_async_session\nfrom routes.player_route import simple_memory_cache\n\nDSN = \"sqlite+aiosqlite:///:memory:\"\n_engine = create_async_engine(DSN, future=True)\n_SessionLocal = sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)\n\nasync def _setup():\n    async with _engine.begin() as conn:\n        await conn.run_sync(Base.metadata.create_all)\n    await simple_memory_cache.clear()\n\nasyncio.get_event_loop().run_until_complete(_setup())\n\nasync def _override():\n    async with _SessionLocal() as session:\n        yield session\n\napp.dependency_overrides[generate_async_session] = _override\n\ndef test_get_players_empty_table_returns_200_and_empty_array():\n    client = TestClient(app)\n    r = client.get(\"/players/\")\n    assert r.status_code == 200\n    assert r.json() == []\n    assert \"application/json\" in r.headers[\"content-type\"]\n\ntest_get_players_empty_table_returns_200_and_empty_array()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_players_boundary_zero_vs_one_row",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Player table starts empty (zero rows \u2014 boundary N=0)",
+          "One player row is inserted to reach N=1 (boundary N=1)"
+        ],
+        "actions": [
+          "Override generate_async_session with in-memory SQLite session",
+          "Clear cache; GET /players/ with zero rows \u2014 expect []",
+          "Insert exactly one player row",
+          "Clear cache; GET /players/ with one row \u2014 expect list of length 1 with correct squadNumber"
+        ],
+        "expected": [
+          "At N=0: HTTP 200 and body == []",
+          "At N=1: HTTP 200 and body is a list of exactly 1 element",
+          "The single element has squadNumber == 99 matching the inserted row"
+        ],
+        "trace": [
+          "R-PLAYER-025: boundary between empty (returns []) and non-empty (returns populated list)"
+        ],
+        "executable": "import asyncio\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession\nfrom sqlalchemy.orm import sessionmaker\nfrom main import app\nfrom databases.player_database import Base, generate_async_session\nfrom schemas.player_schema import Player\nfrom routes.player_route import simple_memory_cache\n\nDSN2 = \"sqlite+aiosqlite:///:memory:\"\n_engine2 = create_async_engine(DSN2, future=True)\n_SL2 = sessionmaker(_engine2, class_=AsyncSession, expire_on_commit=False)\n\nasync def _setup2():\n    async with _engine2.begin() as conn:\n        await conn.run_sync(Base.metadata.create_all)\n    await simple_memory_cache.clear()\n\nasyncio.get_event_loop().run_until_complete(_setup2())\n\nasync def _override2():\n    async with _SL2() as session:\n        yield session\n\napp.dependency_overrides[generate_async_session] = _override2\n\ndef test_get_players_boundary_zero_vs_one_row():\n    client = TestClient(app)\n    r0 = client.get(\"/players/\")\n    assert r0.status_code == 200\n    assert r0.json() == []\n    async def _insert():\n        async with _SL2() as s:\n            p = Player(first_name=\"Test\", last_name=\"Player\",\n                       squad_number=99, position=\"Goalkeeper\")\n            s.add(p)\n            await s.commit()\n        await simple_memory_cache.clear()\n    asyncio.get_event_loop().run_until_complete(_insert())\n    r1 = client.get(\"/players/\")\n    assert r1.status_code == 200\n    body = r1.json()\n    assert len(body) == 1\n    assert body[0][\"squadNumber\"] == 99\n\ntest_get_players_boundary_zero_vs_one_row()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_players_wrong_method_returns_4xx_not_200",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Player table is empty",
+          "Client sends POST /players/ with no body (missing required fields)"
+        ],
+        "actions": [
+          "Override generate_async_session with empty in-memory SQLite session",
+          "Send POST /players/ with an empty JSON body {}"
+        ],
+        "expected": [
+          "HTTP status code is 422 (Unprocessable Entity), not 200",
+          "Response body contains a 'detail' key indicating validation failure",
+          "Response is NOT an empty array"
+        ],
+        "trace": [
+          "R-PLAYER-025: error pathway \u2014 client error (4xx) on malformed request; confirms 200 is only returned for valid GET"
+        ],
+        "executable": "import asyncio\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession\nfrom sqlalchemy.orm import sessionmaker\nfrom main import app\nfrom databases.player_database import Base, generate_async_session\nfrom routes.player_route import simple_memory_cache\n\nDSN3 = \"sqlite+aiosqlite:///:memory:\"\n_engine3 = create_async_engine(DSN3, future=True)\n_SL3 = sessionmaker(_engine3, class_=AsyncSession, expire_on_commit=False)\n\nasync def _setup3():\n    async with _engine3.begin() as conn:\n        await conn.run_sync(Base.metadata.create_all)\n    await simple_memory_cache.clear()\n\nasyncio.get_event_loop().run_until_complete(_setup3())\n\nasync def _override3():\n    async with _SL3() as session:\n        yield session\n\napp.dependency_overrides[generate_async_session] = _override3\n\ndef test_get_players_wrong_method_returns_4xx_not_200():\n    client = TestClient(app)\n    r = client.post(\"/players/\", json={})\n    assert r.status_code == 422\n    assert r.status_code != 200\n    body = r.json()\n    assert \"detail\" in body\n    assert body != []\n\ntest_get_players_wrong_method_returns_4xx_not_200()\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-025",
+  "domain": "sports_players",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11197,
+    "output_tokens": 2277,
+    "latency_ms": 30692,
+    "wall_ms": 30692,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-025\",\n  \"reasoning\": \"R-PLAYER-025 requires GET /players/ to return HTTP 200 and an empty JSON array when the player table is empty. Three test cases are designed: (1) a positive EP test confirming the nominal empty-table response, (2) a boundary BVA test verifying the exact transition from zero rows to one row (the boundary between empty and non-empty), and (3) a negative NEG test confirming that a wrong HTTP method (POST without body) returns a client error (4xx), not 200. All tests use FastAPI TestClient in-process, mock the database session dependency to control table state precisely, and assert exact values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_players_empty_table_returns_200_and_empty_array\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Player table is empty (no rows)\",\n        \"Cache is cleared before the request\"\n      ],\n      \"actions\": [\n        \"Override generate_async_session dependency to return a session backed by an in-memory SQLite database with no player rows\",\n        \"Clear the in-memory cache\",\n        \"Send GET /players/\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body is exactly the JSON empty array []\",\n        \"Response Content-Type contains application/json\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-025: HTTP 200 + empty array when table is empty\"\n      ],\n      \"executable\": \"import asyncio\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession\\nfrom sqlalchemy.orm import sessionmaker\\nfrom main import app\\nfrom databases.player_database import Base, generate_async_session\\nfrom routes.player_route import simple_memory_cache\\n\\nDSN = \\\"sqlite+aiosqlite:///:memory:\\\"\\n_engine = create_async_engine(DSN, future=True)\\n_SessionLocal = sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)\\n\\nasync def _setup():\\n    async with _engine.begin() as conn:\\n        await conn.run_sync(Base.metadata.create_all)\\n    await simple_memory_cache.clear()\\n\\nasyncio.get_event_loop().run_until_complete(_setup())\\n\\nasync def _override():\\n    async with _SessionLocal() as session:\\n        yield session\\n\\napp.dependency_overrides[generate_async_session] = _override\\n\\ndef test_get_players_empty_table_returns_200_and_empty_array():\\n    client = TestClient(app)\\n    r = client.get(\\\"/players/\\\")\\n    assert r.status_code == 200\\n    assert r.json() == []\\n    assert \\\"application/json\\\" in r.headers[\\\"content-type\\\"]\\n\\ntest_get_players_empty_table_returns_200_and_empty_array()\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_get_players_boundary_zero_vs_one_row\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Player table starts empty (zero rows \u2014 boundary N=0)\",\n        \"One player row is inserted to reach N=1 (boundary N=1)\"\n      ],\n      \"actions\": [\n        \"Override generate_async_session with in-memory SQLite session\",\n        \"Clear cache; GET /players/ with zero rows \u2014 expect []\",\n        \"Insert exactly one player row\",\n        \"Clear cache; GET /players/ with one row \u2014 expect list of length 1 with correct squadNumber\"\n      ],\n      \"expected\": [\n        \"At N=0: HTTP 200 and body == []\",\n        \"At N=1: HTTP 200 and body is a list of exactly 1 element\",\n        \"The single element has squadNumber == 99 matching the inserted row\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-025: boundary between empty (returns []) and non-empty (returns populated list)\"\n      ],\n      \"executable\": \"import asyncio\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession\\nfrom sqlalchemy.orm import sessionmaker\\nfrom main import app\\nfrom databases.player_database import Base, generate_async_session\\nfrom schemas.player_schema import Player\\nfrom routes.player_route import simp"
+  }
+}

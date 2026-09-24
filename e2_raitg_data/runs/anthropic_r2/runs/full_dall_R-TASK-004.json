@@ -1,0 +1,130 @@
+{
+  "req": {
+    "id": "R-TASK-004",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "List all tasks",
+    "statement": "The system shall respond to GET /tasks/ with a JSON array of all tasks, honouring optional skip and limit query parameters.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "list all tasks"
+    ],
+    "expected_outcomes": [
+      "HTTP 200",
+      "JSON array"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-004",
+    "reasoning": "R-TASK-004 requires GET /tasks/ to return HTTP 200 with a JSON array of all tasks, honouring optional skip and limit query parameters. Three tests are designed: (1) positive/EP \u2013 default call with no query params returns HTTP 200 and a JSON array of all seeded tasks, tracing to R-TASK-004; (2) boundary/BVA \u2013 skip=0 and limit=1 returns exactly the first task, exercising the minimum-limit boundary; (3) negative/NEG \u2013 limit=0 violates the ge=1 constraint and must be rejected with HTTP 422, covering the error_pathways clause. All tests use an in-process SQLite override via FastAPI dependency injection so they are fully self-contained and deterministic.",
+    "tests": [
+      {
+        "name": "test_list_tasks_default_returns_all_seeded",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI application is importable from app.main",
+          "Database dependency get_db is overridable",
+          "Database is seeded with exactly 5 tasks before the request"
+        ],
+        "actions": [
+          "Override get_db with an in-memory SQLite session seeded with 5 tasks",
+          "Send GET /tasks/ with no query parameters",
+          "Capture HTTP response"
+        ],
+        "expected": [
+          "HTTP status code 200",
+          "Response body is a JSON array",
+          "Array length equals 5",
+          "Each element contains fields: id, title, completed"
+        ],
+        "trace": [
+          "R-TASK-004: system shall respond to GET /tasks/ with a JSON array of all tasks"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntf = tempfile.NamedTemporaryFile(suffix='.db', delete=False)\ntf.close()\nDB_URL = f'sqlite:///{tf.name}'\nengine = create_engine(DB_URL, connect_args={'check_same_thread': False})\nmodels.Base.metadata.create_all(bind=engine)\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\ndb = TestingSession()\nfor i in range(1, 6):\n    db.add(models.Task(id=i, title=f'Task {i}', description=f'Desc {i}', completed=(i % 2 == 0)))\ndb.commit()\ndb.close()\n\ndef override_get_db():\n    d = TestingSession()\n    try:\n        yield d\n    finally:\n        d.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nr = client.get('/tasks/')\nassert r.status_code == 200, f'Expected 200, got {r.status_code}'\ndata = r.json()\nassert isinstance(data, list), 'Response body must be a JSON array'\nassert len(data) == 5, f'Expected 5 tasks, got {len(data)}'\nfor item in data:\n    assert 'id' in item, 'Each task must have id'\n    assert 'title' in item, 'Each task must have title'\n    assert 'completed' in item, 'Each task must have completed'\n\napp.dependency_overrides.clear()\nos.unlink(tf.name)"
+      },
+      {
+        "name": "test_list_tasks_skip0_limit1_returns_first_task",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI application is importable from app.main",
+          "Database dependency get_db is overridable",
+          "Database is seeded with exactly 5 tasks before the request",
+          "Query parameters skip=0 and limit=1 are supplied"
+        ],
+        "actions": [
+          "Override get_db with an in-memory SQLite session seeded with 5 tasks",
+          "Send GET /tasks/?skip=0&limit=1",
+          "Capture HTTP response"
+        ],
+        "expected": [
+          "HTTP status code 200",
+          "Response body is a JSON array",
+          "Array length equals exactly 1",
+          "Returned task has id equal to 1"
+        ],
+        "trace": [
+          "R-TASK-004: system shall honour optional skip and limit query parameters; limit=1 is the minimum valid boundary"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntf = tempfile.NamedTemporaryFile(suffix='.db', delete=False)\ntf.close()\nDB_URL = f'sqlite:///{tf.name}'\nengine = create_engine(DB_URL, connect_args={'check_same_thread': False})\nmodels.Base.metadata.create_all(bind=engine)\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\ndb = TestingSession()\nfor i in range(1, 6):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\n\ndef override_get_db():\n    d = TestingSession()\n    try:\n        yield d\n    finally:\n        d.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nr = client.get('/tasks/?skip=0&limit=1')\nassert r.status_code == 200, f'Expected 200, got {r.status_code}'\ndata = r.json()\nassert isinstance(data, list), 'Response body must be a JSON array'\nassert len(data) == 1, f'Expected exactly 1 task, got {len(data)}'\nassert data[0]['id'] == 1, f'Expected first task id=1, got {data[0][\"id\"]}'\n\napp.dependency_overrides.clear()\nos.unlink(tf.name)"
+      },
+      {
+        "name": "test_list_tasks_limit_zero_rejected_with_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI application is importable from app.main",
+          "Database dependency get_db is overridable",
+          "limit query parameter is set to 0, which violates the ge=1 constraint"
+        ],
+        "actions": [
+          "Override get_db with an in-memory SQLite session",
+          "Send GET /tasks/?limit=0",
+          "Capture HTTP response"
+        ],
+        "expected": [
+          "HTTP status code 422 Unprocessable Entity",
+          "Response indicates validation error for limit parameter"
+        ],
+        "trace": [
+          "R-TASK-004: error_pathways \u2013 HTTP 4xx on client error; limit=0 violates ge=1 constraint and must be rejected"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntf = tempfile.NamedTemporaryFile(suffix='.db', delete=False)\ntf.close()\nDB_URL = f'sqlite:///{tf.name}'\nengine = create_engine(DB_URL, connect_args={'check_same_thread': False})\nmodels.Base.metadata.create_all(bind=engine)\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\ndb = TestingSession()\ndb.add(models.Task(id=1, title='Task 1', description=None, completed=False))\ndb.commit()\ndb.close()\n\ndef override_get_db():\n    d = TestingSession()\n    try:\n        yield d\n    finally:\n        d.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nr = client.get('/tasks/?limit=0')\nassert r.status_code == 422, f'Expected 422 for limit=0, got {r.status_code}'\nbody = r.json()\nassert 'detail' in body, 'Validation error response must contain detail field'\n\napp.dependency_overrides.clear()\nos.unlink(tf.name)"
+      }
+    ]
+  },
+  "req_id": "R-TASK-004",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": false,
+    "boundary": false
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7572,
+    "output_tokens": 8000,
+    "latency_ms": 81673,
+    "wall_ms": 81673,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-004\",\n  \"reasoning\": \"The requirement covers GET /tasks/ returning a JSON array with optional skip/limit/completed query parameters. I designed tests using EP (default list), BVA (skip=0, limit=1, limit=100, limit=1000, skip/limit at boundaries), NEG (invalid skip/limit values), and DT (completed filter combinations). Each test uses an in-process SQLite DB seeded with the 20 pre-loaded rows, asserts exact status codes and exact array lengths/content to kill off-by-one, operator-flip, and constant-bump mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_list_tasks_default_returns_all_20\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\"Database contains exactly 20 pre-loaded tasks\", \"No query parameters supplied\"],\n      \"actions\": [\"GET /tasks/\"],\n      \"expected\": [\"HTTP 200\", \"JSON array of exactly 20 tasks\", \"Each item has id, title, description, completed, created_at fields\"],\n      \"trace\": [\"R-TASK-004: default list returns all tasks\"],\n      \"executable\": \"import os, tempfile\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom fastapi.testclient import TestClient\\n\\ntf = tempfile.NamedTemporaryFile(suffix='.db', delete=False)\\ntf.close()\\nDB_URL = f'sqlite:///{tf.name}'\\nengine = create_engine(DB_URL, connect_args={'check_same_thread': False})\\nmodels.Base.metadata.create_all(bind=engine)\\nSession = sessionmaker(bind=engine)\\ndb = Session()\\nseeds = [\\n    {'id':1,'title':'Read chapter 5','description':'Signal pulse ember','completed':True},\\n    {'id':2,'title':'Book flight tickets','description':'Delta willow','completed':True},\\n    {'id':3,'title':'Submit expense report','description':'Pulse willow','completed':True},\\n    {'id':4,'title':'Prepare meeting agenda','description':'Harbor matrix','completed':False},\\n    {'id':5,'title':'Write project report','description':'Signal cascade','completed':False},\\n    {'id':6,'title':'Run unit tests','description':None,'completed':False},\\n    {'id':7,'title':'Fix login bug','description':'Ember willow','completed':False},\\n    {'id':8,'title':'Prepare meeting agenda','description':None,'completed':False},\\n    {'id':9,'title':'Pay electricity bill','description':'Meridian beacon','completed':True},\\n    {'id':10,'title':'Organize desk','description':None,'completed':False},\\n    {'id':11,'title':'Water the plants','description':'Zenith pulse','completed':False},\\n    {'id':12,'title':'Review pull request','description':None,'completed':False},\\n    {'id':13,'title':'Buy groceries','description':'Beacon cascade','completed':False},\\n    {'id':14,'title':'Buy groceries','description':None,'completed':False},\\n    {'id':15,'title':'Renew gym membership','description':None,'completed':True},\\n    {'id':16,'title':'Fix login bug','description':'Zenith signal','completed':False},\\n    {'id':17,'title':'Call the bank','description':None,'completed':False},\\n    {'id':18,'title':'Reply to emails','description':None,'completed':False},\\n    {'id':19,'title':'Schedule dentist appointment','description':None,'completed':True},\\n    {'id':20,'title':'Reply to emails','description':'Summit cascade','completed':False},\\n]\\nfor s in seeds:\\n    db.add(models.Task(id=s['id'], title=s['title'], description=s['description'], completed=s['completed']))\\ndb.commit()\\ndb.close()\\n\\nfrom app.database import get_db\\ndef override_get_db():\\n    d = Session()\\n    try: yield d\\n    finally: d.close()\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_list_tasks_default_returns_all_20():\\n    r = client.get('/tasks/')\\n    assert r.status_code == 200\\n    data = r.json()\\n    assert isinstance(data, list)\\n    assert len(data) == 20\\n    assert data[0]['id'] == 1\\n    assert data[0]['title'] == 'Read chapter 5'\\n    assert data[0]['completed'] == True\\n    assert 'created_at' in data[0]\\n\\ntest_list_tasks_default_"
+  }
+}

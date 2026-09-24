@@ -1,0 +1,199 @@
+{
+  "req": {
+    "id": "R-TASK-035",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Deleting all tasks leaves empty table",
+    "statement": "The system shall leave GET /tasks/ returning [] after every task has been deleted.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "deleting all tasks leaves empty table"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "DELETE /tasks/{id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-035",
+    "reasoning": "R-TASK-035 requires that after deleting every task, GET /tasks/ returns an empty list []. The test suite covers: (1) positive path \u2014 delete all 20 pre-loaded tasks one by one and verify GET /tasks/ returns exactly []; (2) negative path \u2014 attempt to delete a non-existent task ID and verify HTTP 404 with correct detail; (3) boundary path \u2014 delete the last remaining task (count transitions from 1 to 0) and verify the list becomes empty; (4) state-transition \u2014 verify intermediate state (tasks still present mid-deletion) then final empty state; (5) decision-table \u2014 verify that deleting a completed task and an incomplete task both succeed with 204. Each test uses an in-memory SQLite DB via dependency override to ensure isolation and determinism.",
+    "tests": [
+      {
+        "name": "test_delete_all_tasks_leaves_empty_list",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with IDs 1-20",
+          "GET /tasks/ returns a non-empty list before deletion"
+        ],
+        "actions": [
+          "Override DB dependency with fresh in-memory SQLite",
+          "Seed all 20 tasks",
+          "DELETE /tasks/{id} for each task ID 1 through 20",
+          "Assert each DELETE returns HTTP 204",
+          "GET /tasks/ after all deletions"
+        ],
+        "expected": [
+          "Each DELETE /tasks/{id} returns HTTP 204",
+          "GET /tasks/ returns HTTP 200 with body exactly []"
+        ],
+        "trace": [
+          "R-TASK-035"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\nfrom app import models\n\nengine_mem = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nBase.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndb = SessionMem()\ntask_data = [\n    {\"title\": f\"Task {i}\", \"description\": None, \"completed\": False}\n    for i in range(1, 21)\n]\nfor td in task_data:\n    t = models.Task(title=td[\"title\"], description=td[\"description\"], completed=td[\"completed\"])\n    db.add(t)\ndb.commit()\nall_tasks = db.query(models.Task).all()\ntask_ids = [t.id for t in all_tasks]\ndb.close()\n\nassert len(task_ids) == 20\n\nfor tid in task_ids:\n    r = client.delete(f\"/tasks/{tid}\")\n    assert r.status_code == 204\n\nr_get = client.get(\"/tasks/\")\nassert r_get.status_code == 200\nassert r_get.json() == []\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty (no tasks exist)",
+          "Task ID 9999 does not exist"
+        ],
+        "actions": [
+          "Override DB dependency with fresh in-memory SQLite (no rows)",
+          "DELETE /tasks/9999"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response body contains detail field with message about task not found"
+        ],
+        "trace": [
+          "R-TASK-035"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_neg = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionNeg = sessionmaker(autocommit=False, autoflush=False, bind=engine_neg)\nBase.metadata.create_all(bind=engine_neg)\n\ndef override_neg():\n    db = SessionNeg()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_neg\nclient_neg = TestClient(app)\n\nr = client_neg.delete(\"/tasks/9999\")\nassert r.status_code == 404\nbody = r.json()\nassert \"detail\" in body\nassert \"9999\" in body[\"detail\"]\n\nr2 = client_neg.get(\"/tasks/\")\nassert r2.status_code == 200\nassert r2.json() == []\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_last_task_leaves_empty_list",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 1 task",
+          "GET /tasks/ returns a list of length 1 before deletion"
+        ],
+        "actions": [
+          "Override DB dependency with fresh in-memory SQLite",
+          "Seed exactly 1 task",
+          "Verify GET /tasks/ returns list of length 1",
+          "DELETE /tasks/{id} for the single task",
+          "GET /tasks/ after deletion"
+        ],
+        "expected": [
+          "GET /tasks/ before deletion returns list with exactly 1 element",
+          "DELETE returns HTTP 204",
+          "GET /tasks/ after deletion returns HTTP 200 with body exactly []"
+        ],
+        "trace": [
+          "R-TASK-035"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\nfrom app import models\n\nengine_bva = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionBva = sessionmaker(autocommit=False, autoflush=False, bind=engine_bva)\nBase.metadata.create_all(bind=engine_bva)\n\ndef override_bva():\n    db = SessionBva()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_bva\nclient_bva = TestClient(app)\n\ndb = SessionBva()\nt = models.Task(title=\"Only Task\", description=None, completed=False)\ndb.add(t)\ndb.commit()\ndb.refresh(t)\ntask_id = t.id\ndb.close()\n\nr_before = client_bva.get(\"/tasks/\")\nassert r_before.status_code == 200\nassert len(r_before.json()) == 1\n\nr_del = client_bva.delete(f\"/tasks/{task_id}\")\nassert r_del.status_code == 204\n\nr_after = client_bva.get(\"/tasks/\")\nassert r_after.status_code == 200\nassert r_after.json() == []\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_all_tasks_state_transition_intermediate_nonempty_then_empty",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database contains exactly 3 tasks",
+          "System is in non-empty state"
+        ],
+        "actions": [
+          "Override DB dependency with fresh in-memory SQLite",
+          "Seed 3 tasks",
+          "DELETE first task; verify list still has 2 items",
+          "DELETE second task; verify list still has 1 item",
+          "DELETE third task; verify list is empty"
+        ],
+        "expected": [
+          "After 1st delete: GET /tasks/ returns list of length 2",
+          "After 2nd delete: GET /tasks/ returns list of length 1",
+          "After 3rd delete: GET /tasks/ returns exactly []"
+        ],
+        "trace": [
+          "R-TASK-035"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\nfrom app import models\n\nengine_stc = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionStc = sessionmaker(autocommit=False, autoflush=False, bind=engine_stc)\nBase.metadata.create_all(bind=engine_stc)\n\ndef override_stc():\n    db = SessionStc()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_stc\nclient_stc = TestClient(app)\n\ndb = SessionStc()\nids = []\nfor i in range(3):\n    t = models.Task(title=f\"Task {i}\", description=None, completed=(i % 2 == 0))\n    db.add(t)\n    db.commit()\n    db.refresh(t)\n    ids.append(t.id)\ndb.close()\n\nr1 = client_stc.delete(f\"/tasks/{ids[0]}\")\nassert r1.status_code == 204\nr_mid1 = client_stc.get(\"/tasks/\")\nassert r_mid1.status_code == 200\nassert len(r_mid1.json()) == 2\n\nr2 = client_stc.delete(f\"/tasks/{ids[1]}\")\nassert r2.status_code == 204\nr_mid2 = client_stc.get(\"/tasks/\")\nassert r_mid2.status_code == 200\nassert len(r_mid2.json()) == 1\n\nr3 = client_stc.delete(f\"/tasks/{ids[2]}\")\nassert r3.status_code == 204\nr_final = client_stc.get(\"/tasks/\")\nassert r_final.status_code == 200\nassert r_final.json() == []\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_completed_and_incomplete_tasks_both_succeed",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database contains one completed task and one incomplete task",
+          "Both tasks exist and are retrievable"
+        ],
+        "actions": [
+          "Override DB dependency with fresh in-memory SQLite",
+          "Seed one task with completed=True and one with completed=False",
+          "DELETE the completed task; assert 204",
+          "DELETE the incomplete task; assert 204",
+          "GET /tasks/ and assert empty list"
+        ],
+        "expected": [
+          "DELETE of completed task returns HTTP 204",
+          "DELETE of incomplete task returns HTTP 204",
+          "GET /tasks/ returns HTTP 200 with body exactly []"
+        ],
+        "trace": [
+          "R-TASK-035"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\nfrom app import models\n\nengine_dt = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionDt = sessionmaker(autocommit=False, autoflush=False, bind=engine_dt)\nBase.metadata.create_all(bind=engine_dt)\n\ndef override_dt():\n    db = SessionDt()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_dt\nclient_dt = TestClient(app)\n\ndb = SessionDt()\nt_done = models.Task(title=\"Read chapter 5\", description=\"Signal pulse\", completed=True)\nt_todo = models.Task(title=\"Fix login bug\", description=None, completed=False)\ndb.add(t_done)\ndb.add(t_todo)\ndb.commit()\ndb.refresh(t_done)\ndb.refresh(t_todo)\nid_done = t_done.id\nid_todo = t_todo.id\ndb.close()\n\nr_done = client_dt.delete(f\"/tasks/{id_done}\")\nassert r_done.status_code == 204\n\nr_todo = client_dt.delete(f\"/tasks/{id_todo}\")\nassert r_todo.status_code == 204\n\nr_get = client_dt.get(\"/tasks/\")\nassert r_get.status_code == 200\nassert r_get.json() == []\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_already_deleted_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains exactly 1 task",
+          "Task is deleted once successfully"
+        ],
+        "actions": [
+          "Override DB dependency with fresh in-memory SQLite",
+          "Seed 1 task",
+          "DELETE /tasks/{id} \u2014 first call, expect 204",
+          "DELETE /tasks/{id} \u2014 second call on same ID, expect 404",
+          "GET /tasks/ to confirm still empty"
+        ],
+        "expected": [
+          "First DELETE returns HTTP 204",
+          "Second DELETE returns HTTP 404",
+          "GET /tasks/ returns exactly []"
+        ],
+        "trace": [
+          "R-TASK-035"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\nfrom app import models\n\nengine_neg2 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionNeg2 = sessionmaker(autocommit=False, autoflush=False, bind=engine_neg2)\nBase.metadata.create_all(bind=engine_neg2)\n\ndef override_neg2():\n    db = SessionNeg2()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_neg2\nclient_neg2 = TestClient(app)\n\ndb = SessionNeg2()\nt = models.Task(title=\"Pay electricity bill\", description=\"Meridian beacon\", completed=True)\ndb.add(t)\ndb.commit()\ndb.refresh(t)\ntask_id = t.id\ndb.close()\n\nr1 = client_neg2.delete(f\"/tasks/{task_id}\")\nassert r1.status_code == 204\n\nr2 = client_neg2.delete(f\"/tasks/{task_id}\")\nassert r2.status_code == 404\nbody2 = r2.json()\nassert \"detail\" in body2\nassert str(task_id) in body2[\"detail\"]\n\nr_get = client_neg2.get(\"/tasks/\")\nassert r_get.status_code == 200\nassert r_get.json() == []\n\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-035",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7564,
+    "output_tokens": 4191,
+    "latency_ms": 50999,
+    "wall_ms": 50999,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-035\",\n  \"reasoning\": \"R-TASK-035 requires that after deleting every task, GET /tasks/ returns an empty list []. The test suite covers: (1) positive path \u2014 delete all 20 pre-loaded tasks one by one and verify GET /tasks/ returns exactly []; (2) negative path \u2014 attempt to delete a non-existent task ID and verify HTTP 404 with correct detail; (3) boundary path \u2014 delete the last remaining task (count transitions from 1 to 0) and verify the list becomes empty; (4) state-transition \u2014 verify intermediate state (tasks still present mid-deletion) then final empty state; (5) decision-table \u2014 verify that deleting a completed task and an incomplete task both succeed with 204. Each test uses an in-memory SQLite DB via dependency override to ensure isolation and determinism.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_all_tasks_leaves_empty_list\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded tasks with IDs 1-20\",\n        \"GET /tasks/ returns a non-empty list before deletion\"\n      ],\n      \"actions\": [\n        \"Override DB dependency with fresh in-memory SQLite\",\n        \"Seed all 20 tasks\",\n        \"DELETE /tasks/{id} for each task ID 1 through 20\",\n        \"Assert each DELETE returns HTTP 204\",\n        \"GET /tasks/ after all deletions\"\n      ],\n      \"expected\": [\n        \"Each DELETE /tasks/{id} returns HTTP 204\",\n        \"GET /tasks/ returns HTTP 200 with body exactly []\"\n      ],\n      \"trace\": [\"R-TASK-035\"],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\nfrom app import models\\n\\nengine_mem = create_engine(\\\"sqlite:///:memory:\\\", connect_args={\\\"check_same_thread\\\": False})\\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\\nBase.metadata.create_all(bind=engine_mem)\\n\\ndef override_get_db():\\n    db = SessionMem()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndb = SessionMem()\\ntask_data = [\\n    {\\\"title\\\": f\\\"Task {i}\\\", \\\"description\\\": None, \\\"completed\\\": False}\\n    for i in range(1, 21)\\n]\\nfor td in task_data:\\n    t = models.Task(title=td[\\\"title\\\"], description=td[\\\"description\\\"], completed=td[\\\"completed\\\"])\\n    db.add(t)\\ndb.commit()\\nall_tasks = db.query(models.Task).all()\\ntask_ids = [t.id for t in all_tasks]\\ndb.close()\\n\\nassert len(task_ids) == 20\\n\\nfor tid in task_ids:\\n    r = client.delete(f\\\"/tasks/{tid}\\\")\\n    assert r.status_code == 204\\n\\nr_get = client.get(\\\"/tasks/\\\")\\nassert r_get.status_code == 200\\nassert r_get.json() == []\\n\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty (no tasks exist)\",\n        \"Task ID 9999 does not exist\"\n      ],\n      \"actions\": [\n        \"Override DB dependency with fresh in-memory SQLite (no rows)\",\n        \"DELETE /tasks/9999\"\n      ],\n      \"expected\": [\n        \"HTTP 404 response\",\n        \"Response body contains detail field with message about task not found\"\n      ],\n      \"trace\": [\"R-TASK-035\"],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\n\\nengine_neg = create_engine(\\\"sqlite:///:memory:\\\", connect_args={\\\"check_same_thread\\\": False})\\nSessionNeg = sessionmaker(autocommit=False, autoflush=False, bind=engine_neg)\\nBase.metadata.create_all(bind=engine_neg)\\n\\ndef override_neg():\\n    db = SessionNeg()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_neg\\nclient_neg = TestClient(app)\\n\\nr "
+  }
+}

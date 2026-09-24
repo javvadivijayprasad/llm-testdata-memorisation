@@ -1,0 +1,188 @@
+{
+  "req": {
+    "id": "R-TASK-028",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "idempotency",
+    "title": "DELETE is idempotent",
+    "statement": "The system shall respond with HTTP 404 for subsequent DELETE calls on the same task_id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete is idempotent"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "DELETE /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-028",
+    "reasoning": "R-TASK-028 requires DELETE /tasks/{task_id} to be idempotent: the first call on an existing task returns HTTP 204, and every subsequent call on the same task_id returns HTTP 404. The test suite covers: (1) positive/STC \u2014 the full state transition from existing\u2192deleted\u2192gone, asserting exact status codes 204 then 404; (2) negative/NEG \u2014 deleting a task_id that never existed returns 404 immediately; (3) boundary/BVA \u2014 deleting a newly-created task (id=21, the first id beyond the pre-loaded 20) then re-deleting it to confirm 404; (4) DT \u2014 a decision-table test covering all three branches: pre-existing task first delete (204), second delete (404), and a never-existing id (404), asserting the exact detail message text to catch string-mutation operators; (5) STC \u2014 three consecutive DELETE calls on the same id to confirm the 404 is stable across multiple retries, not just the second call.",
+    "tests": [
+      {
+        "name": "test_delete_idempotent_existing_task_state_transition",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task with id=5 exists in the pre-loaded dataset (title='Write project report', completed=false)",
+          "Database is reset to 20 pre-loaded rows before this test"
+        ],
+        "actions": [
+          "Send DELETE /tasks/5 \u2014 first call on an existing task",
+          "Assert response status is exactly 204",
+          "Send DELETE /tasks/5 \u2014 second call on the now-deleted task",
+          "Assert response status is exactly 404",
+          "Assert response JSON detail contains the task id"
+        ],
+        "expected": [
+          "First DELETE returns HTTP 204 with no body",
+          "Second DELETE returns HTTP 404",
+          "404 detail message references task id 5"
+        ],
+        "trace": [
+          "R-TASK-028: DELETE is idempotent",
+          "STC: state transition existing\u2192deleted\u2192not-found",
+          "Catches status-code mutation (204\u2192200, 404\u2192200) and boolean-flip in crud.delete_task"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_idempotent_existing_task_state_transition():\n    r1 = client.delete(\"/tasks/5\")\n    assert r1.status_code == 204\n    assert r1.content == b\"\"\n\n    r2 = client.delete(\"/tasks/5\")\n    assert r2.status_code == 404\n    body2 = r2.json()\n    assert \"detail\" in body2\n    assert \"5\" in body2[\"detail\"]\n"
+      },
+      {
+        "name": "test_delete_never_existing_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task with id=9999 does not exist in the pre-loaded dataset",
+          "Database is reset to 20 pre-loaded rows before this test"
+        ],
+        "actions": [
+          "Send DELETE /tasks/9999 \u2014 id that was never created",
+          "Assert response status is exactly 404",
+          "Assert response JSON detail message references the missing id"
+        ],
+        "expected": [
+          "DELETE on a never-existing id returns HTTP 404 immediately",
+          "Response body contains a detail field mentioning id 9999"
+        ],
+        "trace": [
+          "R-TASK-028: error pathway \u2014 HTTP 4xx on client error",
+          "NEG: negative path when crud.delete_task returns False for unknown id",
+          "Catches mutation that suppresses the HTTPException raise (False branch)"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_never_existing_task_returns_404():\n    r = client.delete(\"/tasks/9999\")\n    assert r.status_code == 404\n    body = r.json()\n    assert \"detail\" in body\n    assert \"9999\" in body[\"detail\"]\n"
+      },
+      {
+        "name": "test_delete_idempotent_newly_created_task_boundary_id",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is reset to 20 pre-loaded rows before this test",
+          "Next auto-assigned id will be 21"
+        ],
+        "actions": [
+          "POST /tasks/ to create a new task \u2014 captures id=21",
+          "Assert creation returns HTTP 201 and id == 21",
+          "Send DELETE /tasks/21 \u2014 first call",
+          "Assert response status is exactly 204",
+          "Send DELETE /tasks/21 \u2014 second call (idempotency check)",
+          "Assert response status is exactly 404"
+        ],
+        "expected": [
+          "Newly created task at boundary id=21 is deleted with 204",
+          "Second DELETE on id=21 returns 404",
+          "No 5xx errors at any point"
+        ],
+        "trace": [
+          "R-TASK-028: idempotency on boundary id (first id beyond pre-loaded set)",
+          "BVA: id=21 is the boundary between pre-loaded and dynamically created ids",
+          "Catches off-by-one mutation in id assignment or delete lookup"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_idempotent_newly_created_task_boundary_id():\n    rc = client.post(\"/tasks/\", json={\"title\": \"BVA boundary task\", \"completed\": False})\n    assert rc.status_code == 201\n    created = rc.json()\n    task_id = created[\"id\"]\n    assert task_id == 21\n\n    r1 = client.delete(f\"/tasks/{task_id}\")\n    assert r1.status_code == 204\n    assert r1.content == b\"\"\n\n    r2 = client.delete(f\"/tasks/{task_id}\")\n    assert r2.status_code == 404\n    body2 = r2.json()\n    assert \"detail\" in body2\n    assert str(task_id) in body2[\"detail\"]\n"
+      },
+      {
+        "name": "test_delete_decision_table_all_branches_exact_messages",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task with id=10 exists in the pre-loaded dataset (title='Organize desk', completed=false)",
+          "Task with id=8888 does not exist",
+          "Database is reset to 20 pre-loaded rows before this test"
+        ],
+        "actions": [
+          "DELETE /tasks/10 \u2014 existing task, first call \u2192 expect 204",
+          "DELETE /tasks/10 \u2014 same id, second call \u2192 expect 404 with exact detail",
+          "DELETE /tasks/8888 \u2014 never-existing id \u2192 expect 404 with exact detail",
+          "Assert all three exact status codes and detail strings"
+        ],
+        "expected": [
+          "Branch 1 (existing, first delete): HTTP 204, empty body",
+          "Branch 2 (deleted, second delete): HTTP 404, detail mentions id 10",
+          "Branch 3 (never existed): HTTP 404, detail mentions id 8888"
+        ],
+        "trace": [
+          "R-TASK-028: decision table covering all three logical branches of delete_task",
+          "DT: (task exists \u2192 True/False) \u00d7 (first/subsequent call)",
+          "Catches mutation of HTTPException status code, detail string, or boolean return from crud"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_decision_table_all_branches_exact_messages():\n    r1 = client.delete(\"/tasks/10\")\n    assert r1.status_code == 204\n    assert r1.content == b\"\"\n\n    r2 = client.delete(\"/tasks/10\")\n    assert r2.status_code == 404\n    b2 = r2.json()\n    assert b2[\"detail\"] == \"Task with id 10 not found\"\n\n    r3 = client.delete(\"/tasks/8888\")\n    assert r3.status_code == 404\n    b3 = r3.json()\n    assert b3[\"detail\"] == \"Task with id 8888 not found\"\n"
+      },
+      {
+        "name": "test_delete_idempotent_three_consecutive_calls_stable_404",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task with id=3 exists in the pre-loaded dataset (title='Submit expense report', completed=true)",
+          "Database is reset to 20 pre-loaded rows before this test"
+        ],
+        "actions": [
+          "DELETE /tasks/3 \u2014 call 1 \u2192 expect 204",
+          "DELETE /tasks/3 \u2014 call 2 \u2192 expect 404",
+          "DELETE /tasks/3 \u2014 call 3 \u2192 expect 404 (stability check)",
+          "Verify GET /tasks/3 also returns 404 confirming permanent deletion"
+        ],
+        "expected": [
+          "Call 1: HTTP 204, empty body",
+          "Call 2: HTTP 404, detail mentions id 3",
+          "Call 3: HTTP 404, detail mentions id 3 (idempotent across multiple retries)",
+          "GET /tasks/3: HTTP 404 confirming task is gone"
+        ],
+        "trace": [
+          "R-TASK-028: idempotency must hold for N>2 subsequent calls, not just the second",
+          "STC: state machine stays in 'deleted' state across repeated transitions",
+          "Catches mutation that resets state or returns 200 on third call"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_idempotent_three_consecutive_calls_stable_404():\n    r1 = client.delete(\"/tasks/3\")\n    assert r1.status_code == 204\n    assert r1.content == b\"\"\n\n    r2 = client.delete(\"/tasks/3\")\n    assert r2.status_code == 404\n    assert r2.json()[\"detail\"] == \"Task with id 3 not found\"\n\n    r3 = client.delete(\"/tasks/3\")\n    assert r3.status_code == 404\n    assert r3.json()[\"detail\"] == \"Task with id 3 not found\"\n\n    rg = client.get(\"/tasks/3\")\n    assert rg.status_code == 404\n    assert rg.json()[\"detail\"] == \"Task with id 3 not found\"\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-028",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5926,
+    "output_tokens": 2917,
+    "latency_ms": 44712,
+    "wall_ms": 44712,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-028\",\n  \"reasoning\": \"R-TASK-028 requires DELETE /tasks/{task_id} to be idempotent: the first call on an existing task returns HTTP 204, and every subsequent call on the same task_id returns HTTP 404. The test suite covers: (1) positive/STC \u2014 the full state transition from existing\u2192deleted\u2192gone, asserting exact status codes 204 then 404; (2) negative/NEG \u2014 deleting a task_id that never existed returns 404 immediately; (3) boundary/BVA \u2014 deleting a newly-created task (id=21, the first id beyond the pre-loaded 20) then re-deleting it to confirm 404; (4) DT \u2014 a decision-table test covering all three branches: pre-existing task first delete (204), second delete (404), and a never-existing id (404), asserting the exact detail message text to catch string-mutation operators; (5) STC \u2014 three consecutive DELETE calls on the same id to confirm the 404 is stable across multiple retries, not just the second call.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_idempotent_existing_task_state_transition\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Task with id=5 exists in the pre-loaded dataset (title='Write project report', completed=false)\",\n        \"Database is reset to 20 pre-loaded rows before this test\"\n      ],\n      \"actions\": [\n        \"Send DELETE /tasks/5 \u2014 first call on an existing task\",\n        \"Assert response status is exactly 204\",\n        \"Send DELETE /tasks/5 \u2014 second call on the now-deleted task\",\n        \"Assert response status is exactly 404\",\n        \"Assert response JSON detail contains the task id\"\n      ],\n      \"expected\": [\n        \"First DELETE returns HTTP 204 with no body\",\n        \"Second DELETE returns HTTP 404\",\n        \"404 detail message references task id 5\"\n      ],\n      \"trace\": [\n        \"R-TASK-028: DELETE is idempotent\",\n        \"STC: state transition existing\u2192deleted\u2192not-found\",\n        \"Catches status-code mutation (204\u2192200, 404\u2192200) and boolean-flip in crud.delete_task\"\n      ],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\n\\nclient = TestClient(app)\\n\\ndef test_delete_idempotent_existing_task_state_transition():\\n    r1 = client.delete(\\\"/tasks/5\\\")\\n    assert r1.status_code == 204\\n    assert r1.content == b\\\"\\\"\\n\\n    r2 = client.delete(\\\"/tasks/5\\\")\\n    assert r2.status_code == 404\\n    body2 = r2.json()\\n    assert \\\"detail\\\" in body2\\n    assert \\\"5\\\" in body2[\\\"detail\\\"]\\n\"\n    },\n    {\n      \"name\": \"test_delete_never_existing_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Task with id=9999 does not exist in the pre-loaded dataset\",\n        \"Database is reset to 20 pre-loaded rows before this test\"\n      ],\n      \"actions\": [\n        \"Send DELETE /tasks/9999 \u2014 id that was never created\",\n        \"Assert response status is exactly 404\",\n        \"Assert response JSON detail message references the missing id\"\n      ],\n      \"expected\": [\n        \"DELETE on a never-existing id returns HTTP 404 immediately\",\n        \"Response body contains a detail field mentioning id 9999\"\n      ],\n      \"trace\": [\n        \"R-TASK-028: error pathway \u2014 HTTP 4xx on client error\",\n        \"NEG: negative path when crud.delete_task returns False for unknown id\",\n        \"Catches mutation that suppresses the HTTPException raise (False branch)\"\n      ],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\n\\nclient = TestClient(app)\\n\\ndef test_delete_never_existing_task_returns_404():\\n    r = client.delete(\\\"/tasks/9999\\\")\\n    assert r.status_code == 404\\n    body = r.json()\\n    assert \\\"detail\\\" in body\\n    assert \\\"9999\\\" in body[\\\"detail\\\"]\\n\"\n    },\n    {\n      \"name\": \"test_delete_idempotent_newly_created_task_boundary_id\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is reset to 20 pre-loaded rows before this test\",\n        \"Next auto-as"
+  }
+}

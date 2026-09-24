@@ -1,0 +1,186 @@
+{
+  "req": {
+    "id": "R-TASK-036",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Fetching completed tasks",
+    "statement": "The system shall optionally filter tasks by completed status when a filter query parameter is supplied.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "fetching completed tasks"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/?completed=true"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-036",
+    "reasoning": "The requirement states that GET /tasks/?completed=true (or false) must filter tasks by completion status. I design tests covering: (1) positive EP \u2014 completed=true returns only completed tasks and excludes incomplete ones; (2) positive EP \u2014 completed=false returns only incomplete tasks; (3) negative NEG \u2014 invalid completed value yields HTTP 422; (4) BVA \u2014 no completed param returns all tasks (boundary: filter absent vs present); (5) DT \u2014 mixed dataset with both completed and incomplete tasks verifies exact filtering logic. Each test seeds its own data via POST, asserts exact status codes and exact response field values to kill operator-flip and boolean-negation mutations.",
+    "tests": [
+      {
+        "name": "test_filter_completed_true_returns_only_completed_tasks",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty before test",
+          "Two tasks exist: one completed=true, one completed=false"
+        ],
+        "actions": [
+          "POST /tasks/ with completed=true to create a completed task",
+          "POST /tasks/ with completed=false to create an incomplete task",
+          "GET /tasks/?completed=true"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response list contains exactly 1 task",
+          "That task has completed=true",
+          "That task title matches the completed task seeded"
+        ],
+        "trace": [
+          "R-TASK-036: filter by completed=true must return only completed tasks"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine, Base\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nr1 = client.post(\"/tasks/\", json={\"title\": \"Done Task\", \"completed\": True})\nassert r1.status_code == 201\nassert r1.json()[\"completed\"] == True\nassert r1.json()[\"title\"] == \"Done Task\"\n\nr2 = client.post(\"/tasks/\", json={\"title\": \"Pending Task\", \"completed\": False})\nassert r2.status_code == 201\nassert r2.json()[\"completed\"] == False\n\nr = client.get(\"/tasks/?completed=true\")\nassert r.status_code == 200\ndata = r.json()\nassert len(data) == 1\nassert data[0][\"completed\"] == True\nassert data[0][\"title\"] == \"Done Task\"\n"
+      },
+      {
+        "name": "test_filter_completed_false_returns_only_incomplete_tasks",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty before test",
+          "Two tasks exist: one completed=true, one completed=false"
+        ],
+        "actions": [
+          "POST /tasks/ with completed=true",
+          "POST /tasks/ with completed=false",
+          "GET /tasks/?completed=false"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response list contains exactly 1 task",
+          "That task has completed=false",
+          "That task title matches the incomplete task seeded"
+        ],
+        "trace": [
+          "R-TASK-036: filter by completed=false must return only incomplete tasks; catches boolean-negation mutation on the filter predicate"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine, Base\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nr1 = client.post(\"/tasks/\", json={\"title\": \"Finished\", \"completed\": True})\nassert r1.status_code == 201\n\nr2 = client.post(\"/tasks/\", json={\"title\": \"Not Finished\", \"completed\": False})\nassert r2.status_code == 201\n\nr = client.get(\"/tasks/?completed=false\")\nassert r.status_code == 200\ndata = r.json()\nassert len(data) == 1\nassert data[0][\"completed\"] == False\nassert data[0][\"title\"] == \"Not Finished\"\n"
+      },
+      {
+        "name": "test_invalid_completed_param_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty before test"
+        ],
+        "actions": [
+          "GET /tasks/?completed=maybe (non-boolean string)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response body contains validation error detail"
+        ],
+        "trace": [
+          "R-TASK-036 error pathway: HTTP 4xx on client error; catches mutation that changes 422 to 200 or suppresses validation"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine, Base\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nr = client.get(\"/tasks/?completed=maybe\")\nassert r.status_code == 422\nbody = r.json()\nassert \"detail\" in body\n"
+      },
+      {
+        "name": "test_no_completed_param_returns_all_tasks",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty before test",
+          "Three tasks exist: two completed=true, one completed=false"
+        ],
+        "actions": [
+          "POST three tasks with mixed completed values",
+          "GET /tasks/ with no completed query parameter"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response list contains exactly 3 tasks (all tasks, unfiltered)",
+          "Tasks include both completed=true and completed=false entries"
+        ],
+        "trace": [
+          "R-TASK-036: boundary between filter-absent and filter-present; catches mutation that always applies a filter even when param is None"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine, Base\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nclient.post(\"/tasks/\", json={\"title\": \"T1\", \"completed\": True})\nclient.post(\"/tasks/\", json={\"title\": \"T2\", \"completed\": True})\nclient.post(\"/tasks/\", json={\"title\": \"T3\", \"completed\": False})\n\nr = client.get(\"/tasks/\")\nassert r.status_code == 200\ndata = r.json()\nassert len(data) == 3\ncompleted_flags = [t[\"completed\"] for t in data]\nassert True in completed_flags\nassert False in completed_flags\n"
+      },
+      {
+        "name": "test_filter_completed_true_excludes_all_incomplete_tasks",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty before test",
+          "Multiple tasks of each type exist"
+        ],
+        "actions": [
+          "POST 3 completed tasks and 2 incomplete tasks",
+          "GET /tasks/?completed=true",
+          "GET /tasks/?completed=false"
+        ],
+        "expected": [
+          "completed=true returns exactly 3 tasks, all with completed=true",
+          "completed=false returns exactly 2 tasks, all with completed=false",
+          "No cross-contamination between filter results"
+        ],
+        "trace": [
+          "R-TASK-036: decision table covering both filter values against a mixed dataset; catches == vs != mutation on filter predicate and off-by-one on counts"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine, Base\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nfor i in range(3):\n    r = client.post(\"/tasks/\", json={\"title\": f\"Done {i}\", \"completed\": True})\n    assert r.status_code == 201\n\nfor i in range(2):\n    r = client.post(\"/tasks/\", json={\"title\": f\"Pending {i}\", \"completed\": False})\n    assert r.status_code == 201\n\nrt = client.get(\"/tasks/?completed=true\")\nassert rt.status_code == 200\ndone = rt.json()\nassert len(done) == 3\nassert all(t[\"completed\"] == True for t in done)\n\nrf = client.get(\"/tasks/?completed=false\")\nassert rf.status_code == 200\npending = rf.json()\nassert len(pending) == 2\nassert all(t[\"completed\"] == False for t in pending)\n"
+      },
+      {
+        "name": "test_filter_completed_true_on_empty_db_returns_empty_list",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty before test (zero tasks)"
+        ],
+        "actions": [
+          "GET /tasks/?completed=true with no tasks in database"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is an empty JSON array []",
+          "Length of list is exactly 0"
+        ],
+        "trace": [
+          "R-TASK-036: boundary at zero tasks; catches mutation that returns non-empty list or wrong status when no matching rows exist"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine, Base\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nr = client.get(\"/tasks/?completed=true\")\nassert r.status_code == 200\ndata = r.json()\nassert data == []\nassert len(data) == 0\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-036",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4847,
+    "output_tokens": 2745,
+    "latency_ms": 35048,
+    "wall_ms": 35048,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-036\",\n  \"reasoning\": \"The requirement states that GET /tasks/?completed=true (or false) must filter tasks by completion status. I design tests covering: (1) positive EP \u2014 completed=true returns only completed tasks and excludes incomplete ones; (2) positive EP \u2014 completed=false returns only incomplete tasks; (3) negative NEG \u2014 invalid completed value yields HTTP 422; (4) BVA \u2014 no completed param returns all tasks (boundary: filter absent vs present); (5) DT \u2014 mixed dataset with both completed and incomplete tasks verifies exact filtering logic. Each test seeds its own data via POST, asserts exact status codes and exact response field values to kill operator-flip and boolean-negation mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_filter_completed_true_returns_only_completed_tasks\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty before test\",\n        \"Two tasks exist: one completed=true, one completed=false\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with completed=true to create a completed task\",\n        \"POST /tasks/ with completed=false to create an incomplete task\",\n        \"GET /tasks/?completed=true\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response list contains exactly 1 task\",\n        \"That task has completed=true\",\n        \"That task title matches the completed task seeded\"\n      ],\n      \"trace\": [\n        \"R-TASK-036: filter by completed=true must return only completed tasks\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import engine, Base\\n\\nBase.metadata.drop_all(bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\nr1 = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Done Task\\\", \\\"completed\\\": True})\\nassert r1.status_code == 201\\nassert r1.json()[\\\"completed\\\"] == True\\nassert r1.json()[\\\"title\\\"] == \\\"Done Task\\\"\\n\\nr2 = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Pending Task\\\", \\\"completed\\\": False})\\nassert r2.status_code == 201\\nassert r2.json()[\\\"completed\\\"] == False\\n\\nr = client.get(\\\"/tasks/?completed=true\\\")\\nassert r.status_code == 200\\ndata = r.json()\\nassert len(data) == 1\\nassert data[0][\\\"completed\\\"] == True\\nassert data[0][\\\"title\\\"] == \\\"Done Task\\\"\\n\"\n    },\n    {\n      \"name\": \"test_filter_completed_false_returns_only_incomplete_tasks\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty before test\",\n        \"Two tasks exist: one completed=true, one completed=false\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with completed=true\",\n        \"POST /tasks/ with completed=false\",\n        \"GET /tasks/?completed=false\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response list contains exactly 1 task\",\n        \"That task has completed=false\",\n        \"That task title matches the incomplete task seeded\"\n      ],\n      \"trace\": [\n        \"R-TASK-036: filter by completed=false must return only incomplete tasks; catches boolean-negation mutation on the filter predicate\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import engine, Base\\n\\nBase.metadata.drop_all(bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\nr1 = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Finished\\\", \\\"completed\\\": True})\\nassert r1.status_code == 201\\n\\nr2 = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Not Finished\\\", \\\"completed\\\": False})\\nassert r2.status_code == 201\\n\\nr = client.get(\\\"/tasks/?completed=false\\\")\\nassert r.status_code == 200\\ndata = r.json()\\nassert len(data) == 1\\nassert data[0][\\\"completed\\\"] == False\\nassert data[0][\\\"title\\\"] == \\\"Not Finished\\\"\\n\"\n    },\n    {\n      \"name\": \"test_invalid_completed_param_returns_422\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty b"
+  }
+}

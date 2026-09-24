@@ -1,0 +1,117 @@
+{
+  "req": {
+    "id": "R-TASK-014",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "error_pathway",
+    "title": "Delete unknown returns 404",
+    "statement": "The system shall respond with HTTP 404 when DELETE targets a non-existent task id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete unknown returns 404"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 404"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "DELETE /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-014",
+    "reasoning": "R-TASK-014 requires DELETE /tasks/{task_id} to return HTTP 404 when the task_id does not exist. Three test cases are designed: (1) a positive case confirming a known-existing task (id=1) is deleted with 204, verifying the happy path and that the delete endpoint works at all; (2) a negative case sending a clearly non-existent id (id=99999) and asserting exactly 404 with the correct detail message, catching status-code mutations and string-constant mutations; (3) a boundary case using id=21 (one beyond the highest seeded id=20) to catch off-by-one mutations in any existence check, and also verifying id=20 returns 204 to confirm the boundary is tight. Each test uses an in-memory SQLite override via dependency injection so the pre-loaded fixture rows are present and tests are fully isolated.",
+    "tests": [
+      {
+        "name": "test_delete_existing_task_returns_204",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task with id=1 exists in the pre-loaded dataset",
+          "Database is initialised with all 20 seed rows"
+        ],
+        "actions": [
+          "Send DELETE /tasks/1 via TestClient"
+        ],
+        "expected": [
+          "HTTP 204 No Content",
+          "Response body is empty"
+        ],
+        "trace": [
+          "R-TASK-014 \u2014 confirms the success path so mutations that always return 404 are killed"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\ntmp = tempfile.mkdtemp()\nDB_URL = f\"sqlite:///{tmp}/test_pos.db\"\nengine = create_engine(DB_URL, connect_args={\"check_same_thread\": False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndb = TestingSession()\ndb.add(models.Task(id=1, title=\"Read chapter 5\", description=\"desc\", completed=True))\ndb.commit()\ndb.close()\n\ndef override_get_db():\n    db = TestingSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_existing_task_returns_204():\n    r = client.delete(\"/tasks/1\")\n    assert r.status_code == 204\n    assert r.content == b\"\"\n\ntest_delete_existing_task_returns_204()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No task with id=99999 exists in the database",
+          "Database is initialised with all 20 seed rows (max id=20)"
+        ],
+        "actions": [
+          "Send DELETE /tasks/99999 via TestClient"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response JSON detail contains 'Task with id 99999 not found'"
+        ],
+        "trace": [
+          "R-TASK-014 \u2014 primary error pathway assertion; catches mutations that change 404 to 200/204, or suppress the HTTPException"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\ntmp = tempfile.mkdtemp()\nDB_URL = f\"sqlite:///{tmp}/test_neg.db\"\nengine = create_engine(DB_URL, connect_args={\"check_same_thread\": False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_nonexistent_task_returns_404():\n    r = client.delete(\"/tasks/99999\")\n    assert r.status_code == 404\n    body = r.json()\n    assert body[\"detail\"] == \"Task with id 99999 not found\"\n\ntest_delete_nonexistent_task_returns_404()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_boundary_ids_around_max_seeded",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task with id=20 exists (highest seeded id)",
+          "No task with id=21 exists (one beyond the highest seeded id)"
+        ],
+        "actions": [
+          "Send DELETE /tasks/21 \u2014 expect 404",
+          "Send DELETE /tasks/20 \u2014 expect 204",
+          "Send DELETE /tasks/20 again \u2014 expect 404 (now deleted)"
+        ],
+        "expected": [
+          "DELETE /tasks/21 returns HTTP 404 with detail 'Task with id 21 not found'",
+          "DELETE /tasks/20 returns HTTP 204",
+          "Second DELETE /tasks/20 returns HTTP 404 with detail 'Task with id 20 not found'"
+        ],
+        "trace": [
+          "R-TASK-014 \u2014 BVA at max seeded id boundary; catches off-by-one mutations in existence checks and state-transition from exists to deleted"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\ntmp = tempfile.mkdtemp()\nDB_URL = f\"sqlite:///{tmp}/test_bva.db\"\nengine = create_engine(DB_URL, connect_args={\"check_same_thread\": False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndb = TestingSession()\ndb.add(models.Task(id=20, title=\"Reply to emails\", description=\"desc\", completed=False))\ndb.commit()\ndb.close()\n\ndef override_get_db():\n    db = TestingSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_boundary_ids_around_max_seeded():\n    r21 = client.delete(\"/tasks/21\")\n    assert r21.status_code == 404\n    assert r21.json()[\"detail\"] == \"Task with id 21 not found\"\n    r20 = client.delete(\"/tasks/20\")\n    assert r20.status_code == 204\n    assert r20.content == b\"\"\n    r20_again = client.delete(\"/tasks/20\")\n    assert r20_again.status_code == 404\n    assert r20_again.json()[\"detail\"] == \"Task with id 20 not found\"\n\ntest_delete_boundary_ids_around_max_seeded()\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-014",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5658,
+    "output_tokens": 2112,
+    "latency_ms": 28656,
+    "wall_ms": 28656,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-014\",\n  \"reasoning\": \"R-TASK-014 requires DELETE /tasks/{task_id} to return HTTP 404 when the task_id does not exist. Three test cases are designed: (1) a positive case confirming a known-existing task (id=1) is deleted with 204, verifying the happy path and that the delete endpoint works at all; (2) a negative case sending a clearly non-existent id (id=99999) and asserting exactly 404 with the correct detail message, catching status-code mutations and string-constant mutations; (3) a boundary case using id=21 (one beyond the highest seeded id=20) to catch off-by-one mutations in any existence check, and also verifying id=20 returns 204 to confirm the boundary is tight. Each test uses an in-memory SQLite override via dependency injection so the pre-loaded fixture rows are present and tests are fully isolated.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_existing_task_returns_204\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Task with id=1 exists in the pre-loaded dataset\",\n        \"Database is initialised with all 20 seed rows\"\n      ],\n      \"actions\": [\n        \"Send DELETE /tasks/1 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 204 No Content\",\n        \"Response body is empty\"\n      ],\n      \"trace\": [\n        \"R-TASK-014 \u2014 confirms the success path so mutations that always return 404 are killed\"\n      ],\n      \"executable\": \"import os, tempfile\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\ntmp = tempfile.mkdtemp()\\nDB_URL = f\\\"sqlite:///{tmp}/test_pos.db\\\"\\nengine = create_engine(DB_URL, connect_args={\\\"check_same_thread\\\": False})\\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\ndb = TestingSession()\\ndb.add(models.Task(id=1, title=\\\"Read chapter 5\\\", description=\\\"desc\\\", completed=True))\\ndb.commit()\\ndb.close()\\n\\ndef override_get_db():\\n    db = TestingSession()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_delete_existing_task_returns_204():\\n    r = client.delete(\\\"/tasks/1\\\")\\n    assert r.status_code == 204\\n    assert r.content == b\\\"\\\"\\n\\ntest_delete_existing_task_returns_204()\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"No task with id=99999 exists in the database\",\n        \"Database is initialised with all 20 seed rows (max id=20)\"\n      ],\n      \"actions\": [\n        \"Send DELETE /tasks/99999 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 404 Not Found\",\n        \"Response JSON detail contains 'Task with id 99999 not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-014 \u2014 primary error pathway assertion; catches mutations that change 404 to 200/204, or suppress the HTTPException\"\n      ],\n      \"executable\": \"import os, tempfile\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\ntmp = tempfile.mkdtemp()\\nDB_URL = f\\\"sqlite:///{tmp}/test_neg.db\\\"\\nengine = create_engine(DB_URL, connect_args={\\\"check_same_thread\\\": False})\\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSession()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_delete_nonexistent_task_returns_404():\\n    r = client.delete(\\\"/tasks/99999\\\")\\n    assert r.status_code == 404\\n    bod"
+  }
+}

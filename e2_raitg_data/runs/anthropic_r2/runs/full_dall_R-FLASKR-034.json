@@ -1,0 +1,203 @@
+{
+  "req": {
+    "id": "R-FLASKR-034",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "security",
+    "title": "Sessions use secret key",
+    "statement": "The system shall sign session cookies with the SECRET_KEY loaded from application config.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "sessions use secret key"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-034",
+    "reasoning": "R-FLASKR-034 requires that session cookies are signed with the SECRET_KEY from application config. Tests must verify: (1) a valid SECRET_KEY produces a signed session cookie that allows authenticated access (positive/EP), (2) a tampered/forged session cookie is rejected (negative/NEG), (3) changing the SECRET_KEY invalidates previously issued session cookies (boundary/STC), and (4) the default 'dev' key is overridden by test config (DT). Each test inspects exact status codes and cookie properties to kill constant-mutation and boolean-negation mutants.",
+    "tests": [
+      {
+        "name": "test_secret_key_signs_session_cookie_on_login",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App created with TESTING=True and a known SECRET_KEY",
+          "User 'Rahul' with password 'stone' exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with valid credentials",
+          "Inspect the Set-Cookie header for a signed session cookie"
+        ],
+        "expected": [
+          "HTTP 302 redirect on successful login",
+          "Response sets a 'session' cookie",
+          "Cookie value is a Flask-signed token (starts with dot-separated base64 segments)"
+        ],
+        "trace": [
+          "R-FLASKR-034"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_secret_key_signs_session_cookie_on_login():\n    fd, path = tempfile.mkstemp(); os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'test-secret-xyz'})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    cookie_header = r.headers.get('Set-Cookie', '')\n    assert 'session=' in cookie_header\n    session_val = [p for p in cookie_header.split(';') if p.strip().startswith('session=')][0]\n    session_val = session_val.strip()[len('session='):]\n    assert len(session_val) > 0\n    assert '.' in session_val\n\ntest_secret_key_signs_session_cookie_on_login()"
+      },
+      {
+        "name": "test_tampered_session_cookie_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App created with TESTING=True and a known SECRET_KEY",
+          "A forged/tampered session cookie is crafted manually"
+        ],
+        "actions": [
+          "Send GET /create with a manually forged session cookie (not signed with the correct key)",
+          "Observe that the server does not honour the forged session"
+        ],
+        "expected": [
+          "HTTP 302 redirect to /auth/login (login_required rejects unauthenticated request)",
+          "The forged cookie does not grant authenticated access"
+        ],
+        "trace": [
+          "R-FLASKR-034"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_tampered_session_cookie_rejected():\n    fd, path = tempfile.mkstemp(); os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'real-secret-key'})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    forged_cookie = 'eyJ1c2VyX2lkIjoxfQ.ZZZZZZ.ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ'\n    client.set_cookie('session', forged_cookie)\n    r = client.get('/create')\n    assert r.status_code == 302\n    location = r.headers.get('Location', '')\n    assert '/auth/login' in location\n\ntest_tampered_session_cookie_rejected()"
+      },
+      {
+        "name": "test_changed_secret_key_invalidates_old_session",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "App instance A created with SECRET_KEY='key-alpha'",
+          "User logs in and obtains a session cookie from instance A",
+          "App instance B created with SECRET_KEY='key-beta' (different key)"
+        ],
+        "actions": [
+          "Login with instance A to get a valid signed session cookie",
+          "Present that cookie to instance B (different SECRET_KEY)",
+          "Attempt to access a protected resource on instance B"
+        ],
+        "expected": [
+          "Instance A login returns HTTP 302 and sets a session cookie",
+          "Instance B rejects the old cookie and redirects to /auth/login (HTTP 302)",
+          "The session signed by key-alpha is not accepted by key-beta"
+        ],
+        "trace": [
+          "R-FLASKR-034"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_changed_secret_key_invalidates_old_session():\n    fd1, path1 = tempfile.mkstemp(); os.close(fd1)\n    app_a = create_app({'TESTING': True, 'DATABASE': path1, 'SECRET_KEY': 'key-alpha'})\n    with app_a.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client_a = app_a.test_client(use_cookies=True)\n    r = client_a.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    cookie_header = r.headers.get('Set-Cookie', '')\n    assert 'session=' in cookie_header\n    session_val = [p.strip() for p in cookie_header.split(';') if p.strip().startswith('session=')][0]\n    session_val = session_val[len('session='):]\n    fd2, path2 = tempfile.mkstemp(); os.close(fd2)\n    app_b = create_app({'TESTING': True, 'DATABASE': path2, 'SECRET_KEY': 'key-beta'})\n    with app_b.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client_b = app_b.test_client(use_cookies=False)\n    client_b.set_cookie('session', session_val)\n    r2 = client_b.get('/create')\n    assert r2.status_code == 302\n    location = r2.headers.get('Location', '')\n    assert '/auth/login' in location\n\ntest_changed_secret_key_invalidates_old_session()"
+      },
+      {
+        "name": "test_secret_key_config_overrides_default_dev_key",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App created with explicit SECRET_KEY in test_config (not the default 'dev')"
+        ],
+        "actions": [
+          "Inspect app.config['SECRET_KEY'] directly",
+          "Verify it equals the value passed in test_config, not the default 'dev'"
+        ],
+        "expected": [
+          "app.config['SECRET_KEY'] == 'my-custom-secret' (not 'dev')",
+          "The override mechanism works correctly per create_app logic"
+        ],
+        "trace": [
+          "R-FLASKR-034"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_secret_key_config_overrides_default_dev_key():\n    fd, path = tempfile.mkstemp(); os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'my-custom-secret'})\n    assert app.config['SECRET_KEY'] == 'my-custom-secret'\n    assert app.config['SECRET_KEY'] != 'dev'\n\ntest_secret_key_config_overrides_default_dev_key()"
+      },
+      {
+        "name": "test_valid_session_cookie_grants_access_to_protected_route",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App created with TESTING=True and SECRET_KEY='secure-test-key'",
+          "User 'Anjali' with password 'cloud' exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with valid credentials to obtain a signed session",
+          "Follow redirect and GET /create (protected route) using the session cookie"
+        ],
+        "expected": [
+          "Login returns HTTP 302",
+          "GET /create returns HTTP 200 (session cookie accepted, user authenticated)"
+        ],
+        "trace": [
+          "R-FLASKR-034"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_valid_session_cookie_grants_access_to_protected_route():\n    fd, path = tempfile.mkstemp(); os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'secure-test-key'})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client(use_cookies=True)\n    r = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\n    assert r.status_code == 302\n    r2 = client.get('/create')\n    assert r2.status_code == 200\n\ntest_valid_session_cookie_grants_access_to_protected_route()"
+      },
+      {
+        "name": "test_no_session_cookie_redirects_to_login",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App created with TESTING=True",
+          "No session cookie is set on the client"
+        ],
+        "actions": [
+          "GET /create without any session cookie"
+        ],
+        "expected": [
+          "HTTP 302 redirect to /auth/login",
+          "Location header contains '/auth/login'"
+        ],
+        "trace": [
+          "R-FLASKR-034"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_no_session_cookie_redirects_to_login():\n    fd, path = tempfile.mkstemp(); os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'secure-test-key'})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client(use_cookies=False)\n    r = client.get('/create')\n    assert r.status_code == 302\n    location = r.headers.get('Location', '')\n    assert location == '/auth/login'\n\ntest_no_session_cookie_redirects_to_login()"
+      },
+      {
+        "name": "test_session_cookie_httponly_flag_set",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App created with TESTING=True and a known SECRET_KEY",
+          "User 'Rahul' with password 'stone' exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with valid credentials",
+          "Inspect the Set-Cookie header for HttpOnly flag"
+        ],
+        "expected": [
+          "HTTP 302 on login",
+          "Set-Cookie header contains 'HttpOnly' flag (Flask default for session cookies)"
+        ],
+        "trace": [
+          "R-FLASKR-034"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_session_cookie_httponly_flag_set():\n    fd, path = tempfile.mkstemp(); os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'boundary-secret'})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    cookie_header = r.headers.get('Set-Cookie', '')\n    assert 'session=' in cookie_header\n    assert 'HttpOnly' in cookie_header\n\ntest_session_cookie_httponly_flag_set()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-034",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8431,
+    "output_tokens": 3427,
+    "latency_ms": 42121,
+    "wall_ms": 42121,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-034\",\n  \"reasoning\": \"R-FLASKR-034 requires that session cookies are signed with the SECRET_KEY from application config. Tests must verify: (1) a valid SECRET_KEY produces a signed session cookie that allows authenticated access (positive/EP), (2) a tampered/forged session cookie is rejected (negative/NEG), (3) changing the SECRET_KEY invalidates previously issued session cookies (boundary/STC), and (4) the default 'dev' key is overridden by test config (DT). Each test inspects exact status codes and cookie properties to kill constant-mutation and boolean-negation mutants.\",\n  \"tests\": [\n    {\n      \"name\": \"test_secret_key_signs_session_cookie_on_login\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App created with TESTING=True and a known SECRET_KEY\",\n        \"User 'Rahul' with password 'stone' exists in the database\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with valid credentials\",\n        \"Inspect the Set-Cookie header for a signed session cookie\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect on successful login\",\n        \"Response sets a 'session' cookie\",\n        \"Cookie value is a Flask-signed token (starts with dot-separated base64 segments)\"\n      ],\n      \"trace\": [\"R-FLASKR-034\"],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_secret_key_signs_session_cookie_on_login():\\n    fd, path = tempfile.mkstemp(); os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'test-secret-xyz'})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302\\n    cookie_header = r.headers.get('Set-Cookie', '')\\n    assert 'session=' in cookie_header\\n    session_val = [p for p in cookie_header.split(';') if p.strip().startswith('session=')][0]\\n    session_val = session_val.strip()[len('session='):]\\n    assert len(session_val) > 0\\n    assert '.' in session_val\\n\\ntest_secret_key_signs_session_cookie_on_login()\"\n    },\n    {\n      \"name\": \"test_tampered_session_cookie_rejected\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App created with TESTING=True and a known SECRET_KEY\",\n        \"A forged/tampered session cookie is crafted manually\"\n      ],\n      \"actions\": [\n        \"Send GET /create with a manually forged session cookie (not signed with the correct key)\",\n        \"Observe that the server does not honour the forged session\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect to /auth/login (login_required rejects unauthenticated request)\",\n        \"The forged cookie does not grant authenticated access\"\n      ],\n      \"trace\": [\"R-FLASKR-034\"],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_tampered_session_cookie_rejected():\\n    fd, path = tempfile.mkstemp(); os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'real-secret-key'})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    forged_cookie = 'eyJ1c2VyX2lkIjoxfQ.ZZZZZZ.ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ'\\n    client.set_cookie('session', forged_cookie)\\n    r = client.get('/create')\\n    assert r.status_code == 302\\n    location = r.headers.get('Location', '')\\n    assert '/auth/login' in location\\n\\ntest_tampered_session_cookie_rejected()\"\n    },\n    {\n      \"name\": \"test_changed_secret_key_invalidates_old_session\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"App instance A created with SECRET_KEY='key-alpha'\",\n        \"User logs in and obtains a session cookie from instance A\",\n        \"App instance B created with SECRET_KEY='key-beta' (different key)\"\n      ],\n      \"actions\": [\n        \"Login with instance"
+  }
+}

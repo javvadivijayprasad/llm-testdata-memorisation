@@ -1,0 +1,216 @@
+{
+  "req": {
+    "id": "R-TASK-012",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Partial update supported",
+    "statement": "The system shall accept a partial payload on PUT /tasks/{task_id} and leave omitted fields unchanged.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "partial update supported"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-012",
+    "reasoning": "R-TASK-012 requires that PUT /tasks/{task_id} accepts a partial payload and leaves omitted fields unchanged. Tests must cover: (1) positive EP \u2014 sending only one field updates that field and preserves others; (2) negative NEG \u2014 sending a partial payload to a non-existent task_id returns 404; (3) boundary BVA \u2014 updating title at its minimum length (1 char) and maximum length (100 chars) boundary; (4) DT \u2014 updating each individual field independently to confirm isolation; (5) STC \u2014 state transition from completed=False to completed=True via partial update. Mutation resilience is achieved by asserting exact status codes (200 not >=200), exact field values for both updated and untouched fields, and boundary \u00b11 for string length constraints.",
+    "tests": [
+      {
+        "name": "test_partial_update_only_title_leaves_other_fields_unchanged",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "A task exists with known title, description, and completed=False"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with title='Original Title', description='Keep this', completed=False",
+          "PUT /tasks/{task_id} with payload {\"title\": \"New Title\"} only"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body has title='New Title'",
+          "Response body has description='Keep this' (unchanged)",
+          "Response body has completed=False (unchanged)",
+          "Response body has id matching created task"
+        ],
+        "trace": [
+          "R-TASK-012: partial payload accepted",
+          "R-TASK-012: omitted fields (description, completed) left unchanged"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r012_pos1.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_partial_update_only_title_leaves_other_fields_unchanged():\n    r = client.post(\"/tasks/\", json={\"title\": \"Original Title\", \"description\": \"Keep this\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n\n    r2 = client.put(f\"/tasks/{task_id}\", json={\"title\": \"New Title\"})\n    assert r2.status_code == 200\n    body = r2.json()\n    assert body[\"id\"] == task_id\n    assert body[\"title\"] == \"New Title\"\n    assert body[\"description\"] == \"Keep this\"\n    assert body[\"completed\"] == False\n"
+      },
+      {
+        "name": "test_partial_update_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "No task with id=99999 exists"
+        ],
+        "actions": [
+          "PUT /tasks/99999 with partial payload {\"title\": \"Ghost\"}"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response detail contains 'not found'"
+        ],
+        "trace": [
+          "R-TASK-012: error pathway \u2014 HTTP 4xx on client error (task not found)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r012_neg1.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_partial_update_nonexistent_task_returns_404():\n    r = client.put(\"/tasks/99999\", json={\"title\": \"Ghost\"})\n    assert r.status_code == 404\n    body = r.json()\n    assert \"not found\" in body[\"detail\"].lower()\n"
+      },
+      {
+        "name": "test_partial_update_title_at_min_boundary_length",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "A task exists with a multi-character title"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with title='Boundary Test'",
+          "PUT /tasks/{task_id} with payload {\"title\": \"A\"} (length=1, minimum allowed)",
+          "Also attempt PUT /tasks/{task_id} with payload {\"title\": \"\"} (length=0, below minimum)"
+        ],
+        "expected": [
+          "PUT with title of length 1 returns HTTP 200 and title='A'",
+          "PUT with title of length 0 returns HTTP 422 (validation error)"
+        ],
+        "trace": [
+          "R-TASK-012: BVA on title min_length=1 boundary",
+          "R-TASK-012: partial payload with invalid title rejected with 4xx"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r012_bva1.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_partial_update_title_at_min_boundary_length():\n    r = client.post(\"/tasks/\", json={\"title\": \"Boundary Test\", \"description\": \"desc\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n\n    r_min = client.put(f\"/tasks/{task_id}\", json={\"title\": \"A\"})\n    assert r_min.status_code == 200\n    assert r_min.json()[\"title\"] == \"A\"\n    assert r_min.json()[\"description\"] == \"desc\"\n    assert r_min.json()[\"completed\"] == False\n\n    r_below = client.put(f\"/tasks/{task_id}\", json={\"title\": \"\"})\n    assert r_below.status_code == 422\n"
+      },
+      {
+        "name": "test_partial_update_title_at_max_boundary_length",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "A task exists"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task",
+          "PUT /tasks/{task_id} with title of exactly 100 characters (max allowed)",
+          "PUT /tasks/{task_id} with title of 101 characters (above max)"
+        ],
+        "expected": [
+          "PUT with 100-char title returns HTTP 200 and title equals the 100-char string",
+          "PUT with 101-char title returns HTTP 422"
+        ],
+        "trace": [
+          "R-TASK-012: BVA on title max_length=100 boundary",
+          "R-TASK-012: partial payload with title exceeding max rejected"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r012_bva2.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_partial_update_title_at_max_boundary_length():\n    r = client.post(\"/tasks/\", json={\"title\": \"Initial\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n\n    title_100 = \"x\" * 100\n    r_max = client.put(f\"/tasks/{task_id}\", json={\"title\": title_100})\n    assert r_max.status_code == 200\n    assert r_max.json()[\"title\"] == title_100\n    assert len(r_max.json()[\"title\"]) == 100\n\n    title_101 = \"x\" * 101\n    r_over = client.put(f\"/tasks/{task_id}\", json={\"title\": title_101})\n    assert r_over.status_code == 422\n"
+      },
+      {
+        "name": "test_partial_update_only_completed_field_transitions_state",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "A task exists with completed=False"
+        ],
+        "actions": [
+          "POST /tasks/ with completed=False",
+          "PUT /tasks/{task_id} with payload {\"completed\": true} only",
+          "GET /tasks/{task_id} to verify persisted state"
+        ],
+        "expected": [
+          "PUT returns HTTP 200",
+          "PUT response has completed=True",
+          "PUT response title and description unchanged",
+          "GET confirms completed=True persisted"
+        ],
+        "trace": [
+          "R-TASK-012: state transition completed False->True via partial update",
+          "R-TASK-012: omitted fields (title, description) unchanged"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r012_stc1.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_partial_update_only_completed_field_transitions_state():\n    r = client.post(\"/tasks/\", json={\"title\": \"State Task\", \"description\": \"Persist me\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n    assert r.json()[\"completed\"] == False\n\n    r2 = client.put(f\"/tasks/{task_id}\", json={\"completed\": True})\n    assert r2.status_code == 200\n    body = r2.json()\n    assert body[\"completed\"] == True\n    assert body[\"title\"] == \"State Task\"\n    assert body[\"description\"] == \"Persist me\"\n    assert body[\"id\"] == task_id\n\n    r3 = client.get(f\"/tasks/{task_id}\")\n    assert r3.status_code == 200\n    assert r3.json()[\"completed\"] == True\n"
+      },
+      {
+        "name": "test_partial_update_each_field_independently_via_decision_table",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "Tasks created fresh for each sub-case"
+        ],
+        "actions": [
+          "Create task, PUT with only description changed",
+          "Create task, PUT with only completed changed to False (already False, idempotent)",
+          "Verify each time that the non-updated fields retain original values"
+        ],
+        "expected": [
+          "Updating only description: HTTP 200, description updated, title and completed unchanged",
+          "Updating completed=False on already-False task: HTTP 200, completed still False, title unchanged"
+        ],
+        "trace": [
+          "R-TASK-012: decision table \u2014 each field updated independently",
+          "R-TASK-012: omitted fields invariant across all partial update combinations"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r012_dt1.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_partial_update_each_field_independently_via_decision_table():\n    r1 = client.post(\"/tasks/\", json={\"title\": \"DT Task\", \"description\": \"Old desc\", \"completed\": False})\n    assert r1.status_code == 201\n    tid1 = r1.json()[\"id\"]\n    r1u = client.put(f\"/tasks/{tid1}\", json={\"description\": \"New desc\"})\n    assert r1u.status_code == 200\n    b1 = r1u.json()\n    assert b1[\"description\"] == \"New desc\"\n    assert b1[\"title\"] == \"DT Task\"\n    assert b1[\"completed\"] == False\n    assert b1[\"id\"] == tid1\n\n    r2 = client.post(\"/tasks/\", json={\"title\": \"DT Task2\", \"description\": \"Stable\", \"completed\": False})\n    assert r2.status_code == 201\n    tid2 = r2.json()[\"id\"]\n    r2u = client.put(f\"/tasks/{tid2}\", json={\"completed\": False})\n    assert r2u.status_code == 200\n    b2 = r2u.json()\n    assert b2[\"completed\"] == False\n    assert b2[\"title\"] == \"DT Task2\"\n    assert b2[\"description\"] == \"Stable\"\n"
+      },
+      {
+        "name": "test_partial_update_empty_payload_leaves_all_fields_unchanged",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "A task exists with known field values"
+        ],
+        "actions": [
+          "POST /tasks/ with title, description, completed",
+          "PUT /tasks/{task_id} with empty JSON payload {}"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "All fields (title, description, completed, id) identical to original"
+        ],
+        "trace": [
+          "R-TASK-012: boundary \u2014 zero fields provided in partial update",
+          "R-TASK-012: omitted fields (all) left unchanged"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r012_bva3.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_partial_update_empty_payload_leaves_all_fields_unchanged():\n    r = client.post(\"/tasks/\", json={\"title\": \"Stable\", \"description\": \"No change\", \"completed\": True})\n    assert r.status_code == 201\n    original = r.json()\n    task_id = original[\"id\"]\n\n    r2 = client.put(f\"/tasks/{task_id}\", json={})\n    assert r2.status_code == 200\n    body = r2.json()\n    assert body[\"id\"] == task_id\n    assert body[\"title\"] == \"Stable\"\n    assert body[\"description\"] == \"No change\"\n    assert body[\"completed\"] == True\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-012",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4862,
+    "output_tokens": 4890,
+    "latency_ms": 56484,
+    "wall_ms": 56484,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-012\",\n  \"reasoning\": \"R-TASK-012 requires that PUT /tasks/{task_id} accepts a partial payload and leaves omitted fields unchanged. Tests must cover: (1) positive EP \u2014 sending only one field updates that field and preserves others; (2) negative NEG \u2014 sending a partial payload to a non-existent task_id returns 404; (3) boundary BVA \u2014 updating title at its minimum length (1 char) and maximum length (100 chars) boundary; (4) DT \u2014 updating each individual field independently to confirm isolation; (5) STC \u2014 state transition from completed=False to completed=True via partial update. Mutation resilience is achieved by asserting exact status codes (200 not >=200), exact field values for both updated and untouched fields, and boundary \u00b11 for string length constraints.\",\n  \"tests\": [\n    {\n      \"name\": \"test_partial_update_only_title_leaves_other_fields_unchanged\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App is running in-process with a fresh SQLite database\",\n        \"A task exists with known title, description, and completed=False\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a task with title='Original Title', description='Keep this', completed=False\",\n        \"PUT /tasks/{task_id} with payload {\\\"title\\\": \\\"New Title\\\"} only\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body has title='New Title'\",\n        \"Response body has description='Keep this' (unchanged)\",\n        \"Response body has completed=False (unchanged)\",\n        \"Response body has id matching created task\"\n      ],\n      \"trace\": [\n        \"R-TASK-012: partial payload accepted\",\n        \"R-TASK-012: omitted fields (description, completed) left unchanged\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nimport sqlalchemy, app.database as _db, app.models as _m\\n\\n_db.SQLALCHEMY_DATABASE_URL = \\\"sqlite:///./test_r012_pos1.db\\\"\\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\\\"check_same_thread\\\": False})\\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\\n_m.Base.metadata.drop_all(bind=_db.engine)\\n_m.Base.metadata.create_all(bind=_db.engine)\\n\\nclient = TestClient(app)\\n\\ndef test_partial_update_only_title_leaves_other_fields_unchanged():\\n    r = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Original Title\\\", \\\"description\\\": \\\"Keep this\\\", \\\"completed\\\": False})\\n    assert r.status_code == 201\\n    task_id = r.json()[\\\"id\\\"]\\n\\n    r2 = client.put(f\\\"/tasks/{task_id}\\\", json={\\\"title\\\": \\\"New Title\\\"})\\n    assert r2.status_code == 200\\n    body = r2.json()\\n    assert body[\\\"id\\\"] == task_id\\n    assert body[\\\"title\\\"] == \\\"New Title\\\"\\n    assert body[\\\"description\\\"] == \\\"Keep this\\\"\\n    assert body[\\\"completed\\\"] == False\\n\"\n    },\n    {\n      \"name\": \"test_partial_update_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is running in-process with a fresh SQLite database\",\n        \"No task with id=99999 exists\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/99999 with partial payload {\\\"title\\\": \\\"Ghost\\\"}\"\n      ],\n      \"expected\": [\n        \"HTTP 404 response\",\n        \"Response detail contains 'not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-012: error pathway \u2014 HTTP 4xx on client error (task not found)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nimport sqlalchemy, app.database as _db, app.models as _m\\n\\n_db.SQLALCHEMY_DATABASE_URL = \\\"sqlite:///./test_r012_neg1.db\\\"\\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\\\"check_same_thread\\\": False})\\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\\n_m.Base.metadata.drop_all(bind=_db.engine)\\n_m.Base.metadata.create_all(bind=_db.engine)\\n\\nclie"
+  }
+}

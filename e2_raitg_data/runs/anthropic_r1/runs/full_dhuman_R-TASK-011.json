@@ -1,0 +1,181 @@
+{
+  "req": {
+    "id": "R-TASK-011",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "error_pathway",
+    "title": "Update unknown returns 404",
+    "statement": "The system shall respond with HTTP 404 when PUT targets a non-existent task id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "update unknown returns 404"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 404"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-011",
+    "reasoning": "R-TASK-011 requires that PUT /tasks/{task_id} returns HTTP 404 when the task_id does not exist. The violation was test[3] having kind='negative' but heuristic='STC'. STC (State Transition Coverage) is a valid heuristic but must be paired with kind='boundary' or 'positive' when the schema enforces that 'negative' kind maps only to NEG or DT heuristics per the rule-based verifier. The fix is to change test[3] heuristic from 'STC' to 'NEG' (since it is testing a negative/error pathway after a state transition, the negative classification is correct and NEG is the appropriate heuristic). All other tests are preserved unchanged.",
+    "tests": [
+      {
+        "name": "test_put_existing_task_returns_200_with_updated_fields",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty",
+          "A task is created via POST /tasks/ before the PUT call"
+        ],
+        "actions": [
+          "POST /tasks/ with title='Original' to obtain a valid task_id",
+          "PUT /tasks/{task_id} with title='Updated'"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body contains id matching created task",
+          "Response body title equals 'Updated'",
+          "Response body completed equals false"
+        ],
+        "trace": [
+          "R-TASK-011: positive path \u2014 existing task must return 200, not 404"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport json\n\nclient = TestClient(app)\ncreate_resp = client.post(\"/tasks/\", json={\"title\": \"Original\", \"completed\": False})\nassert create_resp.status_code == 201\ntask_id = create_resp.json()[\"id\"]\n\nput_resp = client.put(f\"/tasks/{task_id}\", json={\"title\": \"Updated\"})\nassert put_resp.status_code == 200\nbody = put_resp.json()\nassert body[\"id\"] == task_id\nassert body[\"title\"] == \"Updated\"\nassert body[\"completed\"] == False"
+      },
+      {
+        "name": "test_put_nonexistent_task_returns_404_with_detail",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty",
+          "No task with id 99999 exists"
+        ],
+        "actions": [
+          "PUT /tasks/99999 with a valid JSON body"
+        ],
+        "expected": [
+          "HTTP 404 response (not 200, not 400, not 422)",
+          "Response JSON detail contains 'Task with id 99999 not found'"
+        ],
+        "trace": [
+          "R-TASK-011: error pathway \u2014 non-existent task_id must yield exactly 404"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\nresp = client.put(\"/tasks/99999\", json={\"title\": \"Ghost\"})\nassert resp.status_code == 404\nbody = resp.json()\nassert body[\"detail\"] == \"Task with id 99999 not found\""
+      },
+      {
+        "name": "test_put_task_id_zero_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "No task with id 0 exists (auto-increment starts at 1)"
+        ],
+        "actions": [
+          "PUT /tasks/0 with a valid JSON body"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response JSON detail contains 'Task with id 0 not found'"
+        ],
+        "trace": [
+          "R-TASK-011: boundary \u2014 id=0 is below the minimum valid auto-increment id; must return 404"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\nresp = client.put(\"/tasks/0\", json={\"title\": \"Zero\"})\nassert resp.status_code == 404\nbody = resp.json()\nassert body[\"detail\"] == \"Task with id 0 not found\""
+      },
+      {
+        "name": "test_put_deleted_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty",
+          "A task is created then deleted before the PUT call"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task and capture its id",
+          "DELETE /tasks/{task_id} to remove it",
+          "PUT /tasks/{task_id} with a valid JSON body"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response JSON detail contains the correct task id in the message"
+        ],
+        "trace": [
+          "R-TASK-011: negative \u2014 task transitions from existing to deleted; subsequent PUT must return 404"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\ncreate_resp = client.post(\"/tasks/\", json={\"title\": \"ToDelete\", \"completed\": False})\nassert create_resp.status_code == 201\ntask_id = create_resp.json()[\"id\"]\n\ndel_resp = client.delete(f\"/tasks/{task_id}\")\nassert del_resp.status_code == 204\n\nput_resp = client.put(f\"/tasks/{task_id}\", json={\"title\": \"AfterDelete\"})\nassert put_resp.status_code == 404\nbody = put_resp.json()\nassert body[\"detail\"] == f\"Task with id {task_id} not found\""
+      },
+      {
+        "name": "test_put_large_nonexistent_id_returns_404_not_500",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "No task with id 2147483647 exists"
+        ],
+        "actions": [
+          "PUT /tasks/2147483647 with a valid JSON body"
+        ],
+        "expected": [
+          "HTTP 404 response (not 500, not 200)",
+          "Response JSON detail contains 'Task with id 2147483647 not found'"
+        ],
+        "trace": [
+          "R-TASK-011: boundary \u2014 maximum 32-bit integer id; must return 404 cleanly without server error"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\nresp = client.put(\"/tasks/2147483647\", json={\"completed\": True})\nassert resp.status_code == 404\nbody = resp.json()\nassert body[\"detail\"] == \"Task with id 2147483647 not found\""
+      },
+      {
+        "name": "test_put_nonexistent_task_does_not_return_200_or_201",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty",
+          "No task with id 42 exists"
+        ],
+        "actions": [
+          "PUT /tasks/42 with all optional fields populated"
+        ],
+        "expected": [
+          "HTTP status code is exactly 404",
+          "HTTP status code is NOT 200",
+          "HTTP status code is NOT 201",
+          "HTTP status code is NOT 422"
+        ],
+        "trace": [
+          "R-TASK-011: decision table \u2014 all combinations of missing task must map to 404 only"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\nresp = client.put(\"/tasks/42\", json={\"title\": \"NoTask\", \"description\": \"none\", \"completed\": False})\nassert resp.status_code == 404\nassert resp.status_code != 200\nassert resp.status_code != 201\nassert resp.status_code != 422\nbody = resp.json()\nassert \"detail\" in body\nassert body[\"detail\"] == \"Task with id 42 not found\""
+      }
+    ]
+  },
+  "req_id": "R-TASK-011",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4852,
+    "output_tokens": 2569,
+    "latency_ms": 31849,
+    "wall_ms": 31849,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-011\",\n  \"reasoning\": \"R-TASK-011 requires that PUT /tasks/{task_id} returns HTTP 404 when the task_id does not exist. To achieve high mutation kill rate we need: (1) a positive case confirming a real task CAN be updated (200 path), to catch mutations that always return 404; (2) a negative case confirming a non-existent id returns exactly 404 with the correct detail string, catching status-code constant mutations (404->400, 404->200) and string mutations; (3) a boundary case at task_id=0 (invalid/non-existent) and at task_id=999999999 (large non-existent id) to catch off-by-one and comparison mutations. We also assert the exact detail message to kill string-constant mutations. The database is empty before every test, so we create tasks via POST when needed.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_existing_task_returns_200_with_updated_fields\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"A task is created via POST /tasks/ before the PUT call\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title='Original' to obtain a valid task_id\",\n        \"PUT /tasks/{task_id} with title='Updated'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body contains id matching created task\",\n        \"Response body title equals 'Updated'\",\n        \"Response body completed equals false\"\n      ],\n      \"trace\": [\n        \"R-TASK-011: positive path \u2014 existing task must return 200, not 404\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nimport json\\n\\ndef test_put_existing_task_returns_200_with_updated_fields():\\n    client = TestClient(app)\\n    create_resp = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Original\\\", \\\"completed\\\": False})\\n    assert create_resp.status_code == 201\\n    task_id = create_resp.json()[\\\"id\\\"]\\n\\n    put_resp = client.put(f\\\"/tasks/{task_id}\\\", json={\\\"title\\\": \\\"Updated\\\"})\\n    assert put_resp.status_code == 200\\n    body = put_resp.json()\\n    assert body[\\\"id\\\"] == task_id\\n    assert body[\\\"title\\\"] == \\\"Updated\\\"\\n    assert body[\\\"completed\\\"] == False\\n\\ntest_put_existing_task_returns_200_with_updated_fields()\"\n    },\n    {\n      \"name\": \"test_put_nonexistent_task_returns_404_with_detail\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"No task with id 99999 exists\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/99999 with a valid JSON body\"\n      ],\n      \"expected\": [\n        \"HTTP 404 response (not 200, not 400, not 422)\",\n        \"Response JSON detail contains 'Task with id 99999 not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-011: error pathway \u2014 non-existent task_id must yield exactly 404\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_put_nonexistent_task_returns_404_with_detail():\\n    client = TestClient(app)\\n    resp = client.put(\\\"/tasks/99999\\\", json={\\\"title\\\": \\\"Ghost\\\"})\\n    assert resp.status_code == 404\\n    body = resp.json()\\n    assert body[\\\"detail\\\"] == \\\"Task with id 99999 not found\\\"\\n\\ntest_put_nonexistent_task_returns_404_with_detail()\"\n    },\n    {\n      \"name\": \"test_put_task_id_zero_returns_404\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"No task with id 0 exists (auto-increment starts at 1)\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/0 with a valid JSON body\"\n      ],\n      \"expected\": [\n        \"HTTP 404 response\",\n        \"Response JSON detail contains 'Task with id 0 not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-011: boundary \u2014 id=0 is below the minimum valid auto-increment id; must return 404\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_put_task_id_zero_returns_404():\\n    client = TestClient(app)\\n    r"
+  }
+}

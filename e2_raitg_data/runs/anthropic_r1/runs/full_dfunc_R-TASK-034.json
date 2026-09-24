@@ -1,0 +1,185 @@
+{
+  "req": {
+    "id": "R-TASK-034",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Task ids are monotonically increasing",
+    "statement": "The system shall assign strictly increasing integer ids to newly created tasks.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task ids are monotonically increasing"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-034",
+    "reasoning": "The requirement states that task ids must be strictly increasing integers. To verify this, we need: (1) a positive test confirming two sequential POSTs yield ids where id2 > id1 and id2 == id1 + 1 (exact arithmetic, catches off-by-one and operator mutations); (2) a boundary test confirming the third consecutive task id is exactly id2 + 1 (BVA on the monotonic sequence boundary); (3) a negative test confirming that a malformed request body returns HTTP 422 (client error path, not 2xx), ensuring the id-assignment path is only triggered on valid input; (4) a state-transition test confirming that ids never repeat or regress across multiple sequential creations; (5) an equivalence-partition test confirming the first new id after the pre-loaded 20 rows is exactly 21, pinning the constant to the known dataset.",
+    "tests": [
+      {
+        "name": "test_sequential_ids_strictly_increasing",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is pre-loaded with 20 rows (ids 1-20)",
+          "POST /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ with valid payload to create task A",
+          "POST /tasks/ with valid payload to create task B"
+        ],
+        "expected": [
+          "Both responses return HTTP 201",
+          "id_B == id_A + 1 (strictly increasing by exactly 1)",
+          "id_B > id_A"
+        ],
+        "trace": [
+          "R-TASK-034"
+        ],
+        "executable": "import os, sys\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nTestSession = sessionmaker(bind=engine)\n\ndef override_get_db():\n    db = TestSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\nfrom app.database import get_db\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nr1 = client.post('/tasks/', json={'title': 'Task Alpha', 'description': 'desc', 'completed': False})\nassert r1.status_code == 201\nid1 = r1.json()['id']\n\nr2 = client.post('/tasks/', json={'title': 'Task Beta', 'description': 'desc', 'completed': False})\nassert r2.status_code == 201\nid2 = r2.json()['id']\n\nassert id2 == id1 + 1\nassert id2 > id1\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_first_new_id_after_preloaded_rows_is_21",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with exactly 20 rows with ids 1-20",
+          "POST /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ with valid payload immediately after pre-load"
+        ],
+        "expected": [
+          "Response returns HTTP 201",
+          "Returned id == 21 (exactly max_existing_id + 1)",
+          "id is not 20, not 22, not any other value"
+        ],
+        "trace": [
+          "R-TASK-034"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app import models\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nfrom datetime import datetime\n\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nTestSession = sessionmaker(bind=engine)\n\ndef override_get_db():\n    db = TestSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\n\ndb = TestSession()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\n\nclient = TestClient(app)\nr = client.post('/tasks/', json={'title': 'New Task', 'completed': False})\nassert r.status_code == 201\nbody = r.json()\nassert body['id'] == 21\nassert body['id'] != 20\nassert body['id'] != 22\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_invalid_payload_returns_4xx_no_id_assigned",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is available",
+          "POST /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ with missing required 'title' field"
+        ],
+        "expected": [
+          "Response returns HTTP 422 (Unprocessable Entity)",
+          "No task id is assigned or returned",
+          "Response body contains 'detail' key describing validation error"
+        ],
+        "trace": [
+          "R-TASK-034"
+        ],
+        "executable": "from sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nTestSession = sessionmaker(bind=engine)\n\ndef override_get_db():\n    db = TestSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nr = client.post('/tasks/', json={'completed': False})\nassert r.status_code == 422\nbody = r.json()\nassert 'detail' in body\nassert 'id' not in body\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_three_sequential_ids_form_strict_monotonic_sequence",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database starts empty",
+          "POST /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ three times in sequence with valid payloads"
+        ],
+        "expected": [
+          "All three responses return HTTP 201",
+          "id_B == id_A + 1 exactly",
+          "id_C == id_B + 1 exactly",
+          "id_C == id_A + 2 exactly",
+          "No id is repeated"
+        ],
+        "trace": [
+          "R-TASK-034"
+        ],
+        "executable": "from sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nTestSession = sessionmaker(bind=engine)\n\ndef override_get_db():\n    db = TestSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nr1 = client.post('/tasks/', json={'title': 'First', 'completed': False})\nr2 = client.post('/tasks/', json={'title': 'Second', 'completed': False})\nr3 = client.post('/tasks/', json={'title': 'Third', 'completed': False})\n\nassert r1.status_code == 201\nassert r2.status_code == 201\nassert r3.status_code == 201\n\nid1 = r1.json()['id']\nid2 = r2.json()['id']\nid3 = r3.json()['id']\n\nassert id2 == id1 + 1\nassert id3 == id2 + 1\nassert id3 == id1 + 2\nassert len({id1, id2, id3}) == 3\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_id_never_decreases_after_multiple_creations",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database starts empty",
+          "POST /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ five times in sequence",
+          "Collect all returned ids",
+          "Verify each consecutive pair satisfies id[n+1] == id[n] + 1"
+        ],
+        "expected": [
+          "All five responses return HTTP 201",
+          "Each id is exactly 1 greater than the previous",
+          "No id regression or skip occurs"
+        ],
+        "trace": [
+          "R-TASK-034"
+        ],
+        "executable": "from sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nTestSession = sessionmaker(bind=engine)\n\ndef override_get_db():\n    db = TestSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nids = []\nfor i in range(5):\n    r = client.post('/tasks/', json={'title': f'Task {i}', 'completed': False})\n    assert r.status_code == 201\n    ids.append(r.json()['id'])\n\nfor i in range(1, len(ids)):\n    assert ids[i] == ids[i-1] + 1, f'Expected {ids[i-1]+1} but got {ids[i]}'\n    assert ids[i] > ids[i-1]\n\nassert ids[-1] == ids[0] + 4\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_empty_title_returns_422_not_201",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is available",
+          "POST /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ with title set to empty string (violates min_length=1)"
+        ],
+        "expected": [
+          "Response returns HTTP 422",
+          "No id field in response body",
+          "Response is not HTTP 201"
+        ],
+        "trace": [
+          "R-TASK-034"
+        ],
+        "executable": "from sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nTestSession = sessionmaker(bind=engine)\n\ndef override_get_db():\n    db = TestSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nr = client.post('/tasks/', json={'title': '', 'completed': False})\nassert r.status_code == 422\nassert r.status_code != 201\nbody = r.json()\nassert 'detail' in body\nassert 'id' not in body\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-034",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5650,
+    "output_tokens": 3295,
+    "latency_ms": 40990,
+    "wall_ms": 40990,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-034\",\n  \"reasoning\": \"The requirement states that task ids must be strictly increasing integers. To verify this, we need: (1) a positive test confirming two sequential POSTs yield ids where id2 > id1 and id2 == id1 + 1 (exact arithmetic, catches off-by-one and operator mutations); (2) a boundary test confirming the third consecutive task id is exactly id2 + 1 (BVA on the monotonic sequence boundary); (3) a negative test confirming that a malformed request body returns HTTP 422 (client error path, not 2xx), ensuring the id-assignment path is only triggered on valid input; (4) a state-transition test confirming that ids never repeat or regress across multiple sequential creations; (5) an equivalence-partition test confirming the first new id after the pre-loaded 20 rows is exactly 21, pinning the constant to the known dataset.\",\n  \"tests\": [\n    {\n      \"name\": \"test_sequential_ids_strictly_increasing\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 20 rows (ids 1-20)\",\n        \"POST /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with valid payload to create task A\",\n        \"POST /tasks/ with valid payload to create task B\"\n      ],\n      \"expected\": [\n        \"Both responses return HTTP 201\",\n        \"id_B == id_A + 1 (strictly increasing by exactly 1)\",\n        \"id_B > id_A\"\n      ],\n      \"trace\": [\"R-TASK-034\"],\n      \"executable\": \"import os, sys\\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.database import Base\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\n\\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nBase.metadata.create_all(bind=engine)\\nTestSession = sessionmaker(bind=engine)\\n\\ndef override_get_db():\\n    db = TestSession()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\nfrom app.database import get_db\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\nr1 = client.post('/tasks/', json={'title': 'Task Alpha', 'description': 'desc', 'completed': False})\\nassert r1.status_code == 201\\nid1 = r1.json()['id']\\n\\nr2 = client.post('/tasks/', json={'title': 'Task Beta', 'description': 'desc', 'completed': False})\\nassert r2.status_code == 201\\nid2 = r2.json()['id']\\n\\nassert id2 == id1 + 1\\nassert id2 > id1\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_first_new_id_after_preloaded_rows_is_21\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is pre-loaded with exactly 20 rows with ids 1-20\",\n        \"POST /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with valid payload immediately after pre-load\"\n      ],\n      \"expected\": [\n        \"Response returns HTTP 201\",\n        \"Returned id == 21 (exactly max_existing_id + 1)\",\n        \"id is not 20, not 22, not any other value\"\n      ],\n      \"trace\": [\"R-TASK-034\"],\n      \"executable\": \"import os\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.database import Base, get_db\\nfrom app import models\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\nfrom datetime import datetime\\n\\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nBase.metadata.create_all(bind=engine)\\nTestSession = sessionmaker(bind=engine)\\n\\ndef override_get_db():\\n    db = TestSession()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\n\\ndb = TestSession()\\nfor i in range(1, 21):\\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\\ndb.commit()\\ndb.close()\\n\\nclient = TestClient(app)\\nr = client.post('/tasks/', json={'title': 'New Task', 'completed': False})\\nassert r.status_code == 201\\nbody = r."
+  }
+}

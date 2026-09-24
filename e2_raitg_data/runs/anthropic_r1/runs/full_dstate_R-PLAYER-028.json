@@ -1,0 +1,191 @@
+{
+  "req": {
+    "id": "R-PLAYER-028",
+    "domain": "sports_players",
+    "layer": "Integration",
+    "category": "startup",
+    "title": "Create schema on startup",
+    "statement": "The system shall create the players table via SQLAlchemy metadata at application startup if it does not exist.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "create schema on startup"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "lifecycle"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-028",
+    "reasoning": "R-PLAYER-028 requires that the players table is created via SQLAlchemy metadata at application startup if it does not exist. The lifespan handler in main.py logs startup completion; the schema is created by SQLAlchemy Base.metadata. We verify this indirectly through the HTTP lifecycle: if the table exists after startup, the API endpoints that depend on it (GET /players/, POST /players/) must return 2xx. We test: (1) positive \u2014 GET /players/ returns HTTP 200 with the 26 pre-loaded rows, confirming the table exists and is queryable after startup; (2) negative \u2014 a POST with a missing required field returns HTTP 422, confirming the table is present but request validation still fires; (3) boundary \u2014 POST with a new squad number 27 (one above the highest pre-loaded squad number 26) returns HTTP 201, confirming the table accepts writes immediately after startup; (4) STC \u2014 the lifespan context manager completes without error and the app is in a ready state; (5) BVA \u2014 GET /players/ returns exactly 26 rows (not 25, not 27), catching off-by-one mutations in seeding or count logic.",
+    "tests": [
+      {
+        "name": "test_startup_table_exists_get_players_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is imported in-process",
+          "Database is pre-loaded with exactly 26 player rows",
+          "Lifespan startup has completed"
+        ],
+        "actions": [
+          "Instantiate TestClient(app) which triggers the lifespan startup",
+          "Send GET /players/"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response body is a JSON array",
+          "Array contains exactly 26 items"
+        ],
+        "trace": [
+          "R-PLAYER-028: table created at startup \u2192 GET /players/ succeeds with 2xx"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_startup_table_exists_get_players_returns_200():\n    with TestClient(app) as client:\n        r = client.get('/players/')\n    assert r.status_code == 200\n    body = r.json()\n    assert isinstance(body, list)\n    assert len(body) == 26\n"
+      },
+      {
+        "name": "test_startup_table_exists_post_missing_required_field_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is imported in-process",
+          "Database is pre-loaded with exactly 26 player rows",
+          "Lifespan startup has completed"
+        ],
+        "actions": [
+          "Instantiate TestClient(app) which triggers the lifespan startup",
+          "Send POST /players/ with a body missing the required 'firstName' field"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response body contains 'detail' key indicating validation failure"
+        ],
+        "trace": [
+          "R-PLAYER-028: table exists after startup; Pydantic validation fires before DB access, returning 422 on bad input"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_startup_table_exists_post_missing_required_field_returns_422():\n    with TestClient(app) as client:\n        r = client.post('/players/', json={\n            'lastName': 'TestLast',\n            'squadNumber': 99,\n            'position': 'Goalkeeper'\n        })\n    assert r.status_code == 422\n    body = r.json()\n    assert 'detail' in body\n"
+      },
+      {
+        "name": "test_startup_table_accepts_write_at_boundary_squad_number_27",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is imported in-process",
+          "Database is pre-loaded with exactly 26 player rows (squad numbers 1-26)",
+          "Squad number 27 does not exist in the pre-loaded data",
+          "Lifespan startup has completed"
+        ],
+        "actions": [
+          "Instantiate TestClient(app) which triggers the lifespan startup",
+          "Send POST /players/ with squad number 27 (one above the highest pre-loaded squad number 26)"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response body contains the created player with squadNumber == 27",
+          "Response body contains an 'id' field (UUID)"
+        ],
+        "trace": [
+          "R-PLAYER-028: table created at startup is writable; squad number 27 is the boundary above the 26 pre-loaded rows"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_startup_table_accepts_write_at_boundary_squad_number_27():\n    payload = {\n        'firstName': 'Boundary',\n        'lastName': 'Player',\n        'squadNumber': 27,\n        'position': 'Goalkeeper'\n    }\n    with TestClient(app) as client:\n        r = client.post('/players/', json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body['squadNumber'] == 27\n    assert 'id' in body\n    assert body['firstName'] == 'Boundary'\n    assert body['lastName'] == 'Player'\n    assert body['position'] == 'Goalkeeper'\n"
+      },
+      {
+        "name": "test_startup_lifespan_completes_and_app_is_ready",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "FastAPI app is imported in-process",
+          "Lifespan context manager has not yet been entered"
+        ],
+        "actions": [
+          "Enter TestClient context manager (triggers lifespan startup)",
+          "Send GET /players/ to confirm app is in ready state",
+          "Exit TestClient context manager (triggers lifespan shutdown)"
+        ],
+        "expected": [
+          "No exception raised during lifespan startup or shutdown",
+          "GET /players/ returns HTTP 200 inside the lifespan context",
+          "Response body is a list"
+        ],
+        "trace": [
+          "R-PLAYER-028: lifespan handler completes startup without error; app transitions to ready state"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_startup_lifespan_completes_and_app_is_ready():\n    raised = None\n    try:\n        with TestClient(app) as client:\n            r = client.get('/players/')\n            assert r.status_code == 200\n            body = r.json()\n            assert isinstance(body, list)\n    except Exception as exc:\n        raised = exc\n    assert raised is None\n"
+      },
+      {
+        "name": "test_startup_table_row_count_is_exactly_26",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is imported in-process",
+          "Database is pre-loaded with exactly 26 player rows",
+          "Lifespan startup has completed"
+        ],
+        "actions": [
+          "Instantiate TestClient(app) which triggers the lifespan startup",
+          "Send GET /players/ to retrieve all players"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response body length is exactly 26 (not 25, not 27)"
+        ],
+        "trace": [
+          "R-PLAYER-028: table created at startup contains exactly the seeded 26 rows; catches off-by-one mutations in count"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_startup_table_row_count_is_exactly_26():\n    with TestClient(app) as client:\n        r = client.get('/players/')\n    assert r.status_code == 200\n    body = r.json()\n    count = len(body)\n    assert count == 26\n    assert count != 25\n    assert count != 27\n"
+      },
+      {
+        "name": "test_startup_table_exists_duplicate_squad_number_returns_409",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is imported in-process",
+          "Database is pre-loaded with exactly 26 player rows including squad number 1",
+          "Lifespan startup has completed"
+        ],
+        "actions": [
+          "Instantiate TestClient(app) which triggers the lifespan startup",
+          "Send POST /players/ with squad number 1 (already exists in the table)"
+        ],
+        "expected": [
+          "HTTP 409 Conflict",
+          "Response body contains 'detail' with conflict message"
+        ],
+        "trace": [
+          "R-PLAYER-028: table exists after startup and enforces uniqueness constraint; duplicate squad number triggers 409"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_startup_table_exists_duplicate_squad_number_returns_409():\n    payload = {\n        'firstName': 'Duplicate',\n        'lastName': 'Player',\n        'squadNumber': 1,\n        'position': 'Goalkeeper'\n    }\n    with TestClient(app) as client:\n        r = client.post('/players/', json=payload)\n    assert r.status_code == 409\n    body = r.json()\n    assert 'detail' in body\n    assert 'already exists' in body['detail'].lower() or 'squad number' in body['detail'].lower() or body['detail'] != ''\n"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-028",
+  "domain": "sports_players",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11426,
+    "output_tokens": 2599,
+    "latency_ms": 33952,
+    "wall_ms": 33952,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-028\",\n  \"reasoning\": \"R-PLAYER-028 requires that the players table is created via SQLAlchemy metadata at application startup if it does not exist. The lifespan handler in main.py logs startup completion; the schema is created by SQLAlchemy Base.metadata. We verify this indirectly through the HTTP lifecycle: if the table exists after startup, the API endpoints that depend on it (GET /players/, POST /players/) must return 2xx. We test: (1) positive \u2014 GET /players/ returns HTTP 200 with the 26 pre-loaded rows, confirming the table exists and is queryable after startup; (2) negative \u2014 a POST with a missing required field returns HTTP 422, confirming the table is present but request validation still fires; (3) boundary \u2014 POST with a new squad number 27 (one above the highest pre-loaded squad number 26) returns HTTP 201, confirming the table accepts writes immediately after startup; (4) STC \u2014 the lifespan context manager completes without error and the app is in a ready state; (5) BVA \u2014 GET /players/ returns exactly 26 rows (not 25, not 27), catching off-by-one mutations in seeding or count logic.\",\n  \"tests\": [\n    {\n      \"name\": \"test_startup_table_exists_get_players_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is imported in-process\",\n        \"Database is pre-loaded with exactly 26 player rows\",\n        \"Lifespan startup has completed\"\n      ],\n      \"actions\": [\n        \"Instantiate TestClient(app) which triggers the lifespan startup\",\n        \"Send GET /players/\"\n      ],\n      \"expected\": [\n        \"HTTP 200 OK\",\n        \"Response body is a JSON array\",\n        \"Array contains exactly 26 items\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-028: table created at startup \u2192 GET /players/ succeeds with 2xx\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom main import app\\n\\ndef test_startup_table_exists_get_players_returns_200():\\n    with TestClient(app) as client:\\n        r = client.get('/players/')\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert isinstance(body, list)\\n    assert len(body) == 26\\n\"\n    },\n    {\n      \"name\": \"test_startup_table_exists_post_missing_required_field_returns_422\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"FastAPI app is imported in-process\",\n        \"Database is pre-loaded with exactly 26 player rows\",\n        \"Lifespan startup has completed\"\n      ],\n      \"actions\": [\n        \"Instantiate TestClient(app) which triggers the lifespan startup\",\n        \"Send POST /players/ with a body missing the required 'firstName' field\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity\",\n        \"Response body contains 'detail' key indicating validation failure\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-028: table exists after startup; Pydantic validation fires before DB access, returning 422 on bad input\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom main import app\\n\\ndef test_startup_table_exists_post_missing_required_field_returns_422():\\n    with TestClient(app) as client:\\n        r = client.post('/players/', json={\\n            'lastName': 'TestLast',\\n            'squadNumber': 99,\\n            'position': 'Goalkeeper'\\n        })\\n    assert r.status_code == 422\\n    body = r.json()\\n    assert 'detail' in body\\n\"\n    },\n    {\n      \"name\": \"test_startup_table_accepts_write_at_boundary_squad_number_27\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is imported in-process\",\n        \"Database is pre-loaded with exactly 26 player rows (squad numbers 1-26)\",\n        \"Squad number 27 does not exist in the pre-loaded data\",\n        \"Lifespan startup has completed\"\n      ],\n      \"actions\": [\n        \"Instantiate TestClient(app) which triggers the lifespan startup\",\n        \"Send POST /players/ with squad number 27 "
+  }
+}

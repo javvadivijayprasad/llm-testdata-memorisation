@@ -1,0 +1,201 @@
+{
+  "req": {
+    "id": "R-FLASKR-042",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "db_bootstrap",
+    "title": "Init-db closes existing connection",
+    "statement": "The system shall close any open connection before recreating the schema during init-db.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "init-db closes existing connection"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "CLI init-db"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-042",
+    "reasoning": "R-FLASKR-042 requires that init-db closes any open connection before recreating the schema. The key behaviors to test are: (1) positive - init-db runs successfully and the DB is accessible afterward via HTTP (blog index returns 200); (2) negative - after init-db, a previously open connection is no longer the active one (close_db pops 'db' from g, so a new get_db() call returns a fresh connection); (3) boundary - calling init-db twice in sequence (the second call must also close the prior connection and succeed, not leave a dangling connection). We test via the Flask test client and the CLI runner, asserting exact status codes and exact output strings to maximize mutation kill rate. We also directly invoke close_db and get_db within an app context to verify the connection lifecycle.",
+    "tests": [
+      {
+        "name": "test_init_db_positive_blog_index_accessible",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp database path",
+          "init_db() called within an app context to bootstrap schema"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Push app context and call init_db()",
+          "Pop app context (triggers close_db via teardown)",
+          "Use test client to GET / (blog index)"
+        ],
+        "expected": [
+          "GET / returns HTTP 200",
+          "Response body contains b'Flaskr' or is non-empty HTML"
+        ],
+        "trace": [
+          "R-FLASKR-042: init-db closes existing connection before recreating schema",
+          "After init-db completes, the app must serve requests normally"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db, close_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\n\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\nr = client.get('/')\nassert r.status_code == 200\nassert len(r.data) > 0\nos.unlink(path)"
+      },
+      {
+        "name": "test_init_db_negative_close_db_removes_connection_from_g",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp database path",
+          "An open DB connection exists in g before close_db is called"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Push app context and call init_db() to open a connection",
+          "Call get_db() to confirm connection is in g",
+          "Call close_db() explicitly",
+          "Assert that g no longer holds 'db' key"
+        ],
+        "expected": [
+          "After close_db(), g.pop('db', None) returns None (connection was removed)",
+          "A subsequent get_db() call opens a fresh connection (not the closed one)"
+        ],
+        "trace": [
+          "R-FLASKR-042: close_db must pop 'db' from g and call .close() on it",
+          "If close_db does not remove the connection, g still holds the old one"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db, close_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\n\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    init_db()\n    conn1 = get_db()\n    assert 'db' in g\n    close_db()\n    assert g.pop('db', None) is None\n    conn2 = get_db()\n    assert conn2 is not conn1\n    close_db()\n\nos.unlink(path)"
+      },
+      {
+        "name": "test_init_db_boundary_double_invocation_succeeds",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp database path",
+          "init_db() has already been called once (schema exists)"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Call init_db() once within an app context",
+          "Call init_db() a second time within a new app context",
+          "Assert blog index still returns HTTP 200 after second init"
+        ],
+        "expected": [
+          "Second init_db() call does not raise an exception",
+          "GET / returns HTTP 200 after second init-db",
+          "close_db teardown fires after each context without error"
+        ],
+        "trace": [
+          "R-FLASKR-042: boundary - calling init-db twice must close the prior connection each time",
+          "BVA: the boundary is exactly one prior open connection; two sequential calls stress the close path"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\n\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    init_db()\n\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\nr = client.get('/')\nassert r.status_code == 200\nos.unlink(path)"
+      },
+      {
+        "name": "test_init_db_cli_runner_outputs_initialized_message",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp database path",
+          "CLI command init-db registered via init_app"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Invoke 'init-db' via Flask CLI test runner",
+          "Capture exit code and output"
+        ],
+        "expected": [
+          "CLI exit code is exactly 0",
+          "Output contains exactly 'Initialized the database.'"
+        ],
+        "trace": [
+          "R-FLASKR-042: init-db CLI command must complete successfully (exit 0) and emit the expected message",
+          "STC: state transition from uninitialized -> initialized via CLI trigger"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom click.testing import CliRunner\nfrom flaskr.db import init_db_command\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\n\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    runner = CliRunner()\n    result = runner.invoke(init_db_command)\n    assert result.exit_code == 0\n    assert 'Initialized the database.' in result.output\n\nos.unlink(path)"
+      },
+      {
+        "name": "test_init_db_close_db_noop_when_no_connection",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Flask app context is active",
+          "No DB connection has been opened (g does not contain 'db')"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Push app context without calling get_db()",
+          "Call close_db() directly",
+          "Assert no exception is raised and g still has no 'db' key"
+        ],
+        "expected": [
+          "close_db() returns without raising any exception",
+          "g.pop('db', None) returns None (nothing was there to close)"
+        ],
+        "trace": [
+          "R-FLASKR-042: close_db must be safe to call even when no connection is open",
+          "NEG: negative path - close_db with no prior connection must not crash"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import close_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\n\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    assert g.get('db') is None\n    try:\n        close_db()\n        raised = False\n    except Exception:\n        raised = True\n    assert raised == False\n    assert g.pop('db', None) is None\n\nos.unlink(path)"
+      },
+      {
+        "name": "test_init_db_teardown_closes_connection_after_request",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp database path",
+          "init_db() called to bootstrap schema",
+          "A request is made that opens a DB connection"
+        ],
+        "actions": [
+          "Create app with temp DB and call init_db()",
+          "Make a GET / request via test client (opens DB connection in g)",
+          "Make a second GET / request immediately after",
+          "Assert both responses return HTTP 200 (teardown closed prior connection cleanly)"
+        ],
+        "expected": [
+          "First GET / returns HTTP 200",
+          "Second GET / returns HTTP 200",
+          "No exception raised between requests (teardown closed connection properly)"
+        ],
+        "trace": [
+          "R-FLASKR-042: teardown_appcontext(close_db) must close the connection after each request",
+          "STC: state transitions request1-open -> request1-close -> request2-open -> request2-close"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\n\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\nr1 = client.get('/')\nassert r1.status_code == 200\n\nr2 = client.get('/')\nassert r2.status_code == 200\n\nos.unlink(path)"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-042",
+  "domain": "blogging",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6318,
+    "output_tokens": 2802,
+    "latency_ms": 39437,
+    "wall_ms": 39437,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-042\",\n  \"reasoning\": \"R-FLASKR-042 requires that init-db closes any open connection before recreating the schema. The key behaviors to test are: (1) positive - init-db runs successfully and the DB is accessible afterward via HTTP (blog index returns 200); (2) negative - after init-db, a previously open connection is no longer the active one (close_db pops 'db' from g, so a new get_db() call returns a fresh connection); (3) boundary - calling init-db twice in sequence (the second call must also close the prior connection and succeed, not leave a dangling connection). We test via the Flask test client and the CLI runner, asserting exact status codes and exact output strings to maximize mutation kill rate. We also directly invoke close_db and get_db within an app context to verify the connection lifecycle.\",\n  \"tests\": [\n    {\n      \"name\": \"test_init_db_positive_blog_index_accessible\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp database path\",\n        \"init_db() called within an app context to bootstrap schema\"\n      ],\n      \"actions\": [\n        \"Create app with temp DB\",\n        \"Push app context and call init_db()\",\n        \"Pop app context (triggers close_db via teardown)\",\n        \"Use test client to GET / (blog index)\"\n      ],\n      \"expected\": [\n        \"GET / returns HTTP 200\",\n        \"Response body contains b'Flaskr' or is non-empty HTML\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-042: init-db closes existing connection before recreating schema\",\n        \"After init-db completes, the app must serve requests normally\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db, get_db, close_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\n\\napp = create_app({'TESTING': True, 'DATABASE': path})\\n\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\nr = client.get('/')\\nassert r.status_code == 200\\nassert len(r.data) > 0\\nos.unlink(path)\"\n    },\n    {\n      \"name\": \"test_init_db_negative_close_db_removes_connection_from_g\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp database path\",\n        \"An open DB connection exists in g before close_db is called\"\n      ],\n      \"actions\": [\n        \"Create app with temp DB\",\n        \"Push app context and call init_db() to open a connection\",\n        \"Call get_db() to confirm connection is in g\",\n        \"Call close_db() explicitly\",\n        \"Assert that g no longer holds 'db' key\"\n      ],\n      \"expected\": [\n        \"After close_db(), g.pop('db', None) returns None (connection was removed)\",\n        \"A subsequent get_db() call opens a fresh connection (not the closed one)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-042: close_db must pop 'db' from g and call .close() on it\",\n        \"If close_db does not remove the connection, g still holds the old one\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flask import g\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db, get_db, close_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\n\\napp = create_app({'TESTING': True, 'DATABASE': path})\\n\\nwith app.app_context():\\n    init_db()\\n    conn1 = get_db()\\n    assert 'db' in g\\n    close_db()\\n    assert g.pop('db', None) is None\\n    conn2 = get_db()\\n    assert conn2 is not conn1\\n    close_db()\\n\\nos.unlink(path)\"\n    },\n    {\n      \"name\": \"test_init_db_boundary_double_invocation_succeeds\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp database path\",\n        \"init_db() has already been called once (schema exists)\"\n      ],\n      \"actions\": [\n        \"Create app with temp DB\",\n        \"Call init_db() once within an app context\",\n        \"Call init_db() a second t"
+  }
+}

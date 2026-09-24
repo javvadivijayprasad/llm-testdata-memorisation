@@ -1,0 +1,194 @@
+{
+  "req": {
+    "id": "R-FLASKR-024",
+    "domain": "blogging",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Posts include author username",
+    "statement": "The system shall join post rows with users so index/detail responses include the author's username.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "posts include author username"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-024",
+    "reasoning": "The requirement mandates that GET / joins post rows with users and includes the author's username in the response. Tests must verify: (1) positive \u2014 the index page returns HTTP 200 and contains known author usernames from the pre-loaded data; (2) negative \u2014 the response does NOT contain a fabricated/non-existent username, confirming the join is selective; (3) boundary \u2014 the most-recent post (id=20, author_id=1, username='Rahul') appears first in the response, verifying ORDER BY created DESC and correct join for the boundary row. Additional tests cover multiple distinct authors appearing, and that the join is not a cross-join (post count integrity).",
+    "tests": [
+      {
+        "name": "test_index_returns_200_with_author_usernames",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database pre-loaded with 5 users and 20 posts",
+          "Posts are joined with users via author_id = user.id"
+        ],
+        "actions": [
+          "Create Flask test app with temp database initialised via init_db",
+          "GET /"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body contains 'Rahul' (author of posts 2,3,6,8,9,10,11,12,15,18,19,20)",
+          "Response body contains 'Anjali' (author of posts 7,13,14)",
+          "Response body contains 'James' (author of posts 1,4,5,16)"
+        ],
+        "trace": [
+          "R-FLASKR-024: index response includes author username via JOIN"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\ndef test_index_returns_200_with_author_usernames():\n    r = client.get('/')\n    assert r.status_code == 200\n    assert b'Rahul' in r.data\n    assert b'Anjali' in r.data\n    assert b'James' in r.data\n\ntest_index_returns_200_with_author_usernames()"
+      },
+      {
+        "name": "test_index_does_not_contain_fabricated_username",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database pre-loaded with 5 users (Rahul, Anjali, Ishaan, Diya, James)",
+          "No user named 'NonExistentUser' exists"
+        ],
+        "actions": [
+          "Create Flask test app with temp database initialised via init_db",
+          "GET /"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body does NOT contain 'NonExistentUser'",
+          "Response body does NOT contain 'author_id' as a raw column label (join is resolved)"
+        ],
+        "trace": [
+          "R-FLASKR-024: join must not produce phantom usernames; negative path confirms selectivity"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\ndef test_index_does_not_contain_fabricated_username():\n    r = client.get('/')\n    assert r.status_code == 200\n    assert b'NonExistentUser' not in r.data\n    assert b'GhostAuthor' not in r.data\n\ntest_index_does_not_contain_fabricated_username()"
+      },
+      {
+        "name": "test_index_most_recent_post_appears_with_correct_author",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database pre-loaded; post id=20 created='2025-04-01 10:30:37' is the most recent",
+          "Post id=20 has author_id=1 (Rahul), title='Heacon signal pulse'"
+        ],
+        "actions": [
+          "Create Flask test app with temp database initialised via init_db",
+          "GET /"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body contains 'Heacon signal pulse' (title of most-recent post)",
+          "Response body contains 'Rahul' (author of most-recent post)",
+          "Title 'Heacon signal pulse' appears before older post titles in raw HTML bytes"
+        ],
+        "trace": [
+          "R-FLASKR-024: boundary \u2014 most-recent post (ORDER BY created DESC) must carry correct joined username"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\ndef test_index_most_recent_post_appears_with_correct_author():\n    r = client.get('/')\n    assert r.status_code == 200\n    data = r.data\n    assert b'Heacon signal pulse' in data\n    assert b'Rahul' in data\n    idx_recent = data.find(b'Heacon signal pulse')\n    idx_older = data.find(b'Pillow delta willow')\n    assert idx_recent != -1\n    assert idx_older != -1\n    assert idx_recent < idx_older\n\ntest_index_most_recent_post_appears_with_correct_author()"
+      },
+      {
+        "name": "test_index_all_five_authors_present_when_they_have_posts",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database pre-loaded; users Rahul(1), Anjali(2), Ishaan(3), Diya(4), James(5)",
+          "Diya(4) has no posts; Ishaan(3) has post id=17; others have posts"
+        ],
+        "actions": [
+          "Create Flask test app with temp database initialised via init_db",
+          "GET /"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response contains 'Rahul' (has posts)",
+          "Response contains 'Anjali' (has posts)",
+          "Response contains 'Ishaan' (has post id=17)",
+          "Response contains 'James' (has posts)",
+          "Response does NOT contain 'Diya' (has no posts \u2014 inner join excludes her)"
+        ],
+        "trace": [
+          "R-FLASKR-024: decision table \u2014 JOIN only surfaces authors who have posts; Diya absent confirms INNER JOIN semantics"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\ndef test_index_all_five_authors_present_when_they_have_posts():\n    r = client.get('/')\n    assert r.status_code == 200\n    data = r.data\n    assert b'Rahul' in data\n    assert b'Anjali' in data\n    assert b'Ishaan' in data\n    assert b'James' in data\n    assert b'Diya' not in data\n\ntest_index_all_five_authors_present_when_they_have_posts()"
+      },
+      {
+        "name": "test_index_username_co_located_with_post_title_in_response",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database pre-loaded; post id=7 author_id=2 (Anjali) title='Zulse signal prism'",
+          "post id=17 author_id=3 (Ishaan) title='Pertex vertex vertex'"
+        ],
+        "actions": [
+          "Create Flask test app with temp database initialised via init_db",
+          "GET /"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Both 'Zulse signal prism' and 'Anjali' appear in response",
+          "Both 'Pertex vertex vertex' and 'Ishaan' appear in response",
+          "Exact status code 200 (not 201, not 302)"
+        ],
+        "trace": [
+          "R-FLASKR-024: EP \u2014 multiple author/post pairs confirm join correctness across different users"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\ndef test_index_username_co_located_with_post_title_in_response():\n    r = client.get('/')\n    assert r.status_code == 200\n    data = r.data\n    assert b'Zulse signal prism' in data\n    assert b'Anjali' in data\n    assert b'Pertex vertex vertex' in data\n    assert b'Ishaan' in data\n    assert r.status_code != 201\n    assert r.status_code != 302\n\ntest_index_username_co_located_with_post_title_in_response()"
+      },
+      {
+        "name": "test_index_post_count_matches_expected_joined_rows",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database pre-loaded with exactly 20 posts all having valid author_id FK",
+          "All 20 posts should appear (no orphan posts)"
+        ],
+        "actions": [
+          "Create Flask test app with temp database initialised via init_db",
+          "GET /",
+          "Count occurrences of a post-specific marker in the HTML"
+        ],
+        "expected": [
+          "HTTP 200",
+          "All 20 post titles are present in the response (join does not drop rows)",
+          "Oldest post title 'Sarbor beacon cascade' (id=8, 2024-11-03) is present"
+        ],
+        "trace": [
+          "R-FLASKR-024: BVA boundary \u2014 all 20 rows must survive the JOIN; boundary at row count 20 vs 19 vs 21"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\nEXPECTED_TITLES = [\n    b'Pulse ember signal', b'Pillow delta willow', b'Bmber matrix orbit',\n    b'Nlpha quartz delta', b'Cenith flux prism', b'Srism vector cascade',\n    b'Zulse signal prism', b'Sarbor beacon cascade', b'Aatrix meridian flux',\n    b'Elux matrix prism', b'Melta quartz summit', b'Melta beacon willow',\n    b'Zeacon signal prism', b'Oova alpha orbit', b'Prism nova ember',\n    b'Benith ember vertex', b'Pertex vertex vertex', b'Eatrix cascade meridian',\n    b'Eignal flux ember', b'Heacon signal pulse',\n]\n\ndef test_index_post_count_matches_expected_joined_rows():\n    r = client.get('/')\n    assert r.status_code == 200\n    data = r.data\n    for title in EXPECTED_TITLES:\n        assert title in data, f'Missing title: {title}'\n\ntest_index_post_count_matches_expected_joined_rows()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-024",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8446,
+    "output_tokens": 3412,
+    "latency_ms": 47661,
+    "wall_ms": 47661,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-024\",\n  \"reasoning\": \"The requirement mandates that GET / joins post rows with users and includes the author's username in the response. Tests must verify: (1) positive \u2014 the index page returns HTTP 200 and contains known author usernames from the pre-loaded data; (2) negative \u2014 the response does NOT contain a fabricated/non-existent username, confirming the join is selective; (3) boundary \u2014 the most-recent post (id=20, author_id=1, username='Rahul') appears first in the response, verifying ORDER BY created DESC and correct join for the boundary row. Additional tests cover multiple distinct authors appearing, and that the join is not a cross-join (post count integrity).\",\n  \"tests\": [\n    {\n      \"name\": \"test_index_returns_200_with_author_usernames\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database pre-loaded with 5 users and 20 posts\",\n        \"Posts are joined with users via author_id = user.id\"\n      ],\n      \"actions\": [\n        \"Create Flask test app with temp database initialised via init_db\",\n        \"GET /\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body contains 'Rahul' (author of posts 2,3,6,8,9,10,11,12,15,18,19,20)\",\n        \"Response body contains 'Anjali' (author of posts 7,13,14)\",\n        \"Response body contains 'James' (author of posts 1,4,5,16)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-024: index response includes author username via JOIN\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\nclient = app.test_client()\\n\\ndef test_index_returns_200_with_author_usernames():\\n    r = client.get('/')\\n    assert r.status_code == 200\\n    assert b'Rahul' in r.data\\n    assert b'Anjali' in r.data\\n    assert b'James' in r.data\\n\\ntest_index_returns_200_with_author_usernames()\"\n    },\n    {\n      \"name\": \"test_index_does_not_contain_fabricated_username\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database pre-loaded with 5 users (Rahul, Anjali, Ishaan, Diya, James)\",\n        \"No user named 'NonExistentUser' exists\"\n      ],\n      \"actions\": [\n        \"Create Flask test app with temp database initialised via init_db\",\n        \"GET /\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body does NOT contain 'NonExistentUser'\",\n        \"Response body does NOT contain 'author_id' as a raw column label (join is resolved)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-024: join must not produce phantom usernames; negative path confirms selectivity\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\nclient = app.test_client()\\n\\ndef test_index_does_not_contain_fabricated_username():\\n    r = client.get('/')\\n    assert r.status_code == 200\\n    assert b'NonExistentUser' not in r.data\\n    assert b'GhostAuthor' not in r.data\\n\\ntest_index_does_not_contain_fabricated_username()\"\n    },\n    {\n      \"name\": \"test_index_most_recent_post_appears_with_correct_author\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database pre-loaded; post id=20 created='2025-04-01 10:30:37' is the most recent\",\n        \"Post id=20 has author_id=1 (Rahul), title='Heacon signal pulse'\"\n      ],\n      \"actions\": [\n        \"Create Flask test app with temp database initialised via init_db\",\n        \"GET /\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body contains 'Heacon signal pulse' (title of most-recent post)\",\n        \"Response body contains 'Rahul' (author of most-recent post)\",\n        \"T"
+  }
+}

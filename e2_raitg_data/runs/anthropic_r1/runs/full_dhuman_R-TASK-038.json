@@ -1,0 +1,125 @@
+{
+  "req": {
+    "id": "R-TASK-038",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "validation",
+    "title": "Task update rejects id changes",
+    "statement": "The system shall ignore any id field in the PUT body and only mutate the task addressed by the URL.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task update rejects id changes"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-038",
+    "reasoning": "R-TASK-038 requires that PUT /tasks/{id} ignores any 'id' field in the request body and only mutates the task addressed by the URL path parameter. Three test cases are designed: (1) Positive/EP: send a PUT body containing a different 'id' value alongside valid fields; verify the response returns HTTP 200, the URL-addressed task's id is unchanged, and the mutable fields are updated. (2) Negative/NEG: send a PUT body with an 'id' that matches a non-existent task while the URL points to an existing task; verify the existing task is updated (id not used for lookup) and the response id equals the URL id. (3) Boundary/BVA: send a PUT body where the embedded 'id' is 0 (boundary below valid ids) while the URL addresses task id=1; verify the response id equals 1, not 0, confirming the body id is ignored at the boundary. All tests use in-process FastAPI TestClient with SQLite in-memory override to remain deterministic and idempotent.",
+    "tests": [
+      {
+        "name": "test_put_ignores_body_id_updates_url_task",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "A task exists in the database (created via POST /tasks/)",
+          "The PUT body contains an 'id' field with a different value than the URL task_id"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task and capture its id",
+          "PUT /tasks/{id} with a JSON body containing a different 'id' value and a new title"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON 'id' equals the URL task_id, not the body 'id'",
+          "Response JSON 'title' reflects the updated value"
+        ],
+        "trace": [
+          "R-TASK-038: system shall ignore id field in PUT body",
+          "R-TASK-038: only mutate the task addressed by the URL"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_test = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_test)\nBase.metadata.create_all(bind=engine_test)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_put_ignores_body_id_updates_url_task():\n    r_create = client.post(\"/tasks/\", json={\"title\": \"Original\", \"completed\": False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()[\"id\"]\n    fake_body_id = task_id + 999\n    r_put = client.put(f\"/tasks/{task_id}\", json={\"id\": fake_body_id, \"title\": \"Updated\"})\n    assert r_put.status_code == 200\n    data = r_put.json()\n    assert data[\"id\"] == task_id\n    assert data[\"id\"] != fake_body_id\n    assert data[\"title\"] == \"Updated\"\n\ntest_put_ignores_body_id_updates_url_task()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_put_body_id_pointing_to_nonexistent_task_still_updates_url_task",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "A task exists in the database (created via POST /tasks/)",
+          "The PUT body contains an 'id' field referencing a task that does not exist"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task and capture its id",
+          "PUT /tasks/{id} with a JSON body containing 'id' set to a non-existent task id and a new title"
+        ],
+        "expected": [
+          "HTTP 200 response (not 404)",
+          "Response JSON 'id' equals the URL task_id",
+          "The body 'id' (non-existent) is not used for lookup",
+          "Response JSON 'title' reflects the updated value"
+        ],
+        "trace": [
+          "R-TASK-038: system shall ignore id field in PUT body",
+          "Error pathway: HTTP 4xx on client error \u2014 but here the URL task exists so 200 is expected"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_test2 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal2 = sessionmaker(autocommit=False, autoflush=False, bind=engine_test2)\nBase.metadata.create_all(bind=engine_test2)\n\ndef override_get_db2():\n    db = TestingSessionLocal2()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db2\nclient2 = TestClient(app)\n\ndef test_put_body_id_pointing_to_nonexistent_task_still_updates_url_task():\n    r_create = client2.post(\"/tasks/\", json={\"title\": \"RealTask\", \"completed\": False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()[\"id\"]\n    nonexistent_id = task_id + 5000\n    r_put = client2.put(f\"/tasks/{task_id}\", json={\"id\": nonexistent_id, \"title\": \"StillUpdated\"})\n    assert r_put.status_code == 200\n    data = r_put.json()\n    assert data[\"id\"] == task_id\n    assert data[\"id\"] != nonexistent_id\n    assert data[\"title\"] == \"StillUpdated\"\n\ntest_put_body_id_pointing_to_nonexistent_task_still_updates_url_task()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_put_body_id_zero_boundary_ignored_url_task_updated",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "A task exists in the database (created via POST /tasks/)",
+          "The PUT body contains 'id' set to 0 (boundary below minimum valid id)"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task and capture its id (expected to be >= 1)",
+          "PUT /tasks/{id} with JSON body containing 'id': 0 and a new title"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON 'id' equals the URL task_id (>= 1), not 0",
+          "Response JSON 'title' reflects the updated value",
+          "Body 'id' value of 0 is completely ignored"
+        ],
+        "trace": [
+          "R-TASK-038: system shall ignore id field in PUT body",
+          "BVA: id=0 is the boundary below valid auto-increment ids (which start at 1)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_test3 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal3 = sessionmaker(autocommit=False, autoflush=False, bind=engine_test3)\nBase.metadata.create_all(bind=engine_test3)\n\ndef override_get_db3():\n    db = TestingSessionLocal3()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db3\nclient3 = TestClient(app)\n\ndef test_put_body_id_zero_boundary_ignored_url_task_updated():\n    r_create = client3.post(\"/tasks/\", json={\"title\": \"BoundaryTask\", \"completed\": False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()[\"id\"]\n    assert task_id >= 1\n    r_put = client3.put(f\"/tasks/{task_id}\", json={\"id\": 0, \"title\": \"BoundaryUpdated\"})\n    assert r_put.status_code == 200\n    data = r_put.json()\n    assert data[\"id\"] == task_id\n    assert data[\"id\"] != 0\n    assert data[\"title\"] == \"BoundaryUpdated\"\n    r_get = client3.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 200\n    assert r_get.json()[\"id\"] == task_id\n\ntest_put_body_id_zero_boundary_ignored_url_task_updated()\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-038",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4853,
+    "output_tokens": 2574,
+    "latency_ms": 31233,
+    "wall_ms": 31233,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-038\",\n  \"reasoning\": \"R-TASK-038 requires that PUT /tasks/{id} ignores any 'id' field in the request body and only mutates the task addressed by the URL path parameter. Three test cases are designed: (1) Positive/EP: send a PUT body containing a different 'id' value alongside valid fields; verify the response returns HTTP 200, the URL-addressed task's id is unchanged, and the mutable fields are updated. (2) Negative/NEG: send a PUT body with an 'id' that matches a non-existent task while the URL points to an existing task; verify the existing task is updated (id not used for lookup) and the response id equals the URL id. (3) Boundary/BVA: send a PUT body where the embedded 'id' is 0 (boundary below valid ids) while the URL addresses task id=1; verify the response id equals 1, not 0, confirming the body id is ignored at the boundary. All tests use in-process FastAPI TestClient with SQLite in-memory override to remain deterministic and idempotent.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_ignores_body_id_updates_url_task\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"A task exists in the database (created via POST /tasks/)\",\n        \"The PUT body contains an 'id' field with a different value than the URL task_id\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a task and capture its id\",\n        \"PUT /tasks/{id} with a JSON body containing a different 'id' value and a new title\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response JSON 'id' equals the URL task_id, not the body 'id'\",\n        \"Response JSON 'title' reflects the updated value\"\n      ],\n      \"trace\": [\n        \"R-TASK-038: system shall ignore id field in PUT body\",\n        \"R-TASK-038: only mutate the task addressed by the URL\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\n\\nengine_test = create_engine(\\\"sqlite:///:memory:\\\", connect_args={\\\"check_same_thread\\\": False})\\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_test)\\nBase.metadata.create_all(bind=engine_test)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_put_ignores_body_id_updates_url_task():\\n    r_create = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Original\\\", \\\"completed\\\": False})\\n    assert r_create.status_code == 201\\n    task_id = r_create.json()[\\\"id\\\"]\\n    fake_body_id = task_id + 999\\n    r_put = client.put(f\\\"/tasks/{task_id}\\\", json={\\\"id\\\": fake_body_id, \\\"title\\\": \\\"Updated\\\"})\\n    assert r_put.status_code == 200\\n    data = r_put.json()\\n    assert data[\\\"id\\\"] == task_id\\n    assert data[\\\"id\\\"] != fake_body_id\\n    assert data[\\\"title\\\"] == \\\"Updated\\\"\\n\\ntest_put_ignores_body_id_updates_url_task()\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_put_body_id_pointing_to_nonexistent_task_still_updates_url_task\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"A task exists in the database (created via POST /tasks/)\",\n        \"The PUT body contains an 'id' field referencing a task that does not exist\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a task and capture its id\",\n        \"PUT /tasks/{id} with a JSON body containing 'id' set to a non-existent task id and a new title\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response (not 404)\",\n        \"Response JSON 'id' equals the URL task_id\",\n        \"The body 'id' (non-existent) is not used for lookup\",\n        \"Response JSON 'title' reflects the updated value\"\n      ],\n      \"trace\": [\n        \"R-TASK-038: system shall ignore id field in PUT body\",\n        \"Error pathway: HTTP 4xx on "
+  }
+}

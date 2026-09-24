@@ -1,0 +1,145 @@
+{
+  "req": {
+    "id": "R-FLASKR-037",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Index renders even with zero posts",
+    "statement": "The system shall render the index page with 'No posts' or empty state when the post table is empty.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "index renders even with zero posts"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-037",
+    "reasoning": "R-FLASKR-037 requires the index page (GET /) to render successfully with HTTP 2xx even when the post table is empty. Three test cases are designed: (1) positive \u2014 empty DB, verify HTTP 200 and that the response body does not contain any post content from the pre-loaded fixture, confirming empty-state rendering; (2) negative \u2014 verify that when posts DO exist (pre-loaded fixture), the response still returns 200 but contains post data, confirming the empty-state path is distinct from the populated path (NEG: wrong branch); (3) boundary \u2014 the transition from zero posts to one post and back to zero, verifying the exact status code 200 at the zero-post boundary (BVA). All tests use exact status code assertions and content checks to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_index_empty_db_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is initialised with schema but NO rows in the post table",
+          "No user is logged in"
+        ],
+        "actions": [
+          "Create a fresh app with an empty temporary database (init_db called, no posts inserted)",
+          "Send GET / via test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body does not contain 'test title' (the pre-loaded post title)",
+          "Response body is non-empty (page rendered)"
+        ],
+        "trace": [
+          "R-FLASKR-037: index renders even with zero posts -> HTTP 2xx response"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_index_empty_db_returns_200():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n        client = app.test_client()\n        r = client.get('/')\n        assert r.status_code == 200\n        assert b'test title' not in r.data\n        assert len(r.data) > 0\n    finally:\n        os.unlink(path)\n\ntest_index_empty_db_returns_200()"
+      },
+      {
+        "name": "test_index_with_posts_returns_200_and_post_content",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is initialised with the pre-loaded fixture (1 post: 'test title')",
+          "No user is logged in"
+        ],
+        "actions": [
+          "Create app pointing at pre-loaded fixture database",
+          "Send GET / via test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body contains 'test title' (the pre-loaded post)",
+          "Response body contains 'test\\nbody' content"
+        ],
+        "trace": [
+          "R-FLASKR-037: distinguishes empty-state from populated-state; NEG path confirms populated DB renders differently"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\nfrom werkzeug.security import generate_password_hash\n\ndef test_index_with_posts_returns_200_and_post_content():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n            db = get_db()\n            db.execute(\n                'INSERT INTO user (username, password) VALUES (?, ?)',\n                ('test', generate_password_hash('test'))\n            )\n            db.execute(\n                \"INSERT INTO post (title, body, author_id, created) VALUES (?, ?, ?, ?)\",\n                ('test title', 'test\\nbody', 1, '2018-01-01 00:00:00')\n            )\n            db.commit()\n        client = app.test_client()\n        r = client.get('/')\n        assert r.status_code == 200\n        assert b'test title' in r.data\n    finally:\n        os.unlink(path)\n\ntest_index_with_posts_returns_200_and_post_content()"
+      },
+      {
+        "name": "test_index_boundary_zero_posts_exact_status",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database schema initialised, post table has exactly 0 rows (boundary minimum)",
+          "No user is logged in"
+        ],
+        "actions": [
+          "Create app with empty DB (0 posts \u2014 boundary value)",
+          "Send GET / and assert status is exactly 200 (not 201, not 199, not 404)",
+          "Verify response data length > 0 (page rendered, not empty body)",
+          "Verify 'test title' absent (no posts leaked into empty-state render)"
+        ],
+        "expected": [
+          "HTTP status code == 200 exactly",
+          "Response body length > 0",
+          "b'test title' not in response body"
+        ],
+        "trace": [
+          "R-FLASKR-037: boundary at zero posts; BVA catches off-by-one on post count check and status code mutations (200->201, 200->404)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\ndef test_index_boundary_zero_posts_exact_status():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n            db = get_db()\n            count = db.execute('SELECT COUNT(*) FROM post').fetchone()[0]\n            assert count == 0\n        client = app.test_client()\n        r = client.get('/')\n        assert r.status_code == 200\n        assert r.status_code != 404\n        assert r.status_code != 500\n        assert len(r.data) > 0\n        assert b'test title' not in r.data\n    finally:\n        os.unlink(path)\n\ntest_index_boundary_zero_posts_exact_status()"
+      },
+      {
+        "name": "test_index_transition_post_deleted_returns_200",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database initialised with one post",
+          "Post is then deleted, leaving zero posts"
+        ],
+        "actions": [
+          "Create app, init DB, insert one post",
+          "Verify GET / returns 200 with post content",
+          "Delete the post from DB directly",
+          "Verify GET / still returns 200 and post content is gone"
+        ],
+        "expected": [
+          "First GET /: status 200, b'test title' in response",
+          "After deletion GET /: status 200, b'test title' NOT in response"
+        ],
+        "trace": [
+          "R-FLASKR-037: state transition from 1-post to 0-post; STC catches mutations that break empty-state branch"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\nfrom werkzeug.security import generate_password_hash\n\ndef test_index_transition_post_deleted_returns_200():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n            db = get_db()\n            db.execute('INSERT INTO user (username, password) VALUES (?, ?)',\n                       ('test', generate_password_hash('test')))\n            db.execute(\"INSERT INTO post (title, body, author_id, created) VALUES (?, ?, ?, ?)\",\n                       ('test title', 'test\\nbody', 1, '2018-01-01 00:00:00'))\n            db.commit()\n        client = app.test_client()\n        r1 = client.get('/')\n        assert r1.status_code == 200\n        assert b'test title' in r1.data\n        with app.app_context():\n            db = get_db()\n            db.execute('DELETE FROM post WHERE title = ?', ('test title',))\n            db.commit()\n            count = db.execute('SELECT COUNT(*) FROM post').fetchone()[0]\n            assert count == 0\n        r2 = client.get('/')\n        assert r2.status_code == 200\n        assert b'test title' not in r2.data\n        assert len(r2.data) > 0\n    finally:\n        os.unlink(path)\n\ntest_index_transition_post_deleted_returns_200()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-037",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5451,
+    "output_tokens": 2471,
+    "latency_ms": 32897,
+    "wall_ms": 32897,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-037\",\n  \"reasoning\": \"R-FLASKR-037 requires the index page (GET /) to render successfully with HTTP 2xx even when the post table is empty. Three test cases are designed: (1) positive \u2014 empty DB, verify HTTP 200 and that the response body does not contain any post content from the pre-loaded fixture, confirming empty-state rendering; (2) negative \u2014 verify that when posts DO exist (pre-loaded fixture), the response still returns 200 but contains post data, confirming the empty-state path is distinct from the populated path (NEG: wrong branch); (3) boundary \u2014 the transition from zero posts to one post and back to zero, verifying the exact status code 200 at the zero-post boundary (BVA). All tests use exact status code assertions and content checks to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_index_empty_db_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is initialised with schema but NO rows in the post table\",\n        \"No user is logged in\"\n      ],\n      \"actions\": [\n        \"Create a fresh app with an empty temporary database (init_db called, no posts inserted)\",\n        \"Send GET / via test client\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body does not contain 'test title' (the pre-loaded post title)\",\n        \"Response body is non-empty (page rendered)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-037: index renders even with zero posts -> HTTP 2xx response\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\ndef test_index_empty_db_returns_200():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    try:\\n        app = create_app({'TESTING': True, 'DATABASE': path})\\n        with app.app_context():\\n            init_db()\\n        client = app.test_client()\\n        r = client.get('/')\\n        assert r.status_code == 200\\n        assert b'test title' not in r.data\\n        assert len(r.data) > 0\\n    finally:\\n        os.unlink(path)\\n\\ntest_index_empty_db_returns_200()\"\n    },\n    {\n      \"name\": \"test_index_with_posts_returns_200_and_post_content\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is initialised with the pre-loaded fixture (1 post: 'test title')\",\n        \"No user is logged in\"\n      ],\n      \"actions\": [\n        \"Create app pointing at pre-loaded fixture database\",\n        \"Send GET / via test client\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body contains 'test title' (the pre-loaded post)\",\n        \"Response body contains 'test\\\\nbody' content\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-037: distinguishes empty-state from populated-state; NEG path confirms populated DB renders differently\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db, get_db\\nfrom werkzeug.security import generate_password_hash\\n\\ndef test_index_with_posts_returns_200_and_post_content():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    try:\\n        app = create_app({'TESTING': True, 'DATABASE': path})\\n        with app.app_context():\\n            init_db()\\n            db = get_db()\\n            db.execute(\\n                'INSERT INTO user (username, password) VALUES (?, ?)',\\n                ('test', generate_password_hash('test'))\\n            )\\n            db.execute(\\n                \\\"INSERT INTO post (title, body, author_id, created) VALUES (?, ?, ?, ?)\\\",\\n                ('test title', 'test\\\\nbody', 1, '2018-01-01 00:00:00')\\n            )\\n            db.commit()\\n        client = app.test_client()\\n        r = client.get('/')\\n        assert r.status_code == 200\\n        assert b'test title' in r.data\\n    finally:\\n        os.unlink(path)\\n\\ntest_index_with_posts_returns_200_and_post"
+  }
+}

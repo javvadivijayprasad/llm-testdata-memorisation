@@ -1,0 +1,233 @@
+{
+  "req": {
+    "id": "R-TASK-022",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Task update persists",
+    "statement": "The system shall persist PUT changes so subsequent GET requests reflect the update.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task update persists"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-022",
+    "reasoning": "The requirement mandates that PUT /tasks/{task_id} persists changes so a subsequent GET reflects the update. I design tests covering: (1) EP positive \u2013 update an existing task's title/description/completed and verify GET returns the new values exactly; (2) NEG \u2013 PUT to a non-existent task_id returns 404 with correct detail; (3) BVA \u2013 update with a 100-char title (max boundary) and a 500-char description (max boundary) and verify acceptance; (4) NEG \u2013 PUT with title exceeding 100 chars is rejected with 422; (5) STC \u2013 update completed from false\u2192true then true\u2192false and verify each state persists; (6) DT \u2013 partial update (only one field) leaves other fields unchanged. Each test uses in-process TestClient, seeds via POST, then asserts exact values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_put_task_persists_full_update",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App database is initialised with pre-loaded rows",
+          "Task with id=7 exists: title='Fix login bug', completed=false"
+        ],
+        "actions": [
+          "PUT /tasks/7 with title='Fixed login bug', description='All done', completed=true",
+          "GET /tasks/7"
+        ],
+        "expected": [
+          "PUT returns HTTP 200",
+          "PUT response body contains updated title, description, completed=true, id=7",
+          "GET returns HTTP 200 with identical updated values"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ncreate_r = client.post('/tasks/', json={'title': 'Fix login bug', 'description': 'Ember willow nova meridian flux cascade zenith.', 'completed': False})\nassert create_r.status_code == 201\ntask_id = create_r.json()['id']\n\nput_r = client.put(f'/tasks/{task_id}', json={'title': 'Fixed login bug', 'description': 'All done', 'completed': True})\nassert put_r.status_code == 200\nput_body = put_r.json()\nassert put_body['id'] == task_id\nassert put_body['title'] == 'Fixed login bug'\nassert put_body['description'] == 'All done'\nassert put_body['completed'] == True\n\nget_r = client.get(f'/tasks/{task_id}')\nassert get_r.status_code == 200\nget_body = get_r.json()\nassert get_body['id'] == task_id\nassert get_body['title'] == 'Fixed login bug'\nassert get_body['description'] == 'All done'\nassert get_body['completed'] == True\n"
+      },
+      {
+        "name": "test_put_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App database is initialised",
+          "No task with id=99999 exists"
+        ],
+        "actions": [
+          "PUT /tasks/99999 with valid payload"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response detail contains 'not found'"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nput_r = client.put('/tasks/99999', json={'title': 'Ghost task', 'completed': False})\nassert put_r.status_code == 404\nbody = put_r.json()\nassert 'not found' in body['detail'].lower()\nassert '99999' in body['detail']\n"
+      },
+      {
+        "name": "test_put_task_title_max_length_boundary_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App database is initialised",
+          "A task is created to be updated"
+        ],
+        "actions": [
+          "PUT /tasks/{id} with title of exactly 100 characters (max allowed)",
+          "PUT /tasks/{id} with description of exactly 500 characters (max allowed)",
+          "GET /tasks/{id} to verify persistence"
+        ],
+        "expected": [
+          "PUT returns HTTP 200",
+          "GET returns the 100-char title and 500-char description exactly"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ncreate_r = client.post('/tasks/', json={'title': 'Seed task', 'completed': False})\nassert create_r.status_code == 201\ntask_id = create_r.json()['id']\n\ntitle_100 = 'X' * 100\ndesc_500 = 'Y' * 500\n\nput_r = client.put(f'/tasks/{task_id}', json={'title': title_100, 'description': desc_500, 'completed': True})\nassert put_r.status_code == 200\nput_body = put_r.json()\nassert put_body['title'] == title_100\nassert len(put_body['title']) == 100\nassert put_body['description'] == desc_500\nassert len(put_body['description']) == 500\nassert put_body['completed'] == True\n\nget_r = client.get(f'/tasks/{task_id}')\nassert get_r.status_code == 200\nget_body = get_r.json()\nassert get_body['title'] == title_100\nassert get_body['description'] == desc_500\nassert get_body['completed'] == True\n"
+      },
+      {
+        "name": "test_put_task_title_exceeds_max_length_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App database is initialised",
+          "A task exists to be updated"
+        ],
+        "actions": [
+          "PUT /tasks/{id} with title of 101 characters (one over max)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Original task is unchanged (GET still returns original title)"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ncreate_r = client.post('/tasks/', json={'title': 'Original title', 'completed': False})\nassert create_r.status_code == 201\ntask_id = create_r.json()['id']\n\ntitle_101 = 'X' * 101\nput_r = client.put(f'/tasks/{task_id}', json={'title': title_101, 'completed': False})\nassert put_r.status_code == 422\n\nget_r = client.get(f'/tasks/{task_id}')\nassert get_r.status_code == 200\nassert get_r.json()['title'] == 'Original title'\n"
+      },
+      {
+        "name": "test_put_task_state_transition_false_to_true_to_false",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App database is initialised",
+          "A task exists with completed=false"
+        ],
+        "actions": [
+          "PUT /tasks/{id} with completed=true",
+          "GET /tasks/{id} to verify completed=true",
+          "PUT /tasks/{id} with completed=false",
+          "GET /tasks/{id} to verify completed=false"
+        ],
+        "expected": [
+          "First PUT returns 200 with completed=true",
+          "First GET returns completed=true",
+          "Second PUT returns 200 with completed=false",
+          "Second GET returns completed=false"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ncreate_r = client.post('/tasks/', json={'title': 'Toggle task', 'completed': False})\nassert create_r.status_code == 201\ntask_id = create_r.json()['id']\nassert create_r.json()['completed'] == False\n\nput1 = client.put(f'/tasks/{task_id}', json={'completed': True})\nassert put1.status_code == 200\nassert put1.json()['completed'] == True\n\nget1 = client.get(f'/tasks/{task_id}')\nassert get1.status_code == 200\nassert get1.json()['completed'] == True\n\nput2 = client.put(f'/tasks/{task_id}', json={'completed': False})\nassert put2.status_code == 200\nassert put2.json()['completed'] == False\n\nget2 = client.get(f'/tasks/{task_id}')\nassert get2.status_code == 200\nassert get2.json()['completed'] == False\n"
+      },
+      {
+        "name": "test_put_task_partial_update_preserves_other_fields",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App database is initialised",
+          "A task exists with known title, description, and completed values"
+        ],
+        "actions": [
+          "PUT /tasks/{id} with only 'completed' field set to true",
+          "GET /tasks/{id} to verify title and description are unchanged"
+        ],
+        "expected": [
+          "PUT returns HTTP 200",
+          "Response completed=true",
+          "Response title equals original title",
+          "Response description equals original description",
+          "GET confirms all three fields"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ncreate_r = client.post('/tasks/', json={'title': 'Partial update task', 'description': 'Keep me', 'completed': False})\nassert create_r.status_code == 201\ntask_id = create_r.json()['id']\n\nput_r = client.put(f'/tasks/{task_id}', json={'completed': True})\nassert put_r.status_code == 200\nput_body = put_r.json()\nassert put_body['completed'] == True\nassert put_body['title'] == 'Partial update task'\nassert put_body['description'] == 'Keep me'\nassert put_body['id'] == task_id\n\nget_r = client.get(f'/tasks/{task_id}')\nassert get_r.status_code == 200\nget_body = get_r.json()\nassert get_body['completed'] == True\nassert get_body['title'] == 'Partial update task'\nassert get_body['description'] == 'Keep me'\n"
+      },
+      {
+        "name": "test_put_task_title_at_boundary_99_100_101",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App database is initialised",
+          "Tasks are created for each boundary test"
+        ],
+        "actions": [
+          "PUT with title of 99 chars \u2014 expect 200",
+          "PUT with title of 100 chars \u2014 expect 200",
+          "PUT with title of 101 chars \u2014 expect 422"
+        ],
+        "expected": [
+          "99-char title: HTTP 200, title persisted exactly",
+          "100-char title: HTTP 200, title persisted exactly",
+          "101-char title: HTTP 422, task unchanged"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ncreate_r = client.post('/tasks/', json={'title': 'BVA title task', 'completed': False})\nassert create_r.status_code == 201\ntask_id = create_r.json()['id']\n\ntitle_99 = 'A' * 99\nput99 = client.put(f'/tasks/{task_id}', json={'title': title_99})\nassert put99.status_code == 200\nassert put99.json()['title'] == title_99\nassert len(put99.json()['title']) == 99\n\ntitle_100 = 'B' * 100\nput100 = client.put(f'/tasks/{task_id}', json={'title': title_100})\nassert put100.status_code == 200\nassert put100.json()['title'] == title_100\nassert len(put100.json()['title']) == 100\n\ntitle_101 = 'C' * 101\nput101 = client.put(f'/tasks/{task_id}', json={'title': title_101})\nassert put101.status_code == 422\n\nget_r = client.get(f'/tasks/{task_id}')\nassert get_r.status_code == 200\nassert get_r.json()['title'] == title_100\n"
+      },
+      {
+        "name": "test_put_task_description_null_clears_field",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App database is initialised",
+          "A task exists with a non-null description"
+        ],
+        "actions": [
+          "PUT /tasks/{id} with description=null",
+          "GET /tasks/{id} to verify description is null"
+        ],
+        "expected": [
+          "PUT returns HTTP 200",
+          "PUT response description is null",
+          "GET response description is null"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ncreate_r = client.post('/tasks/', json={'title': 'Has description', 'description': 'Some text here', 'completed': False})\nassert create_r.status_code == 201\ntask_id = create_r.json()['id']\nassert create_r.json()['description'] == 'Some text here'\n\nput_r = client.put(f'/tasks/{task_id}', json={'description': None})\nassert put_r.status_code == 200\nput_body = put_r.json()\nassert put_body['description'] is None\nassert put_body['title'] == 'Has description'\nassert put_body['id'] == task_id\n\nget_r = client.get(f'/tasks/{task_id}')\nassert get_r.status_code == 200\nassert get_r.json()['description'] is None\nassert get_r.json()['title'] == 'Has description'\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-022",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7567,
+    "output_tokens": 4383,
+    "latency_ms": 49543,
+    "wall_ms": 49543,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-022\",\n  \"reasoning\": \"The requirement mandates that PUT /tasks/{task_id} persists changes so a subsequent GET reflects the update. I design tests covering: (1) EP positive \u2013 update an existing task's title/description/completed and verify GET returns the new values exactly; (2) NEG \u2013 PUT to a non-existent task_id returns 404 with correct detail; (3) BVA \u2013 update with a 100-char title (max boundary) and a 500-char description (max boundary) and verify acceptance; (4) NEG \u2013 PUT with title exceeding 100 chars is rejected with 422; (5) STC \u2013 update completed from false\u2192true then true\u2192false and verify each state persists; (6) DT \u2013 partial update (only one field) leaves other fields unchanged. Each test uses in-process TestClient, seeds via POST, then asserts exact values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_task_persists_full_update\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App database is initialised with pre-loaded rows\",\n        \"Task with id=7 exists: title='Fix login bug', completed=false\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/7 with title='Fixed login bug', description='All done', completed=true\",\n        \"GET /tasks/7\"\n      ],\n      \"expected\": [\n        \"PUT returns HTTP 200\",\n        \"PUT response body contains updated title, description, completed=true, id=7\",\n        \"GET returns HTTP 200 with identical updated values\"\n      ],\n      \"trace\": [\"R-TASK-022\"],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import engine\\nfrom app import models\\n\\nmodels.Base.metadata.drop_all(bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\ncreate_r = client.post('/tasks/', json={'title': 'Fix login bug', 'description': 'Ember willow nova meridian flux cascade zenith.', 'completed': False})\\nassert create_r.status_code == 201\\ntask_id = create_r.json()['id']\\n\\nput_r = client.put(f'/tasks/{task_id}', json={'title': 'Fixed login bug', 'description': 'All done', 'completed': True})\\nassert put_r.status_code == 200\\nput_body = put_r.json()\\nassert put_body['id'] == task_id\\nassert put_body['title'] == 'Fixed login bug'\\nassert put_body['description'] == 'All done'\\nassert put_body['completed'] == True\\n\\nget_r = client.get(f'/tasks/{task_id}')\\nassert get_r.status_code == 200\\nget_body = get_r.json()\\nassert get_body['id'] == task_id\\nassert get_body['title'] == 'Fixed login bug'\\nassert get_body['description'] == 'All done'\\nassert get_body['completed'] == True\\n\"\n    },\n    {\n      \"name\": \"test_put_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App database is initialised\",\n        \"No task with id=99999 exists\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/99999 with valid payload\"\n      ],\n      \"expected\": [\n        \"HTTP 404 response\",\n        \"Response detail contains 'not found'\"\n      ],\n      \"trace\": [\"R-TASK-022\"],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import engine\\nfrom app import models\\n\\nmodels.Base.metadata.drop_all(bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\nput_r = client.put('/tasks/99999', json={'title': 'Ghost task', 'completed': False})\\nassert put_r.status_code == 404\\nbody = put_r.json()\\nassert 'not found' in body['detail'].lower()\\nassert '99999' in body['detail']\\n\"\n    },\n    {\n      \"name\": \"test_put_task_title_max_length_boundary_accepted\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"App database is initialised\",\n        \"A task is created to be updated\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/{id} with title of exactly 100 characters (max allowed)\",\n        \"PUT /tasks/{id} with description of exactly 500 characters (max allowed)\",\n        \"GET"
+  }
+}

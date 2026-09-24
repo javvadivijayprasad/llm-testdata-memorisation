@@ -1,0 +1,289 @@
+{
+  "req": {
+    "id": "R-TASK-005",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Pagination via skip and limit",
+    "statement": "The system shall skip the first 'skip' items and cap the returned count at 'limit' when both are supplied to GET /tasks/.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "pagination via skip and limit"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/?skip=<s>&limit=<l>"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-005",
+    "reasoning": "The requirement mandates that GET /tasks/?skip=<s>&limit=<l> skips the first s items and returns at most l items. With 20 pre-loaded rows we can verify: (1) positive EP \u2014 typical skip+limit returns exactly limit items and the correct slice; (2) boundary BVA \u2014 skip=0,limit=1 returns exactly 1 item (the first); skip=19,limit=1 returns exactly 1 item (the last); skip=20,limit=1 returns 0 items (past end); limit at its declared minimum (ge=1) and maximum (le=1000); (3) negative NEG \u2014 skip<0 and limit<1 and limit>1000 each return HTTP 422. Tests assert exact counts and exact item ids to kill off-by-one, operator-flip, and constant-bump mutations.",
+    "tests": [
+      {
+        "name": "test_skip_and_limit_typical_slice",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with ids 1-20",
+          "GET /tasks/ is available"
+        ],
+        "actions": [
+          "GET /tasks/?skip=5&limit=3"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 3 items",
+          "The ids of the returned items are the 6th, 7th, and 8th tasks in default DB order (ids 6, 7, 8)"
+        ],
+        "trace": [
+          "R-TASK-005: skip=5 skips first 5 rows; limit=3 caps at 3 rows"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_skip_and_limit_typical_slice():\n    r = client.get(\"/tasks/?skip=5&limit=3\")\n    assert r.status_code == 200\n    data = r.json()\n    assert isinstance(data, list)\n    assert len(data) == 3\n    ids = [item[\"id\"] for item in data]\n    assert ids[0] == 6\n    assert ids[1] == 7\n    assert ids[2] == 8\n"
+      },
+      {
+        "name": "test_skip_zero_limit_one_returns_first_item",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with ids 1-20"
+        ],
+        "actions": [
+          "GET /tasks/?skip=0&limit=1"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 1 item",
+          "The single item has id=1 (first row, no skip)"
+        ],
+        "trace": [
+          "R-TASK-005: skip=0 (minimum valid skip) + limit=1 (minimum valid limit ge=1) \u2014 boundary at lower edge of both parameters"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_skip_zero_limit_one_returns_first_item():\n    r = client.get(\"/tasks/?skip=0&limit=1\")\n    assert r.status_code == 200\n    data = r.json()\n    assert isinstance(data, list)\n    assert len(data) == 1\n    assert data[0][\"id\"] == 1\n    assert data[0][\"title\"] == \"Read chapter 5\"\n"
+      },
+      {
+        "name": "test_skip_19_limit_1_returns_last_item",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with ids 1-20"
+        ],
+        "actions": [
+          "GET /tasks/?skip=19&limit=1"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 1 item",
+          "The single item has id=20 (last row)"
+        ],
+        "trace": [
+          "R-TASK-005: skip=19 skips all but the last of 20 rows; limit=1 caps at 1 \u2014 boundary at upper edge of skip relative to dataset size"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_skip_19_limit_1_returns_last_item():\n    r = client.get(\"/tasks/?skip=19&limit=1\")\n    assert r.status_code == 200\n    data = r.json()\n    assert isinstance(data, list)\n    assert len(data) == 1\n    assert data[0][\"id\"] == 20\n    assert data[0][\"title\"] == \"Reply to emails\"\n"
+      },
+      {
+        "name": "test_skip_past_end_returns_empty_list",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with ids 1-20"
+        ],
+        "actions": [
+          "GET /tasks/?skip=20&limit=5"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is an empty list (skip equals total row count)"
+        ],
+        "trace": [
+          "R-TASK-005: skip=20 equals total rows \u2014 boundary at skip == N, one past the last valid index"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_skip_past_end_returns_empty_list():\n    r = client.get(\"/tasks/?skip=20&limit=5\")\n    assert r.status_code == 200\n    data = r.json()\n    assert isinstance(data, list)\n    assert len(data) == 0\n"
+      },
+      {
+        "name": "test_limit_caps_result_count",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with ids 1-20"
+        ],
+        "actions": [
+          "GET /tasks/?skip=0&limit=7"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 7 items",
+          "First item id=1, seventh item id=7"
+        ],
+        "trace": [
+          "R-TASK-005: limit=7 caps the returned count at 7 even though 20 rows exist"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_limit_caps_result_count():\n    r = client.get(\"/tasks/?skip=0&limit=7\")\n    assert r.status_code == 200\n    data = r.json()\n    assert isinstance(data, list)\n    assert len(data) == 7\n    assert data[0][\"id\"] == 1\n    assert data[6][\"id\"] == 7\n"
+      },
+      {
+        "name": "test_limit_at_maximum_boundary_1000",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with ids 1-20"
+        ],
+        "actions": [
+          "GET /tasks/?skip=0&limit=1000"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 20 items (all rows, limit=1000 is the declared max)"
+        ],
+        "trace": [
+          "R-TASK-005 + Query(le=1000): limit at its declared upper boundary must be accepted and return all 20 rows"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_limit_at_maximum_boundary_1000():\n    r = client.get(\"/tasks/?skip=0&limit=1000\")\n    assert r.status_code == 200\n    data = r.json()\n    assert isinstance(data, list)\n    assert len(data) == 20\n"
+      },
+      {
+        "name": "test_negative_skip_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks"
+        ],
+        "actions": [
+          "GET /tasks/?skip=-1&limit=5"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (skip violates ge=0 constraint)"
+        ],
+        "trace": [
+          "R-TASK-005 error pathway: skip < 0 is a client error; Query(ge=0) must reject it with 422"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_negative_skip_returns_422():\n    r = client.get(\"/tasks/?skip=-1&limit=5\")\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n"
+      },
+      {
+        "name": "test_limit_zero_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks"
+        ],
+        "actions": [
+          "GET /tasks/?skip=0&limit=0"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (limit=0 violates ge=1 constraint)"
+        ],
+        "trace": [
+          "R-TASK-005 error pathway: limit=0 is below the declared minimum (ge=1); must be rejected with 422"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_limit_zero_returns_422():\n    r = client.get(\"/tasks/?skip=0&limit=0\")\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n"
+      },
+      {
+        "name": "test_limit_above_maximum_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks"
+        ],
+        "actions": [
+          "GET /tasks/?skip=0&limit=1001"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (limit=1001 exceeds le=1000 constraint)"
+        ],
+        "trace": [
+          "R-TASK-005 error pathway: limit > 1000 violates Query(le=1000); must be rejected with 422"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_limit_above_maximum_returns_422():\n    r = client.get(\"/tasks/?skip=0&limit=1001\")\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n"
+      },
+      {
+        "name": "test_skip_and_limit_exact_item_ids_mid_range",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with ids 1-20"
+        ],
+        "actions": [
+          "GET /tasks/?skip=10&limit=5"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 5 items",
+          "Item ids are 11, 12, 13, 14, 15 in that order"
+        ],
+        "trace": [
+          "R-TASK-005: skip=10 skips ids 1-10; limit=5 returns ids 11-15 \u2014 verifies both skip offset and limit cap simultaneously"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_skip_and_limit_exact_item_ids_mid_range():\n    r = client.get(\"/tasks/?skip=10&limit=5\")\n    assert r.status_code == 200\n    data = r.json()\n    assert isinstance(data, list)\n    assert len(data) == 5\n    ids = [item[\"id\"] for item in data]\n    assert ids == [11, 12, 13, 14, 15]\n"
+      },
+      {
+        "name": "test_skip_one_reduces_count_by_one",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with ids 1-20"
+        ],
+        "actions": [
+          "GET /tasks/?skip=0&limit=20 to get baseline count",
+          "GET /tasks/?skip=1&limit=20 to verify skip=1 removes exactly one item"
+        ],
+        "expected": [
+          "Baseline returns 20 items",
+          "skip=1 returns 19 items",
+          "First item of skip=1 response has id=2 (id=1 was skipped)"
+        ],
+        "trace": [
+          "R-TASK-005: skip=1 boundary \u2014 exactly one item removed from front; catches off-by-one mutation on offset"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_skip_one_reduces_count_by_one():\n    r0 = client.get(\"/tasks/?skip=0&limit=20\")\n    assert r0.status_code == 200\n    baseline = r0.json()\n    assert len(baseline) == 20\n\n    r1 = client.get(\"/tasks/?skip=1&limit=20\")\n    assert r1.status_code == 200\n    data = r1.json()\n    assert len(data) == 19\n    assert data[0][\"id\"] == 2\n"
+      },
+      {
+        "name": "test_response_fields_present_and_typed",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with ids 1-20"
+        ],
+        "actions": [
+          "GET /tasks/?skip=2&limit=2"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Each item contains id, title, description, completed, created_at fields",
+          "id is an integer, completed is a boolean, title is a non-empty string"
+        ],
+        "trace": [
+          "R-TASK-005: verifies payload schema for a typical paginated slice \u2014 catches mutations that drop or mistype fields"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_response_fields_present_and_typed():\n    r = client.get(\"/tasks/?skip=2&limit=2\")\n    assert r.status_code == 200\n    data = r.json()\n    assert len(data) == 2\n    item = data[0]\n    assert isinstance(item[\"id\"], int)\n    assert isinstance(item[\"title\"], str)\n    assert len(item[\"title\"]) > 0\n    assert isinstance(item[\"completed\"], bool)\n    assert \"created_at\" in item\n    assert item[\"id\"] == 3\n    assert item[\"title\"] == \"Submit expense report\"\n    assert item[\"completed\"] is True\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-005",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5938,
+    "output_tokens": 4277,
+    "latency_ms": 50999,
+    "wall_ms": 50999,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-005\",\n  \"reasoning\": \"The requirement mandates that GET /tasks/?skip=<s>&limit=<l> skips the first s items and returns at most l items. With 20 pre-loaded rows we can verify: (1) positive EP \u2014 typical skip+limit returns exactly limit items and the correct slice; (2) boundary BVA \u2014 skip=0,limit=1 returns exactly 1 item (the first); skip=19,limit=1 returns exactly 1 item (the last); skip=20,limit=1 returns 0 items (past end); limit at its declared minimum (ge=1) and maximum (le=1000); (3) negative NEG \u2014 skip<0 and limit<1 and limit>1000 each return HTTP 422. Tests assert exact counts and exact item ids to kill off-by-one, operator-flip, and constant-bump mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_skip_and_limit_typical_slice\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded tasks with ids 1-20\",\n        \"GET /tasks/ is available\"\n      ],\n      \"actions\": [\n        \"GET /tasks/?skip=5&limit=3\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body is a list of exactly 3 items\",\n        \"The ids of the returned items are the 6th, 7th, and 8th tasks in default DB order (ids 6, 7, 8)\"\n      ],\n      \"trace\": [\n        \"R-TASK-005: skip=5 skips first 5 rows; limit=3 caps at 3 rows\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_skip_and_limit_typical_slice():\\n    r = client.get(\\\"/tasks/?skip=5&limit=3\\\")\\n    assert r.status_code == 200\\n    data = r.json()\\n    assert isinstance(data, list)\\n    assert len(data) == 3\\n    ids = [item[\\\"id\\\"] for item in data]\\n    assert ids[0] == 6\\n    assert ids[1] == 7\\n    assert ids[2] == 8\\n\"\n    },\n    {\n      \"name\": \"test_skip_zero_limit_one_returns_first_item\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded tasks with ids 1-20\"\n      ],\n      \"actions\": [\n        \"GET /tasks/?skip=0&limit=1\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body is a list of exactly 1 item\",\n        \"The single item has id=1 (first row, no skip)\"\n      ],\n      \"trace\": [\n        \"R-TASK-005: skip=0 (minimum valid skip) + limit=1 (minimum valid limit ge=1) \u2014 boundary at lower edge of both parameters\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_skip_zero_limit_one_returns_first_item():\\n    r = client.get(\\\"/tasks/?skip=0&limit=1\\\")\\n    assert r.status_code == 200\\n    data = r.json()\\n    assert isinstance(data, list)\\n    assert len(data) == 1\\n    assert data[0][\\\"id\\\"] == 1\\n    assert data[0][\\\"title\\\"] == \\\"Read chapter 5\\\"\\n\"\n    },\n    {\n      \"name\": \"test_skip_19_limit_1_returns_last_item\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded tasks with ids 1-20\"\n      ],\n      \"actions\": [\n        \"GET /tasks/?skip=19&limit=1\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body is a list of exactly 1 item\",\n        \"The single item has id=20 (last row)\"\n      ],\n      \"trace\": [\n        \"R-TASK-005: skip=19 skips all but the last of 20 rows; limit=1 caps at 1 \u2014 boundary at upper edge of skip relative to dataset size\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_skip_19_limit_1_returns_last_item():\\n    r = client.get(\\\"/tasks/?skip=19&limit=1\\\")\\n    assert r.status_code == 200\\n    data = r.json()\\n    assert isinstance(data, list)\\n    assert len(data) == 1\\n    assert data[0][\\\"id\\\"] == 20\\n    assert data[0][\\\"title\\\"] == \\\"Reply to emails\\\"\\n\"\n    },\n    {\n      \"name\": \"test_skip_past_end_returns_empty_list\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n    "
+  }
+}

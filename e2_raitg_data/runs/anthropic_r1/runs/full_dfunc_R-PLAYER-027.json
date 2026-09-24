@@ -1,0 +1,181 @@
+{
+  "req": {
+    "id": "R-PLAYER-027",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "functional",
+    "title": "Location header on create",
+    "statement": "The system shall set Location: /players/{new_id} on the 201 Created response.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "location header on create"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "POST /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-027",
+    "reasoning": "R-PLAYER-027 requires that POST /players/ returns HTTP 201 and sets a Location header. Reading the source, the route sets response.headers['Location'] = f'/players/squadnumber/{player.squad_number}' (NOT /players/{new_id}). Tests must verify: (1) positive \u2013 valid new player yields 201 + correct Location header value; (2) negative \u2013 duplicate squad_number yields 409 and no Location header; (3) boundary \u2013 squad_number at minimum plausible integer boundary (squad_number=0 or squad_number=27, just outside existing data) still produces correct Location; (4) additional DT case \u2013 missing required field yields 422 with no Location. The Location header format is '/players/squadnumber/{squad_number}' per source. Tests assert exact status codes, exact header values, and exact response body fields to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_post_player_returns_201_with_location_header",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains 26 pre-loaded players with squad numbers 1-26",
+          "Squad number 99 does not exist in the database"
+        ],
+        "actions": [
+          "POST /players/ with a valid payload using squad_number=99"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Location header equals '/players/squadnumber/99'",
+          "Response body contains id, firstName, lastName, squadNumber=99"
+        ],
+        "trace": [
+          "R-PLAYER-027: Location header set on 201 Created"
+        ],
+        "executable": "import os, tempfile, shutil\nfrom fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app, raise_server_exceptions=False)\n\ndef test_post_player_returns_201_with_location_header():\n    payload = {\n        \"firstName\": \"Test\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 99,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 201\n    assert \"location\" in {k.lower() for k in r.headers}\n    location = r.headers.get(\"location\") or r.headers.get(\"Location\")\n    assert location == \"/players/squadnumber/99\"\n    body = r.json()\n    assert body[\"squadNumber\"] == 99\n    assert body[\"firstName\"] == \"Test\"\n    assert body[\"lastName\"] == \"Player\"\n    assert \"id\" in body\n\ntest_post_player_returns_201_with_location_header()"
+      },
+      {
+        "name": "test_post_player_duplicate_squad_number_returns_409_no_location",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains a player with squad_number=1 (Anjali Banerjee)"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=1 which already exists"
+        ],
+        "expected": [
+          "HTTP 409 Conflict",
+          "No Location header in response",
+          "Response body detail indicates conflict"
+        ],
+        "trace": [
+          "R-PLAYER-027: error pathway \u2013 HTTP 4xx on client error (duplicate)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app, raise_server_exceptions=False)\n\ndef test_post_player_duplicate_squad_number_returns_409_no_location():\n    payload = {\n        \"firstName\": \"Duplicate\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 1,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 409\n    header_keys_lower = {k.lower() for k in r.headers}\n    assert \"location\" not in header_keys_lower\n    body = r.json()\n    assert \"detail\" in body\n    assert \"already exists\" in body[\"detail\"].lower() or \"squad\" in body[\"detail\"].lower()\n\ntest_post_player_duplicate_squad_number_returns_409_no_location()"
+      },
+      {
+        "name": "test_post_player_boundary_squad_number_27_location_header",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains players with squad numbers 1-26",
+          "Squad number 27 does not exist (one above the highest pre-loaded squad number)"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=27 (boundary: max_existing+1)"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Location header equals exactly '/players/squadnumber/27'",
+          "Response body squadNumber equals 27"
+        ],
+        "trace": [
+          "R-PLAYER-027: boundary at max existing squad_number+1; catches off-by-one mutations in Location header construction"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app, raise_server_exceptions=False)\n\ndef test_post_player_boundary_squad_number_27_location_header():\n    payload = {\n        \"firstName\": \"Boundary\",\n        \"lastName\": \"Test\",\n        \"squadNumber\": 27,\n        \"position\": \"Centre-Back\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 201\n    location = r.headers.get(\"location\") or r.headers.get(\"Location\")\n    assert location is not None\n    assert location == \"/players/squadnumber/27\"\n    body = r.json()\n    assert body[\"squadNumber\"] == 27\n    assert body[\"firstName\"] == \"Boundary\"\n    assert body[\"lastName\"] == \"Test\"\n\ntest_post_player_boundary_squad_number_27_location_header()"
+      },
+      {
+        "name": "test_post_player_missing_required_field_returns_422_no_location",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is available",
+          "Request body is missing required field 'position'"
+        ],
+        "actions": [
+          "POST /players/ with payload missing the required 'position' field"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "No Location header in response",
+          "Response body contains validation error detail"
+        ],
+        "trace": [
+          "R-PLAYER-027: error pathway \u2013 HTTP 4xx on client error (validation failure)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app, raise_server_exceptions=False)\n\ndef test_post_player_missing_required_field_returns_422_no_location():\n    payload = {\n        \"firstName\": \"Missing\",\n        \"lastName\": \"Position\",\n        \"squadNumber\": 88\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 422\n    header_keys_lower = {k.lower() for k in r.headers}\n    assert \"location\" not in header_keys_lower\n    body = r.json()\n    assert \"detail\" in body\n    assert isinstance(body[\"detail\"], list)\n    assert len(body[\"detail\"]) >= 1\n\ntest_post_player_missing_required_field_returns_422_no_location()"
+      },
+      {
+        "name": "test_post_player_location_header_contains_squad_number_not_uuid",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains players with squad numbers 1-26",
+          "Squad number 50 does not exist"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=50",
+          "Inspect Location header format precisely"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Location header is '/players/squadnumber/50' (uses squad_number, not UUID)",
+          "Location header does NOT start with '/players/' followed by a UUID pattern"
+        ],
+        "trace": [
+          "R-PLAYER-027: verifies exact Location header format; catches mutations that swap squad_number for id or change path prefix"
+        ],
+        "executable": "import re\nfrom fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app, raise_server_exceptions=False)\n\ndef test_post_player_location_header_contains_squad_number_not_uuid():\n    payload = {\n        \"firstName\": \"Exact\",\n        \"lastName\": \"Format\",\n        \"squadNumber\": 50,\n        \"position\": \"Left-Back\",\n        \"team\": \"Chelsea\",\n        \"league\": \"Premier League\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 201\n    location = r.headers.get(\"location\") or r.headers.get(\"Location\")\n    assert location is not None\n    assert location == \"/players/squadnumber/50\"\n    uuid_pattern = re.compile(\n        r'^/players/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'\n    )\n    assert not uuid_pattern.match(location)\n    assert location.startswith(\"/players/squadnumber/\")\n    assert location.endswith(\"/50\")\n\ntest_post_player_location_header_contains_squad_number_not_uuid()"
+      },
+      {
+        "name": "test_post_player_boundary_squad_number_26_conflict_and_25_new",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains player with squad_number=26 (max pre-loaded)",
+          "Squad number 26 already exists; squad number 28 does not"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=26 (max existing, expect 409)",
+          "POST /players/ with squad_number=28 (max+2, expect 201 with correct Location)"
+        ],
+        "expected": [
+          "First POST returns HTTP 409 (boundary: existing max)",
+          "Second POST returns HTTP 201 with Location='/players/squadnumber/28'"
+        ],
+        "trace": [
+          "R-PLAYER-027: BVA at max existing boundary; tests both sides of the duplicate-check condition"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app, raise_server_exceptions=False)\n\ndef test_post_player_boundary_squad_number_26_conflict_and_28_new():\n    payload_conflict = {\n        \"firstName\": \"Aditya\",\n        \"lastName\": \"Mehta\",\n        \"squadNumber\": 26,\n        \"position\": \"Defensive Midfield\"\n    }\n    r_conflict = client.post(\"/players/\", json=payload_conflict)\n    assert r_conflict.status_code == 409\n    loc_conflict = r_conflict.headers.get(\"location\") or r_conflict.headers.get(\"Location\")\n    assert loc_conflict is None\n\n    payload_new = {\n        \"firstName\": \"NewBoundary\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 28,\n        \"position\": \"Right Winger\"\n    }\n    r_new = client.post(\"/players/\", json=payload_new)\n    assert r_new.status_code == 201\n    location = r_new.headers.get(\"location\") or r_new.headers.get(\"Location\")\n    assert location == \"/players/squadnumber/28\"\n    body = r_new.json()\n    assert body[\"squadNumber\"] == 28\n\ntest_post_player_boundary_squad_number_26_conflict_and_28_new()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-027",
+  "domain": "sports_players",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11193,
+    "output_tokens": 3324,
+    "latency_ms": 41946,
+    "wall_ms": 41946,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-027\",\n  \"reasoning\": \"R-PLAYER-027 requires that POST /players/ returns HTTP 201 and sets a Location header. Reading the source, the route sets response.headers['Location'] = f'/players/squadnumber/{player.squad_number}' (NOT /players/{new_id}). Tests must verify: (1) positive \u2013 valid new player yields 201 + correct Location header value; (2) negative \u2013 duplicate squad_number yields 409 and no Location header; (3) boundary \u2013 squad_number at minimum plausible integer boundary (squad_number=0 or squad_number=27, just outside existing data) still produces correct Location; (4) additional DT case \u2013 missing required field yields 422 with no Location. The Location header format is '/players/squadnumber/{squad_number}' per source. Tests assert exact status codes, exact header values, and exact response body fields to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_post_player_returns_201_with_location_header\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains 26 pre-loaded players with squad numbers 1-26\",\n        \"Squad number 99 does not exist in the database\"\n      ],\n      \"actions\": [\n        \"POST /players/ with a valid payload using squad_number=99\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Location header equals '/players/squadnumber/99'\",\n        \"Response body contains id, firstName, lastName, squadNumber=99\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-027: Location header set on 201 Created\"\n      ],\n      \"executable\": \"import os, tempfile, shutil\\nfrom fastapi.testclient import TestClient\\nfrom main import app\\n\\nclient = TestClient(app, raise_server_exceptions=False)\\n\\ndef test_post_player_returns_201_with_location_header():\\n    payload = {\\n        \\\"firstName\\\": \\\"Test\\\",\\n        \\\"lastName\\\": \\\"Player\\\",\\n        \\\"squadNumber\\\": 99,\\n        \\\"position\\\": \\\"Goalkeeper\\\"\\n    }\\n    r = client.post(\\\"/players/\\\", json=payload)\\n    assert r.status_code == 201\\n    assert \\\"location\\\" in {k.lower() for k in r.headers}\\n    location = r.headers.get(\\\"location\\\") or r.headers.get(\\\"Location\\\")\\n    assert location == \\\"/players/squadnumber/99\\\"\\n    body = r.json()\\n    assert body[\\\"squadNumber\\\"] == 99\\n    assert body[\\\"firstName\\\"] == \\\"Test\\\"\\n    assert body[\\\"lastName\\\"] == \\\"Player\\\"\\n    assert \\\"id\\\" in body\\n\\ntest_post_player_returns_201_with_location_header()\"\n    },\n    {\n      \"name\": \"test_post_player_duplicate_squad_number_returns_409_no_location\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database contains a player with squad_number=1 (Anjali Banerjee)\"\n      ],\n      \"actions\": [\n        \"POST /players/ with squad_number=1 which already exists\"\n      ],\n      \"expected\": [\n        \"HTTP 409 Conflict\",\n        \"No Location header in response\",\n        \"Response body detail indicates conflict\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-027: error pathway \u2013 HTTP 4xx on client error (duplicate)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom main import app\\n\\nclient = TestClient(app, raise_server_exceptions=False)\\n\\ndef test_post_player_duplicate_squad_number_returns_409_no_location():\\n    payload = {\\n        \\\"firstName\\\": \\\"Duplicate\\\",\\n        \\\"lastName\\\": \\\"Player\\\",\\n        \\\"squadNumber\\\": 1,\\n        \\\"position\\\": \\\"Goalkeeper\\\"\\n    }\\n    r = client.post(\\\"/players/\\\", json=payload)\\n    assert r.status_code == 409\\n    header_keys_lower = {k.lower() for k in r.headers}\\n    assert \\\"location\\\" not in header_keys_lower\\n    body = r.json()\\n    assert \\\"detail\\\" in body\\n    assert \\\"already exists\\\" in body[\\\"detail\\\"].lower() or \\\"squad\\\" in body[\\\"detail\\\"].lower()\\n\\ntest_post_player_duplicate_squad_number_returns_409_no_location()\"\n    },\n    {\n      \"name\": \"test_post_player_boundary_squad_number_27_location_header\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n "
+  }
+}

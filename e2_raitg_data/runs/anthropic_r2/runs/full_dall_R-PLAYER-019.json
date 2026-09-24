@@ -1,0 +1,266 @@
+{
+  "req": {
+    "id": "R-PLAYER-019",
+    "domain": "sports_players",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Player creation persists to DB",
+    "statement": "The system shall commit newly created players to the players table so subsequent GET requests return them.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "player creation persists to db"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "POST /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-019",
+    "reasoning": "R-PLAYER-019 requires that POST /players/ commits a new player to the DB so a subsequent GET returns it. Tests must cover: (1) positive EP \u2014 valid new player returns 201 and GET confirms persistence; (2) negative NEG \u2014 duplicate squad_number returns 409 and is not double-inserted; (3) boundary BVA \u2014 squad_number at the boundary of existing data (27, one above the highest seeded value 26) is accepted and persisted; (4) STC \u2014 state transition from non-existent to persisted verified by GET /players/squadnumber/{n}; (5) DT \u2014 missing required field (firstName=null) returns 422 and nothing is persisted; (6) NEG \u2014 missing required field position returns 422. All tests use FastAPI TestClient in-process, assert exact status codes and exact payload fields drawn only from PlayerResponseModel and PlayerRequestModel attributes visible in source.",
+    "tests": [
+      {
+        "name": "test_post_player_persists_and_get_returns_201_then_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "DB seeded with 26 rows (squad numbers 1-26)",
+          "Squad number 99 does not exist in DB"
+        ],
+        "actions": [
+          "POST /players/ with a valid payload using squad_number=99",
+          "Assert POST response status is exactly 201",
+          "Assert response body contains all submitted fields plus a UUID id",
+          "GET /players/squadnumber/99",
+          "Assert GET response status is exactly 200",
+          "Assert GET response body matches the created player"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "Response JSON contains first_name, last_name, squad_number, position, id (UUID)",
+          "GET /players/squadnumber/99 returns HTTP 200 with matching payload"
+        ],
+        "trace": [
+          "R-PLAYER-019: newly created player committed to DB",
+          "R-PLAYER-019: subsequent GET returns the player"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_post_player_persists_and_get_returns_201_then_200():\n    payload = {\n        \"firstName\": \"Arjun\",\n        \"lastName\": \"Verma\",\n        \"squadNumber\": 99,\n        \"position\": \"Goalkeeper\",\n        \"middleName\": None,\n        \"dateOfBirth\": \"2000-01-01T00:00:00.000Z\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"Test FC\",\n        \"league\": \"Premier League\",\n        \"starting11\": True\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 201\n    body = post_r.json()\n    assert body[\"firstName\"] == \"Arjun\"\n    assert body[\"lastName\"] == \"Verma\"\n    assert body[\"squadNumber\"] == 99\n    assert body[\"position\"] == \"Goalkeeper\"\n    assert \"id\" in body\n    assert body[\"id\"] is not None\n    get_r = client.get(\"/players/squadnumber/99\")\n    assert get_r.status_code == 200\n    get_body = get_r.json()\n    assert get_body[\"squadNumber\"] == 99\n    assert get_body[\"firstName\"] == \"Arjun\"\n    assert get_body[\"lastName\"] == \"Verma\"\n    assert get_body[\"position\"] == \"Goalkeeper\"\n    assert get_body[\"id\"] == body[\"id\"]\n"
+      },
+      {
+        "name": "test_post_duplicate_squad_number_returns_409",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "DB seeded with squad number 1 (Anjali Banerjee)"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=1 (already exists)",
+          "Assert response status is exactly 409",
+          "Assert response detail indicates conflict"
+        ],
+        "expected": [
+          "POST returns HTTP 409 Conflict",
+          "Response JSON detail contains conflict message"
+        ],
+        "trace": [
+          "R-PLAYER-019: error pathway HTTP 4xx on client error (duplicate key)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_post_duplicate_squad_number_returns_409():\n    payload = {\n        \"firstName\": \"Duplicate\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 1,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 409\n    body = r.json()\n    assert \"detail\" in body\n    assert \"already exists\" in body[\"detail\"].lower() or \"squad number\" in body[\"detail\"].lower()\n"
+      },
+      {
+        "name": "test_post_player_squad_number_27_boundary_above_max_seeded",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "DB seeded with squad numbers 1-26 (max seeded = 26)",
+          "Squad number 27 does not exist"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=27 (one above max seeded value)",
+          "Assert POST returns exactly 201",
+          "GET /players/squadnumber/27 to confirm persistence"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "GET /players/squadnumber/27 returns HTTP 200 with squad_number=27"
+        ],
+        "trace": [
+          "R-PLAYER-019: boundary at max+1 squad number persists correctly",
+          "BVA: squad_number=27 is one above the highest seeded value (26)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_post_player_squad_number_27_boundary_above_max_seeded():\n    payload = {\n        \"firstName\": \"Boundary\",\n        \"lastName\": \"Test\",\n        \"squadNumber\": 27,\n        \"position\": \"Right-Back\",\n        \"abbrPosition\": \"RB\",\n        \"team\": \"Test United\",\n        \"league\": \"La Liga\",\n        \"starting11\": False\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 201\n    body = post_r.json()\n    assert body[\"squadNumber\"] == 27\n    assert body[\"firstName\"] == \"Boundary\"\n    assert body[\"lastName\"] == \"Test\"\n    assert body[\"position\"] == \"Right-Back\"\n    get_r = client.get(\"/players/squadnumber/27\")\n    assert get_r.status_code == 200\n    get_body = get_r.json()\n    assert get_body[\"squadNumber\"] == 27\n    assert get_body[\"firstName\"] == \"Boundary\"\n"
+      },
+      {
+        "name": "test_post_player_state_transition_nonexistent_to_persisted",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "DB seeded with 26 rows",
+          "Squad number 50 does not exist"
+        ],
+        "actions": [
+          "GET /players/squadnumber/50 \u2014 confirm 404 (pre-state: not exists)",
+          "POST /players/ with squad_number=50",
+          "Assert POST returns 201",
+          "GET /players/squadnumber/50 \u2014 confirm 200 (post-state: exists)",
+          "Assert Location header set correctly"
+        ],
+        "expected": [
+          "Initial GET returns 404",
+          "POST returns 201 with Location header /players/squadnumber/50",
+          "Subsequent GET returns 200 with matching player data"
+        ],
+        "trace": [
+          "R-PLAYER-019: state transition from non-existent to persisted",
+          "STC: covers not-exists -> exists transition"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_post_player_state_transition_nonexistent_to_persisted():\n    pre_r = client.get(\"/players/squadnumber/50\")\n    assert pre_r.status_code == 404\n    payload = {\n        \"firstName\": \"Transition\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 50,\n        \"position\": \"Centre-Back\",\n        \"abbrPosition\": \"CB\",\n        \"team\": \"State FC\",\n        \"league\": \"Serie A\",\n        \"starting11\": False\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 201\n    assert post_r.headers.get(\"location\") == \"/players/squadnumber/50\"\n    post_body = post_r.json()\n    assert post_body[\"squadNumber\"] == 50\n    get_r = client.get(\"/players/squadnumber/50\")\n    assert get_r.status_code == 200\n    get_body = get_r.json()\n    assert get_body[\"squadNumber\"] == 50\n    assert get_body[\"firstName\"] == \"Transition\"\n    assert get_body[\"lastName\"] == \"Player\"\n    assert get_body[\"id\"] == post_body[\"id\"]\n"
+      },
+      {
+        "name": "test_post_player_missing_first_name_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "DB seeded with 26 rows"
+        ],
+        "actions": [
+          "POST /players/ with firstName omitted (required field missing)",
+          "Assert response status is exactly 422",
+          "Assert player is NOT persisted by checking GET returns 404"
+        ],
+        "expected": [
+          "POST returns HTTP 422 Unprocessable Entity",
+          "GET /players/squadnumber/88 returns 404 (nothing persisted)"
+        ],
+        "trace": [
+          "R-PLAYER-019: error pathway HTTP 4xx on client error (validation failure)",
+          "NEG: missing required field firstName"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_post_player_missing_first_name_returns_422():\n    payload = {\n        \"lastName\": \"NoFirst\",\n        \"squadNumber\": 88,\n        \"position\": \"Goalkeeper\"\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 422\n    get_r = client.get(\"/players/squadnumber/88\")\n    assert get_r.status_code == 404\n"
+      },
+      {
+        "name": "test_post_player_missing_position_returns_422",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "DB seeded with 26 rows"
+        ],
+        "actions": [
+          "POST /players/ with position omitted (required field missing)",
+          "Assert response status is exactly 422",
+          "Assert player is NOT persisted by checking GET returns 404"
+        ],
+        "expected": [
+          "POST returns HTTP 422 Unprocessable Entity",
+          "GET /players/squadnumber/77 returns 404"
+        ],
+        "trace": [
+          "R-PLAYER-019: error pathway HTTP 4xx on client error (validation failure)",
+          "DT: decision table row \u2014 position=NULL, firstName=valid => reject"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_post_player_missing_position_returns_422():\n    payload = {\n        \"firstName\": \"NoPosition\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 77\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 422\n    get_r = client.get(\"/players/squadnumber/77\")\n    assert get_r.status_code == 404\n"
+      },
+      {
+        "name": "test_post_player_squad_number_26_boundary_at_max_seeded_conflicts",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "DB seeded with squad number 26 (Aditya Mehta)"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=26 (exactly at max seeded value, already exists)",
+          "Assert response status is exactly 409 (conflict, not 201)"
+        ],
+        "expected": [
+          "POST returns HTTP 409 Conflict",
+          "Existing player at squad_number=26 is not overwritten"
+        ],
+        "trace": [
+          "R-PLAYER-019: boundary at max seeded squad_number=26 triggers conflict",
+          "BVA: squad_number=26 is the exact boundary of seeded data"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_post_player_squad_number_26_boundary_at_max_seeded_conflicts():\n    payload = {\n        \"firstName\": \"BoundaryConflict\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 26,\n        \"position\": \"Goalkeeper\"\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 409\n    get_r = client.get(\"/players/squadnumber/26\")\n    assert get_r.status_code == 200\n    get_body = get_r.json()\n    assert get_body[\"firstName\"] == \"Aditya\"\n    assert get_body[\"lastName\"] == \"Mehta\"\n    assert get_body[\"squadNumber\"] == 26\n"
+      },
+      {
+        "name": "test_post_player_optional_fields_null_persists_correctly",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "DB seeded with 26 rows",
+          "Squad number 55 does not exist"
+        ],
+        "actions": [
+          "POST /players/ with only required fields (firstName, lastName, squadNumber, position), all optional fields omitted",
+          "Assert POST returns 201",
+          "Assert optional fields are null/None in response",
+          "GET /players/squadnumber/55 confirms persistence"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "middleName, dateOfBirth, abbrPosition, team, league, starting11 are null in response",
+          "GET returns 200 with same data"
+        ],
+        "trace": [
+          "R-PLAYER-019: player with only required fields persists to DB",
+          "EP: equivalence class \u2014 all optional fields null"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_post_player_optional_fields_null_persists_correctly():\n    payload = {\n        \"firstName\": \"Minimal\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 55,\n        \"position\": \"Left-Back\"\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 201\n    body = post_r.json()\n    assert body[\"firstName\"] == \"Minimal\"\n    assert body[\"lastName\"] == \"Player\"\n    assert body[\"squadNumber\"] == 55\n    assert body[\"position\"] == \"Left-Back\"\n    assert body[\"middleName\"] is None\n    assert body[\"dateOfBirth\"] is None\n    assert body[\"abbrPosition\"] is None\n    assert body[\"team\"] is None\n    assert body[\"league\"] is None\n    assert body[\"starting11\"] is None\n    get_r = client.get(\"/players/squadnumber/55\")\n    assert get_r.status_code == 200\n    get_body = get_r.json()\n    assert get_body[\"squadNumber\"] == 55\n    assert get_body[\"firstName\"] == \"Minimal\"\n"
+      },
+      {
+        "name": "test_post_player_response_contains_uuid_id_field",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "DB seeded with 26 rows",
+          "Squad number 60 does not exist"
+        ],
+        "actions": [
+          "POST /players/ with valid payload squad_number=60",
+          "Assert POST returns 201",
+          "Assert response body contains 'id' field that is a valid UUID string",
+          "Assert id is not empty string"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "Response JSON 'id' is a non-empty UUID string (36 chars with hyphens)"
+        ],
+        "trace": [
+          "R-PLAYER-019: created player has generated UUID persisted",
+          "EP: UUID generation and persistence"
+        ],
+        "executable": "import uuid\nfrom fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_post_player_response_contains_uuid_id_field():\n    payload = {\n        \"firstName\": \"UUID\",\n        \"lastName\": \"Check\",\n        \"squadNumber\": 60,\n        \"position\": \"Central Midfield\",\n        \"abbrPosition\": \"CM\",\n        \"team\": \"UUID FC\",\n        \"league\": \"Ligue 1\",\n        \"starting11\": True\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 201\n    body = post_r.json()\n    assert \"id\" in body\n    player_id = body[\"id\"]\n    assert isinstance(player_id, str)\n    assert len(player_id) == 36\n    parsed = uuid.UUID(player_id)\n    assert str(parsed) == player_id\n    assert body[\"squadNumber\"] == 60\n    assert body[\"starting11\"] == True\n"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-019",
+  "domain": "sports_players",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 15351,
+    "output_tokens": 5078,
+    "latency_ms": 59877,
+    "wall_ms": 59877,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-019\",\n  \"reasoning\": \"R-PLAYER-019 requires that POST /players/ commits a new player to the DB so a subsequent GET returns it. Tests must cover: (1) positive EP \u2014 valid new player returns 201 and GET confirms persistence; (2) negative NEG \u2014 duplicate squad_number returns 409 and is not double-inserted; (3) boundary BVA \u2014 squad_number at the boundary of existing data (27, one above the highest seeded value 26) is accepted and persisted; (4) STC \u2014 state transition from non-existent to persisted verified by GET /players/squadnumber/{n}; (5) DT \u2014 missing required field (firstName=null) returns 422 and nothing is persisted; (6) NEG \u2014 missing required field position returns 422. All tests use FastAPI TestClient in-process, assert exact status codes and exact payload fields drawn only from PlayerResponseModel and PlayerRequestModel attributes visible in source.\",\n  \"tests\": [\n    {\n      \"name\": \"test_post_player_persists_and_get_returns_201_then_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"DB seeded with 26 rows (squad numbers 1-26)\",\n        \"Squad number 99 does not exist in DB\"\n      ],\n      \"actions\": [\n        \"POST /players/ with a valid payload using squad_number=99\",\n        \"Assert POST response status is exactly 201\",\n        \"Assert response body contains all submitted fields plus a UUID id\",\n        \"GET /players/squadnumber/99\",\n        \"Assert GET response status is exactly 200\",\n        \"Assert GET response body matches the created player\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 201\",\n        \"Response JSON contains first_name, last_name, squad_number, position, id (UUID)\",\n        \"GET /players/squadnumber/99 returns HTTP 200 with matching payload\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-019: newly created player committed to DB\",\n        \"R-PLAYER-019: subsequent GET returns the player\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom main import app\\n\\nclient = TestClient(app)\\n\\ndef test_post_player_persists_and_get_returns_201_then_200():\\n    payload = {\\n        \\\"firstName\\\": \\\"Arjun\\\",\\n        \\\"lastName\\\": \\\"Verma\\\",\\n        \\\"squadNumber\\\": 99,\\n        \\\"position\\\": \\\"Goalkeeper\\\",\\n        \\\"middleName\\\": None,\\n        \\\"dateOfBirth\\\": \\\"2000-01-01T00:00:00.000Z\\\",\\n        \\\"abbrPosition\\\": \\\"GK\\\",\\n        \\\"team\\\": \\\"Test FC\\\",\\n        \\\"league\\\": \\\"Premier League\\\",\\n        \\\"starting11\\\": True\\n    }\\n    post_r = client.post(\\\"/players/\\\", json=payload)\\n    assert post_r.status_code == 201\\n    body = post_r.json()\\n    assert body[\\\"firstName\\\"] == \\\"Arjun\\\"\\n    assert body[\\\"lastName\\\"] == \\\"Verma\\\"\\n    assert body[\\\"squadNumber\\\"] == 99\\n    assert body[\\\"position\\\"] == \\\"Goalkeeper\\\"\\n    assert \\\"id\\\" in body\\n    assert body[\\\"id\\\"] is not None\\n    get_r = client.get(\\\"/players/squadnumber/99\\\")\\n    assert get_r.status_code == 200\\n    get_body = get_r.json()\\n    assert get_body[\\\"squadNumber\\\"] == 99\\n    assert get_body[\\\"firstName\\\"] == \\\"Arjun\\\"\\n    assert get_body[\\\"lastName\\\"] == \\\"Verma\\\"\\n    assert get_body[\\\"position\\\"] == \\\"Goalkeeper\\\"\\n    assert get_body[\\\"id\\\"] == body[\\\"id\\\"]\\n\"\n    },\n    {\n      \"name\": \"test_post_duplicate_squad_number_returns_409\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"DB seeded with squad number 1 (Anjali Banerjee)\"\n      ],\n      \"actions\": [\n        \"POST /players/ with squad_number=1 (already exists)\",\n        \"Assert response status is exactly 409\",\n        \"Assert response detail indicates conflict\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 409 Conflict\",\n        \"Response JSON detail contains conflict message\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-019: error pathway HTTP 4xx on client error (duplicate key)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom main import app\\n\\nclient = TestClient(app)\\n\\ndef test"
+  }
+}

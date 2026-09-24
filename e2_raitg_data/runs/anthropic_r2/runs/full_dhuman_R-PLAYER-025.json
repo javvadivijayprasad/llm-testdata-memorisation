@@ -1,0 +1,184 @@
+{
+  "req": {
+    "id": "R-PLAYER-025",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "functional",
+    "title": "Empty player list returns empty array",
+    "statement": "The system shall respond to GET /players when the table is empty with HTTP 200 and an empty JSON array.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "empty player list returns empty array"
+    ],
+    "expected_outcomes": [
+      "HTTP 200",
+      "[]"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "GET /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-025",
+    "reasoning": "R-PLAYER-025 requires that GET /players/ returns HTTP 200 and an empty JSON array when the player table is empty. The shipped fixture has 26 rows, so the positive test must mock/override the DB layer to return an empty list. We cover: (1) EP positive \u2014 empty DB yields 200 + []; (2) NEG negative \u2014 a non-existent sub-path yields 404, confirming routing is not broken; (3) BVA boundary \u2014 the response body is exactly [] (zero elements, not one, not null); (4) STC state-transition \u2014 cache is cold (MISS) on first call when table is empty, confirming the cache path does not corrupt the empty result; (5) DT decision-table \u2014 when DB returns rows the response is non-empty, proving the empty-array branch is distinct from the populated branch. All tests use fastapi.testclient.TestClient in-process, mock the async session dependency to control DB state, and assert exact values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_get_players_empty_table_returns_200_and_empty_array",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "player_service.retrieve_all_async is overridable via dependency injection",
+          "The players table is empty (mocked to return [])"
+        ],
+        "actions": [
+          "Override generate_async_session dependency to inject a mock session",
+          "Patch player_service.retrieve_all_async to return []",
+          "Clear the in-memory cache so the DB path is exercised",
+          "Send GET /players/ via TestClient"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response Content-Type is application/json",
+          "Response body is exactly the JSON array []",
+          "Parsed JSON is a list with length 0"
+        ],
+        "trace": [
+          "R-PLAYER-025: HTTP 200 on empty table",
+          "R-PLAYER-025: empty JSON array body"
+        ],
+        "executable": "from unittest.mock import AsyncMock, patch\nfrom fastapi.testclient import TestClient\nfrom main import app\nfrom routes.player_route import simple_memory_cache\nfrom databases.player_database import generate_async_session\nimport asyncio\n\nasyncio.get_event_loop().run_until_complete(simple_memory_cache.clear('players'))\n\nmock_session = AsyncMock()\n\nasync def override_session():\n    yield mock_session\n\napp.dependency_overrides[generate_async_session] = override_session\n\nwith patch('services.player_service.retrieve_all_async', new=AsyncMock(return_value=[])):\n    client = TestClient(app)\n    r = client.get('/players/')\n\napp.dependency_overrides.clear()\n\nassert r.status_code == 200\nassert r.headers['content-type'].startswith('application/json')\nassert r.json() == []\nassert isinstance(r.json(), list)\nassert len(r.json()) == 0\n"
+      },
+      {
+        "name": "test_get_players_empty_table_response_body_is_not_null_or_object",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "player_service.retrieve_all_async is mocked to return []",
+          "Cache is cleared before the call"
+        ],
+        "actions": [
+          "Override generate_async_session dependency",
+          "Patch player_service.retrieve_all_async to return []",
+          "Send GET /players/ via TestClient",
+          "Inspect the raw response body bytes and parsed JSON type"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Raw response body is exactly b'[]'",
+          "Parsed JSON is a list, not None, not a dict, not a non-empty list",
+          "len(parsed) == 0, not 1 or -1"
+        ],
+        "trace": [
+          "R-PLAYER-025: boundary \u2014 zero elements (not one, not null)",
+          "BVA: list length at lower boundary of 0"
+        ],
+        "executable": "from unittest.mock import AsyncMock, patch\nfrom fastapi.testclient import TestClient\nfrom main import app\nfrom routes.player_route import simple_memory_cache\nfrom databases.player_database import generate_async_session\nimport asyncio\n\nasyncio.get_event_loop().run_until_complete(simple_memory_cache.clear('players'))\n\nmock_session = AsyncMock()\n\nasync def override_session():\n    yield mock_session\n\napp.dependency_overrides[generate_async_session] = override_session\n\nwith patch('services.player_service.retrieve_all_async', new=AsyncMock(return_value=[])):\n    client = TestClient(app)\n    r = client.get('/players/')\n\napp.dependency_overrides.clear()\n\nassert r.status_code == 200\nparsed = r.json()\nassert parsed == []\nassert parsed is not None\nassert not isinstance(parsed, dict)\nassert len(parsed) == 0\nassert len(parsed) != 1\n"
+      },
+      {
+        "name": "test_get_players_invalid_sub_path_returns_404_not_200",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "No dependency override needed \u2014 routing is tested"
+        ],
+        "actions": [
+          "Send GET /players/nonexistent_path_xyz via TestClient (no matching route)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 422 (UUID parse failure) or 404 (no route)",
+          "Status code is NOT 200",
+          "Response body is NOT []"
+        ],
+        "trace": [
+          "R-PLAYER-025: negative \u2014 wrong path must not return 200 + []",
+          "NEG: confirms routing specificity; catches status-code constant mutations"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\nr = client.get('/players/nonexistent_path_xyz')\n\nassert r.status_code != 200\nassert r.json() != []\n"
+      },
+      {
+        "name": "test_get_players_empty_table_cache_miss_header_set",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "Cache is cleared so the first call is a MISS",
+          "player_service.retrieve_all_async is mocked to return []"
+        ],
+        "actions": [
+          "Clear the in-memory cache",
+          "Override generate_async_session dependency",
+          "Patch player_service.retrieve_all_async to return []",
+          "Send GET /players/ via TestClient"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "X-Cache response header is exactly 'MISS'",
+          "Response body is exactly []"
+        ],
+        "trace": [
+          "R-PLAYER-025: state-transition \u2014 cold cache + empty DB -> 200 + []",
+          "STC: cache MISS branch exercised; catches mutations that skip cache write or corrupt empty result"
+        ],
+        "executable": "from unittest.mock import AsyncMock, patch\nfrom fastapi.testclient import TestClient\nfrom main import app\nfrom routes.player_route import simple_memory_cache\nfrom databases.player_database import generate_async_session\nimport asyncio\n\nasyncio.get_event_loop().run_until_complete(simple_memory_cache.clear('players'))\n\nmock_session = AsyncMock()\n\nasync def override_session():\n    yield mock_session\n\napp.dependency_overrides[generate_async_session] = override_session\n\nwith patch('services.player_service.retrieve_all_async', new=AsyncMock(return_value=[])):\n    client = TestClient(app)\n    r = client.get('/players/')\n\napp.dependency_overrides.clear()\n\nassert r.status_code == 200\nassert r.headers.get('x-cache') == 'MISS'\nassert r.json() == []\n"
+      },
+      {
+        "name": "test_get_players_non_empty_table_returns_non_empty_array",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "player_service.retrieve_all_async is mocked to return one Player-like object",
+          "Cache is cleared before the call"
+        ],
+        "actions": [
+          "Clear the in-memory cache",
+          "Override generate_async_session dependency",
+          "Patch player_service.retrieve_all_async to return a list with one mock player",
+          "Send GET /players/ via TestClient"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body is a JSON array with exactly 1 element",
+          "The element contains squadNumber == 10"
+        ],
+        "trace": [
+          "R-PLAYER-025: decision-table \u2014 non-empty DB must NOT return []",
+          "DT: distinguishes empty-array branch from populated-array branch; kills mutations that always return []"
+        ],
+        "executable": "from unittest.mock import AsyncMock, patch, MagicMock\nfrom fastapi.testclient import TestClient\nfrom main import app\nfrom routes.player_route import simple_memory_cache\nfrom databases.player_database import generate_async_session\nfrom uuid import UUID\nimport asyncio\n\nasyncio.get_event_loop().run_until_complete(simple_memory_cache.clear('players'))\n\nmock_player = MagicMock()\nmock_player.id = UUID('acc433bf-d505-51fe-831e-45eb44c4d43c')\nmock_player.first_name = 'Lionel'\nmock_player.middle_name = 'Andres'\nmock_player.last_name = 'Messi'\nmock_player.date_of_birth = '1987-06-24T00:00:00.000Z'\nmock_player.squad_number = 10\nmock_player.position = 'Right Winger'\nmock_player.abbr_position = 'RW'\nmock_player.team = 'Paris Saint-Germain'\nmock_player.league = 'Ligue 1'\nmock_player.starting11 = True\n\nmock_session = AsyncMock()\n\nasync def override_session():\n    yield mock_session\n\napp.dependency_overrides[generate_async_session] = override_session\n\nwith patch('services.player_service.retrieve_all_async', new=AsyncMock(return_value=[mock_player])):\n    client = TestClient(app)\n    r = client.get('/players/')\n\napp.dependency_overrides.clear()\n\nassert r.status_code == 200\nbody = r.json()\nassert isinstance(body, list)\nassert len(body) == 1\nassert body[0]['squadNumber'] == 10\n"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-025",
+  "domain": "sports_players",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11301,
+    "output_tokens": 2992,
+    "latency_ms": 41311,
+    "wall_ms": 41311,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-025\",\n  \"reasoning\": \"R-PLAYER-025 requires that GET /players/ returns HTTP 200 and an empty JSON array when the player table is empty. The shipped fixture has 26 rows, so the positive test must mock/override the DB layer to return an empty list. We cover: (1) EP positive \u2014 empty DB yields 200 + []; (2) NEG negative \u2014 a non-existent sub-path yields 404, confirming routing is not broken; (3) BVA boundary \u2014 the response body is exactly [] (zero elements, not one, not null); (4) STC state-transition \u2014 cache is cold (MISS) on first call when table is empty, confirming the cache path does not corrupt the empty result; (5) DT decision-table \u2014 when DB returns rows the response is non-empty, proving the empty-array branch is distinct from the populated branch. All tests use fastapi.testclient.TestClient in-process, mock the async session dependency to control DB state, and assert exact values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_players_empty_table_returns_200_and_empty_array\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable from main\",\n        \"player_service.retrieve_all_async is overridable via dependency injection\",\n        \"The players table is empty (mocked to return [])\"\n      ],\n      \"actions\": [\n        \"Override generate_async_session dependency to inject a mock session\",\n        \"Patch player_service.retrieve_all_async to return []\",\n        \"Clear the in-memory cache so the DB path is exercised\",\n        \"Send GET /players/ via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response Content-Type is application/json\",\n        \"Response body is exactly the JSON array []\",\n        \"Parsed JSON is a list with length 0\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-025: HTTP 200 on empty table\",\n        \"R-PLAYER-025: empty JSON array body\"\n      ],\n      \"executable\": \"from unittest.mock import AsyncMock, patch\\nfrom fastapi.testclient import TestClient\\nfrom main import app\\nfrom routes.player_route import simple_memory_cache\\nfrom databases.player_database import generate_async_session\\nimport asyncio\\n\\nasyncio.get_event_loop().run_until_complete(simple_memory_cache.clear('players'))\\n\\nmock_session = AsyncMock()\\n\\nasync def override_session():\\n    yield mock_session\\n\\napp.dependency_overrides[generate_async_session] = override_session\\n\\nwith patch('services.player_service.retrieve_all_async', new=AsyncMock(return_value=[])):\\n    client = TestClient(app)\\n    r = client.get('/players/')\\n\\napp.dependency_overrides.clear()\\n\\nassert r.status_code == 200\\nassert r.headers['content-type'].startswith('application/json')\\nassert r.json() == []\\nassert isinstance(r.json(), list)\\nassert len(r.json()) == 0\\n\"\n    },\n    {\n      \"name\": \"test_get_players_empty_table_response_body_is_not_null_or_object\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is importable from main\",\n        \"player_service.retrieve_all_async is mocked to return []\",\n        \"Cache is cleared before the call\"\n      ],\n      \"actions\": [\n        \"Override generate_async_session dependency\",\n        \"Patch player_service.retrieve_all_async to return []\",\n        \"Send GET /players/ via TestClient\",\n        \"Inspect the raw response body bytes and parsed JSON type\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Raw response body is exactly b'[]'\",\n        \"Parsed JSON is a list, not None, not a dict, not a non-empty list\",\n        \"len(parsed) == 0, not 1 or -1\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-025: boundary \u2014 zero elements (not one, not null)\",\n        \"BVA: list length at lower boundary of 0\"\n      ],\n      \"executable\": \"from unittest.mock import AsyncMock, patch\\nfrom fastapi.testclient import TestClient\\nfrom main import app\\nfrom routes.player_route import simple_memory_"
+  }
+}

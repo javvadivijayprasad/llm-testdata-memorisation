@@ -1,0 +1,193 @@
+{
+  "req": {
+    "id": "R-TASK-028",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "idempotency",
+    "title": "DELETE is idempotent",
+    "statement": "The system shall respond with HTTP 404 for subsequent DELETE calls on the same task_id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete is idempotent"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "DELETE /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-028",
+    "reasoning": "R-TASK-028 requires DELETE /tasks/{task_id} to be idempotent: the first call on an existing task returns HTTP 204, and every subsequent call on the same task_id returns HTTP 404. The test suite covers: (1) positive \u2013 first DELETE returns 204 with no body; (2) state-transition \u2013 second DELETE on the same id returns exactly 404; (3) negative \u2013 DELETE on a never-existing id returns 404 immediately; (4) boundary \u2013 DELETE on task_id=1 (lowest valid integer) follows the same idempotency contract; (5) decision-table \u2013 verifying the 404 detail message content on the second call to catch constant/string mutations. Each test creates its own task via POST so the suite is fully self-contained against an empty database.",
+    "tests": [
+      {
+        "name": "test_first_delete_returns_204",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty",
+          "A task is created via POST /tasks/ returning HTTP 201"
+        ],
+        "actions": [
+          "POST /tasks/ with valid title to obtain a task_id",
+          "DELETE /tasks/{task_id} once"
+        ],
+        "expected": [
+          "HTTP 204 No Content",
+          "Response body is empty"
+        ],
+        "trace": [
+          "R-TASK-028: first DELETE on existing task must succeed with 2xx"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_first_delete_returns_204():\n    r = client.post(\"/tasks/\", json={\"title\": \"task_ep_pos\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n\n    r_del = client.delete(f\"/tasks/{task_id}\")\n    assert r_del.status_code == 204\n    assert r_del.content == b\"\"\n"
+      },
+      {
+        "name": "test_second_delete_returns_404_idempotency",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database is empty",
+          "A task is created via POST /tasks/ returning HTTP 201",
+          "First DELETE on that task_id has already been issued and returned 204"
+        ],
+        "actions": [
+          "POST /tasks/ with valid title to obtain a task_id",
+          "DELETE /tasks/{task_id} (first call)",
+          "DELETE /tasks/{task_id} (second call)"
+        ],
+        "expected": [
+          "First DELETE returns HTTP 204",
+          "Second DELETE returns HTTP 404",
+          "Response JSON detail contains the task_id"
+        ],
+        "trace": [
+          "R-TASK-028: subsequent DELETE on same task_id must return 404"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_second_delete_returns_404_idempotency():\n    r = client.post(\"/tasks/\", json={\"title\": \"task_stc_idem\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n\n    r1 = client.delete(f\"/tasks/{task_id}\")\n    assert r1.status_code == 204\n\n    r2 = client.delete(f\"/tasks/{task_id}\")\n    assert r2.status_code == 404\n    body = r2.json()\n    assert \"detail\" in body\n    assert str(task_id) in body[\"detail\"]\n"
+      },
+      {
+        "name": "test_delete_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty",
+          "No task with id 999999 exists"
+        ],
+        "actions": [
+          "DELETE /tasks/999999 without prior creation"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response JSON contains 'detail' key",
+          "detail message references the task id"
+        ],
+        "trace": [
+          "R-TASK-028: DELETE on never-existing task_id must return 404 (error pathway)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_delete_nonexistent_task_returns_404():\n    r = client.delete(\"/tasks/999999\")\n    assert r.status_code == 404\n    body = r.json()\n    assert \"detail\" in body\n    assert \"999999\" in body[\"detail\"]\n"
+      },
+      {
+        "name": "test_delete_idempotency_third_call_still_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "A task is created via POST /tasks/",
+          "Two prior DELETE calls have been made on the same task_id"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task",
+          "DELETE /tasks/{task_id} first time -> expect 204",
+          "DELETE /tasks/{task_id} second time -> expect 404",
+          "DELETE /tasks/{task_id} third time -> expect 404"
+        ],
+        "expected": [
+          "First DELETE: HTTP 204",
+          "Second DELETE: HTTP 404",
+          "Third DELETE: HTTP 404 (idempotency holds beyond second call)"
+        ],
+        "trace": [
+          "R-TASK-028: idempotency must hold for N>2 subsequent calls, not just the second"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_delete_idempotency_third_call_still_404():\n    r = client.post(\"/tasks/\", json={\"title\": \"task_bva_third\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n\n    r1 = client.delete(f\"/tasks/{task_id}\")\n    assert r1.status_code == 204\n\n    r2 = client.delete(f\"/tasks/{task_id}\")\n    assert r2.status_code == 404\n\n    r3 = client.delete(f\"/tasks/{task_id}\")\n    assert r3.status_code == 404\n    assert \"detail\" in r3.json()\n"
+      },
+      {
+        "name": "test_delete_detail_message_exact_format",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty",
+          "A task is created and then deleted once"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task and capture task_id",
+          "DELETE /tasks/{task_id} first call",
+          "DELETE /tasks/{task_id} second call",
+          "Inspect exact detail string in 404 response"
+        ],
+        "expected": [
+          "Second DELETE returns HTTP 404",
+          "detail equals exactly 'Task with id {task_id} not found'"
+        ],
+        "trace": [
+          "R-TASK-028: 404 detail string must match the exact constant in delete_task handler"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_delete_detail_message_exact_format():\n    r = client.post(\"/tasks/\", json={\"title\": \"task_dt_detail\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n\n    r1 = client.delete(f\"/tasks/{task_id}\")\n    assert r1.status_code == 204\n\n    r2 = client.delete(f\"/tasks/{task_id}\")\n    assert r2.status_code == 404\n    body = r2.json()\n    expected_detail = f\"Task with id {task_id} not found\"\n    assert body[\"detail\"] == expected_detail\n"
+      },
+      {
+        "name": "test_delete_task_id_1_boundary_idempotency",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "A task is created and its id is captured (lowest auto-assigned id)"
+        ],
+        "actions": [
+          "POST /tasks/ to create first task (id likely 1 in fresh DB)",
+          "DELETE /tasks/{task_id} first call",
+          "GET /tasks/{task_id} to confirm task no longer exists",
+          "DELETE /tasks/{task_id} second call"
+        ],
+        "expected": [
+          "First DELETE: HTTP 204",
+          "GET after delete: HTTP 404",
+          "Second DELETE: HTTP 404"
+        ],
+        "trace": [
+          "R-TASK-028: boundary at minimum task_id; GET confirms deletion before second DELETE"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_delete_task_id_1_boundary_idempotency():\n    r = client.post(\"/tasks/\", json={\"title\": \"task_bva_min_id\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n    assert isinstance(task_id, int)\n\n    r1 = client.delete(f\"/tasks/{task_id}\")\n    assert r1.status_code == 204\n    assert r1.content == b\"\"\n\n    r_get = client.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 404\n\n    r2 = client.delete(f\"/tasks/{task_id}\")\n    assert r2.status_code == 404\n    assert r2.json()[\"detail\"] == f\"Task with id {task_id} not found\"\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-028",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4867,
+    "output_tokens": 2767,
+    "latency_ms": 35037,
+    "wall_ms": 35037,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-028\",\n  \"reasoning\": \"R-TASK-028 requires DELETE /tasks/{task_id} to be idempotent: the first call on an existing task returns HTTP 204, and every subsequent call on the same task_id returns HTTP 404. The test suite covers: (1) positive \u2013 first DELETE returns 204 with no body; (2) state-transition \u2013 second DELETE on the same id returns exactly 404; (3) negative \u2013 DELETE on a never-existing id returns 404 immediately; (4) boundary \u2013 DELETE on task_id=1 (lowest valid integer) follows the same idempotency contract; (5) decision-table \u2013 verifying the 404 detail message content on the second call to catch constant/string mutations. Each test creates its own task via POST so the suite is fully self-contained against an empty database.\",\n  \"tests\": [\n    {\n      \"name\": \"test_first_delete_returns_204\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"A task is created via POST /tasks/ returning HTTP 201\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with valid title to obtain a task_id\",\n        \"DELETE /tasks/{task_id} once\"\n      ],\n      \"expected\": [\n        \"HTTP 204 No Content\",\n        \"Response body is empty\"\n      ],\n      \"trace\": [\n        \"R-TASK-028: first DELETE on existing task must succeed with 2xx\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_first_delete_returns_204():\\n    r = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"task_ep_pos\\\", \\\"completed\\\": False})\\n    assert r.status_code == 201\\n    task_id = r.json()[\\\"id\\\"]\\n\\n    r_del = client.delete(f\\\"/tasks/{task_id}\\\")\\n    assert r_del.status_code == 204\\n    assert r_del.content == b\\\"\\\"\\n\"\n    },\n    {\n      \"name\": \"test_second_delete_returns_404_idempotency\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"A task is created via POST /tasks/ returning HTTP 201\",\n        \"First DELETE on that task_id has already been issued and returned 204\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with valid title to obtain a task_id\",\n        \"DELETE /tasks/{task_id} (first call)\",\n        \"DELETE /tasks/{task_id} (second call)\"\n      ],\n      \"expected\": [\n        \"First DELETE returns HTTP 204\",\n        \"Second DELETE returns HTTP 404\",\n        \"Response JSON detail contains the task_id\"\n      ],\n      \"trace\": [\n        \"R-TASK-028: subsequent DELETE on same task_id must return 404\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_second_delete_returns_404_idempotency():\\n    r = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"task_stc_idem\\\", \\\"completed\\\": False})\\n    assert r.status_code == 201\\n    task_id = r.json()[\\\"id\\\"]\\n\\n    r1 = client.delete(f\\\"/tasks/{task_id}\\\")\\n    assert r1.status_code == 204\\n\\n    r2 = client.delete(f\\\"/tasks/{task_id}\\\")\\n    assert r2.status_code == 404\\n    body = r2.json()\\n    assert \\\"detail\\\" in body\\n    assert str(task_id) in body[\\\"detail\\\"]\\n\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"No task with id 999999 exists\"\n      ],\n      \"actions\": [\n        \"DELETE /tasks/999999 without prior creation\"\n      ],\n      \"expected\": [\n        \"HTTP 404 Not Found\",\n        \"Response JSON contains 'detail' key\",\n        \"detail message references the task id\"\n      ],\n      \"trace\": [\n        \"R-TASK-028: DELETE on never-existing task_id must return 404 (error pathway)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_delete_nonexistent_task_returns_404():\\n    r = client.delete(\\\"/tasks/999999\\\")\\n    assert r.status_code == 404\\n    body = r.json()\\n "
+  }
+}

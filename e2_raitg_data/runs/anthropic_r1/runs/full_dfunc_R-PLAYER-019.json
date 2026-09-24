@@ -1,0 +1,210 @@
+{
+  "req": {
+    "id": "R-PLAYER-019",
+    "domain": "sports_players",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Player creation persists to DB",
+    "statement": "The system shall commit newly created players to the players table so subsequent GET requests return them.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "player creation persists to db"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "POST /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-019",
+    "reasoning": "R-PLAYER-019 requires that POST /players/ commits a new player to the DB and that a subsequent GET returns it. The suite covers: (1) EP positive \u2014 valid new player returns 201 and is retrievable via GET; (2) NEG negative \u2014 duplicate squad_number returns 409 and body is not re-persisted; (3) BVA boundary \u2014 squad_number at the edge of the pre-loaded range (27, one above the highest seeded value 26) to catch off-by-one mutations; (4) DT decision-table \u2014 missing required field returns 422 (Pydantic validation path, not DB path); (5) STC state-transition \u2014 POST then GET by squad_number confirms the state transition from 'not-exists' to 'persisted'. All tests use exact status codes, exact field values, and verify both the write and the subsequent read to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_post_player_persists_and_get_returns_it",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "DB is pre-loaded with 26 rows (squad numbers 1-26)",
+          "Squad number 99 does not exist in the DB"
+        ],
+        "actions": [
+          "POST /players/ with a valid payload using squad_number=99",
+          "Assert response status is exactly 201",
+          "Assert response body contains all submitted fields plus a UUID id",
+          "GET /players/squadnumber/99",
+          "Assert GET response status is exactly 200",
+          "Assert GET response body matches the created player"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "Response JSON contains firstName='Testfirst', lastName='Testlast', squadNumber=99, position='Goalkeeper'",
+          "Response JSON contains a non-null 'id' field",
+          "Subsequent GET /players/squadnumber/99 returns HTTP 200",
+          "GET response body matches the POST response body"
+        ],
+        "trace": [
+          "R-PLAYER-019: newly created player must be committed to DB",
+          "R-PLAYER-019: subsequent GET must return the created player"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nimport uuid\n\nclient = TestClient(app)\n\ndef test_post_player_persists_and_get_returns_it():\n    payload = {\n        \"firstName\": \"Testfirst\",\n        \"lastName\": \"Testlast\",\n        \"squadNumber\": 99,\n        \"position\": \"Goalkeeper\"\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 201\n    body = post_r.json()\n    assert body[\"firstName\"] == \"Testfirst\"\n    assert body[\"lastName\"] == \"Testlast\"\n    assert body[\"squadNumber\"] == 99\n    assert body[\"position\"] == \"Goalkeeper\"\n    assert \"id\" in body\n    uuid.UUID(body[\"id\"])  # must be a valid UUID\n    get_r = client.get(\"/players/squadnumber/99\")\n    assert get_r.status_code == 200\n    get_body = get_r.json()\n    assert get_body[\"id\"] == body[\"id\"]\n    assert get_body[\"firstName\"] == \"Testfirst\"\n    assert get_body[\"lastName\"] == \"Testlast\"\n    assert get_body[\"squadNumber\"] == 99\n    assert get_body[\"position\"] == \"Goalkeeper\"\n"
+      },
+      {
+        "name": "test_post_duplicate_squad_number_returns_409",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "DB is pre-loaded with squad number 10 (Kabir Mary Reddy)"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=10 (already exists)",
+          "Assert response status is exactly 409",
+          "Assert response detail contains conflict message",
+          "GET /players/squadnumber/10 to confirm original record unchanged"
+        ],
+        "expected": [
+          "POST returns HTTP 409",
+          "Response detail is 'A Player with this squad number already exists.'",
+          "GET /players/squadnumber/10 still returns the original player (Kabir Reddy)"
+        ],
+        "trace": [
+          "R-PLAYER-019: duplicate squad_number must not overwrite existing record",
+          "player_route.py: HTTP 409 Conflict raised when existing player found"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_duplicate_squad_number_returns_409():\n    payload = {\n        \"firstName\": \"Duplicate\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 10,\n        \"position\": \"Goalkeeper\"\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 409\n    detail = post_r.json().get(\"detail\", \"\")\n    assert detail == \"A Player with this squad number already exists.\"\n    get_r = client.get(\"/players/squadnumber/10\")\n    assert get_r.status_code == 200\n    get_body = get_r.json()\n    assert get_body[\"firstName\"] == \"Kabir\"\n    assert get_body[\"lastName\"] == \"Reddy\"\n    assert get_body[\"squadNumber\"] == 10\n"
+      },
+      {
+        "name": "test_post_player_squad_number_boundary_above_max_seeded",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "DB is pre-loaded with squad numbers 1-26 (max seeded = 26)",
+          "Squad number 27 does not exist"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=27 (one above max seeded value)",
+          "Assert response status is exactly 201",
+          "Assert squadNumber in response is exactly 27",
+          "GET /players/squadnumber/27 to confirm persistence",
+          "Assert GET returns 200 with squadNumber=27"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "Response body squadNumber == 27 (not 26, not 28)",
+          "GET /players/squadnumber/27 returns HTTP 200",
+          "GET body squadNumber == 27"
+        ],
+        "trace": [
+          "R-PLAYER-019: persistence must work at boundary of existing data range",
+          "BVA: squad_number = max_seeded + 1 = 27"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nimport uuid\n\nclient = TestClient(app)\n\ndef test_post_player_squad_number_boundary_above_max_seeded():\n    payload = {\n        \"firstName\": \"Boundary\",\n        \"lastName\": \"Test\",\n        \"squadNumber\": 27,\n        \"position\": \"Centre-Back\"\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 201\n    body = post_r.json()\n    assert body[\"squadNumber\"] == 27\n    assert body[\"firstName\"] == \"Boundary\"\n    assert body[\"lastName\"] == \"Test\"\n    assert body[\"position\"] == \"Centre-Back\"\n    assert \"id\" in body\n    uuid.UUID(body[\"id\"])\n    get_r = client.get(\"/players/squadnumber/27\")\n    assert get_r.status_code == 200\n    get_body = get_r.json()\n    assert get_body[\"squadNumber\"] == 27\n    assert get_body[\"id\"] == body[\"id\"]\n"
+      },
+      {
+        "name": "test_post_player_missing_required_field_returns_422",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "DB is pre-loaded with 26 rows",
+          "Request body omits required field 'position'"
+        ],
+        "actions": [
+          "POST /players/ with payload missing 'position' (required field)",
+          "Assert response status is exactly 422",
+          "Assert no new player is retrievable at the given squad_number"
+        ],
+        "expected": [
+          "POST returns HTTP 422 (Unprocessable Entity)",
+          "GET /players/squadnumber/98 returns HTTP 404 (player was not created)"
+        ],
+        "trace": [
+          "R-PLAYER-019: invalid request must not persist to DB",
+          "player_route.py: 422 documented for Pydantic validation failure"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_player_missing_required_field_returns_422():\n    payload = {\n        \"firstName\": \"NoPosition\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 98\n        # 'position' intentionally omitted\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 422\n    get_r = client.get(\"/players/squadnumber/98\")\n    assert get_r.status_code == 404\n"
+      },
+      {
+        "name": "test_post_player_state_transition_not_exists_to_persisted",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "DB is pre-loaded with 26 rows",
+          "Squad number 50 does not exist"
+        ],
+        "actions": [
+          "GET /players/squadnumber/50 to confirm pre-state is 404",
+          "POST /players/ with squad_number=50",
+          "Assert POST returns 201",
+          "GET /players/squadnumber/50 to confirm post-state is 200",
+          "Assert all fields match the submitted payload exactly"
+        ],
+        "expected": [
+          "Initial GET returns HTTP 404",
+          "POST returns HTTP 201 with Location header '/players/squadnumber/50'",
+          "Final GET returns HTTP 200",
+          "Final GET body has firstName='Priya', lastName='Chopra2', squadNumber=50, position='Left-Back', starting11=true"
+        ],
+        "trace": [
+          "R-PLAYER-019: state transition from non-existent to persisted",
+          "STC: covers the full lifecycle: absent -> created -> retrievable"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_player_state_transition_not_exists_to_persisted():\n    pre_get = client.get(\"/players/squadnumber/50\")\n    assert pre_get.status_code == 404\n    payload = {\n        \"firstName\": \"Priya\",\n        \"lastName\": \"Chopra2\",\n        \"squadNumber\": 50,\n        \"position\": \"Left-Back\",\n        \"starting11\": True\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 201\n    body = post_r.json()\n    assert body[\"squadNumber\"] == 50\n    assert body[\"firstName\"] == \"Priya\"\n    assert body[\"lastName\"] == \"Chopra2\"\n    assert body[\"position\"] == \"Left-Back\"\n    assert body[\"starting11\"] is True\n    location = post_r.headers.get(\"location\", \"\")\n    assert location == \"/players/squadnumber/50\"\n    post_get = client.get(\"/players/squadnumber/50\")\n    assert post_get.status_code == 200\n    gb = post_get.json()\n    assert gb[\"firstName\"] == \"Priya\"\n    assert gb[\"lastName\"] == \"Chopra2\"\n    assert gb[\"squadNumber\"] == 50\n    assert gb[\"position\"] == \"Left-Back\"\n    assert gb[\"starting11\"] is True\n"
+      },
+      {
+        "name": "test_post_player_optional_fields_null_persists_correctly",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "DB is pre-loaded with 26 rows",
+          "Squad number 97 does not exist"
+        ],
+        "actions": [
+          "POST /players/ with only required fields (no optional fields)",
+          "Assert POST returns 201",
+          "Assert optional fields are null/None in response",
+          "GET /players/squadnumber/97 and assert optional fields are null"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "middleName, dateOfBirth, abbrPosition, team, league, starting11 are null in response",
+          "GET returns HTTP 200 with same null optional fields"
+        ],
+        "trace": [
+          "R-PLAYER-019: minimal valid payload must persist and be retrievable",
+          "EP: partition of requests with only required fields"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_player_optional_fields_null_persists_correctly():\n    payload = {\n        \"firstName\": \"Minimal\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 97,\n        \"position\": \"Right Winger\"\n    }\n    post_r = client.post(\"/players/\", json=payload)\n    assert post_r.status_code == 201\n    body = post_r.json()\n    assert body[\"firstName\"] == \"Minimal\"\n    assert body[\"lastName\"] == \"Player\"\n    assert body[\"squadNumber\"] == 97\n    assert body[\"position\"] == \"Right Winger\"\n    assert body[\"middleName\"] is None\n    assert body[\"dateOfBirth\"] is None\n    assert body[\"abbrPosition\"] is None\n    assert body[\"team\"] is None\n    assert body[\"league\"] is None\n    assert body[\"starting11\"] is None\n    get_r = client.get(\"/players/squadnumber/97\")\n    assert get_r.status_code == 200\n    gb = get_r.json()\n    assert gb[\"squadNumber\"] == 97\n    assert gb[\"middleName\"] is None\n    assert gb[\"starting11\"] is None\n"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-019",
+  "domain": "sports_players",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11194,
+    "output_tokens": 3939,
+    "latency_ms": 49609,
+    "wall_ms": 49609,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-019\",\n  \"reasoning\": \"R-PLAYER-019 requires that POST /players/ commits a new player to the DB and that a subsequent GET returns it. The suite covers: (1) EP positive \u2014 valid new player returns 201 and is retrievable via GET; (2) NEG negative \u2014 duplicate squad_number returns 409 and body is not re-persisted; (3) BVA boundary \u2014 squad_number at the edge of the pre-loaded range (27, one above the highest seeded value 26) to catch off-by-one mutations; (4) DT decision-table \u2014 missing required field returns 422 (Pydantic validation path, not DB path); (5) STC state-transition \u2014 POST then GET by squad_number confirms the state transition from 'not-exists' to 'persisted'. All tests use exact status codes, exact field values, and verify both the write and the subsequent read to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_post_player_persists_and_get_returns_it\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"DB is pre-loaded with 26 rows (squad numbers 1-26)\",\n        \"Squad number 99 does not exist in the DB\"\n      ],\n      \"actions\": [\n        \"POST /players/ with a valid payload using squad_number=99\",\n        \"Assert response status is exactly 201\",\n        \"Assert response body contains all submitted fields plus a UUID id\",\n        \"GET /players/squadnumber/99\",\n        \"Assert GET response status is exactly 200\",\n        \"Assert GET response body matches the created player\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 201\",\n        \"Response JSON contains firstName='Testfirst', lastName='Testlast', squadNumber=99, position='Goalkeeper'\",\n        \"Response JSON contains a non-null 'id' field\",\n        \"Subsequent GET /players/squadnumber/99 returns HTTP 200\",\n        \"GET response body matches the POST response body\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-019: newly created player must be committed to DB\",\n        \"R-PLAYER-019: subsequent GET must return the created player\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\nimport uuid\\n\\nclient = TestClient(app)\\n\\ndef test_post_player_persists_and_get_returns_it():\\n    payload = {\\n        \\\"firstName\\\": \\\"Testfirst\\\",\\n        \\\"lastName\\\": \\\"Testlast\\\",\\n        \\\"squadNumber\\\": 99,\\n        \\\"position\\\": \\\"Goalkeeper\\\"\\n    }\\n    post_r = client.post(\\\"/players/\\\", json=payload)\\n    assert post_r.status_code == 201\\n    body = post_r.json()\\n    assert body[\\\"firstName\\\"] == \\\"Testfirst\\\"\\n    assert body[\\\"lastName\\\"] == \\\"Testlast\\\"\\n    assert body[\\\"squadNumber\\\"] == 99\\n    assert body[\\\"position\\\"] == \\\"Goalkeeper\\\"\\n    assert \\\"id\\\" in body\\n    uuid.UUID(body[\\\"id\\\"])  # must be a valid UUID\\n    get_r = client.get(\\\"/players/squadnumber/99\\\")\\n    assert get_r.status_code == 200\\n    get_body = get_r.json()\\n    assert get_body[\\\"id\\\"] == body[\\\"id\\\"]\\n    assert get_body[\\\"firstName\\\"] == \\\"Testfirst\\\"\\n    assert get_body[\\\"lastName\\\"] == \\\"Testlast\\\"\\n    assert get_body[\\\"squadNumber\\\"] == 99\\n    assert get_body[\\\"position\\\"] == \\\"Goalkeeper\\\"\\n\"\n    },\n    {\n      \"name\": \"test_post_duplicate_squad_number_returns_409\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"DB is pre-loaded with squad number 10 (Kabir Mary Reddy)\"\n      ],\n      \"actions\": [\n        \"POST /players/ with squad_number=10 (already exists)\",\n        \"Assert response status is exactly 409\",\n        \"Assert response detail contains conflict message\",\n        \"GET /players/squadnumber/10 to confirm original record unchanged\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 409\",\n        \"Response detail is 'A Player with this squad number already exists.'\",\n        \"GET /players/squadnumber/10 still returns the original player (Kabir Reddy)\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-019: duplicate squad_number must not overwrite existing record\",\n        \"player_route.py: HTTP 40"
+  }
+}

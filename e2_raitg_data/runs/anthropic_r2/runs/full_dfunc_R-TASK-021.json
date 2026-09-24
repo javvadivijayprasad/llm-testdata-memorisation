@@ -1,0 +1,169 @@
+{
+  "req": {
+    "id": "R-TASK-021",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Task creation persists",
+    "statement": "The system shall commit new task rows so subsequent GET calls return them across requests.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task creation persists"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-021",
+    "reasoning": "R-TASK-021 requires that POST /tasks/ commits new task rows so subsequent GET calls return them. I design: (1) a positive EP test that POSTs a valid task, checks 201 + exact payload fields, then GETs by ID and verifies persistence; (2) a negative NEG test that POSTs with a missing required field (title) and asserts exactly 422; (3) a BVA test at the title length boundary (1-char min, 100-char max, 101-char over-max) to catch off-by-one mutations on Field constraints; (4) a STC test verifying the state transition from non-existent to persisted (GET 404 before POST, 200 after); (5) a DT test covering the completed boolean both True and False to catch boolean-negation mutations. All tests use in-process TestClient with SQLite in-memory override to remain deterministic and idempotent.",
+    "tests": [
+      {
+        "name": "test_post_task_persists_and_get_returns_exact_payload",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite database",
+          "No prior tasks exist"
+        ],
+        "actions": [
+          "POST /tasks/ with title='Read chapter 5', description='Signal pulse', completed=false",
+          "Assert 201 response with exact fields",
+          "GET /tasks/{id} with the returned id",
+          "Assert 200 and payload matches created task"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "Response JSON contains title='Read chapter 5', description='Signal pulse', completed=false, id is integer",
+          "GET /tasks/{id} returns HTTP 200",
+          "GET payload title, description, completed match POST payload exactly"
+        ],
+        "trace": [
+          "R-TASK-021: new task rows committed so subsequent GET returns them"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app.models import Base\n\nengine_mem = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nBase.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_post_task_persists_and_get_returns_exact_payload():\n    payload = {\"title\": \"Read chapter 5\", \"description\": \"Signal pulse\", \"completed\": False}\n    r_post = client.post(\"/tasks/\", json=payload)\n    assert r_post.status_code == 201\n    data = r_post.json()\n    assert data[\"title\"] == \"Read chapter 5\"\n    assert data[\"description\"] == \"Signal pulse\"\n    assert data[\"completed\"] == False\n    assert isinstance(data[\"id\"], int)\n    task_id = data[\"id\"]\n    r_get = client.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 200\n    got = r_get.json()\n    assert got[\"id\"] == task_id\n    assert got[\"title\"] == \"Read chapter 5\"\n    assert got[\"description\"] == \"Signal pulse\"\n    assert got[\"completed\"] == False\n\ntest_post_task_persists_and_get_returns_exact_payload()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_post_task_missing_title_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite database"
+        ],
+        "actions": [
+          "POST /tasks/ with body missing the required 'title' field"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity is returned",
+          "No task is created in the database"
+        ],
+        "trace": [
+          "R-TASK-021 error pathway: HTTP 4xx on client error"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app.models import Base\n\nengine_mem2 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionMem2 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem2)\nBase.metadata.create_all(bind=engine_mem2)\n\ndef override_get_db2():\n    db = SessionMem2()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db2\nclient2 = TestClient(app)\n\ndef test_post_task_missing_title_returns_422():\n    r = client2.post(\"/tasks/\", json={\"description\": \"no title here\", \"completed\": False})\n    assert r.status_code == 422\n    r_list = client2.get(\"/tasks/\")\n    assert r_list.status_code == 200\n    assert r_list.json() == []\n\ntest_post_task_missing_title_returns_422()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_post_task_title_boundary_lengths",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite database",
+          "Title field has min_length=1, max_length=100 per schema"
+        ],
+        "actions": [
+          "POST /tasks/ with title of length 1 (min boundary) \u2014 expect 201",
+          "POST /tasks/ with title of length 100 (max boundary) \u2014 expect 201",
+          "POST /tasks/ with title of length 101 (over max) \u2014 expect 422",
+          "POST /tasks/ with title of length 0 / empty string (under min) \u2014 expect 422"
+        ],
+        "expected": [
+          "Length-1 title: HTTP 201, title in response equals the single character",
+          "Length-100 title: HTTP 201, title in response equals the 100-char string",
+          "Length-101 title: HTTP 422",
+          "Empty-string title: HTTP 422"
+        ],
+        "trace": [
+          "R-TASK-021: valid task creation persists; BVA on title min_length=1, max_length=100"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app.models import Base\n\nengine_mem3 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionMem3 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem3)\nBase.metadata.create_all(bind=engine_mem3)\n\ndef override_get_db3():\n    db = SessionMem3()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db3\nclient3 = TestClient(app)\n\ndef test_post_task_title_boundary_lengths():\n    t1 = \"A\"\n    r1 = client3.post(\"/tasks/\", json={\"title\": t1, \"completed\": False})\n    assert r1.status_code == 201\n    assert r1.json()[\"title\"] == t1\n    t100 = \"B\" * 100\n    r100 = client3.post(\"/tasks/\", json={\"title\": t100, \"completed\": False})\n    assert r100.status_code == 201\n    assert r100.json()[\"title\"] == t100\n    t101 = \"C\" * 101\n    r101 = client3.post(\"/tasks/\", json={\"title\": t101, \"completed\": False})\n    assert r101.status_code == 422\n    r_empty = client3.post(\"/tasks/\", json={\"title\": \"\", \"completed\": False})\n    assert r_empty.status_code == 422\n\ntest_post_task_title_boundary_lengths()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_post_task_state_transition_nonexistent_to_persisted",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite database",
+          "Task with a specific ID does not yet exist"
+        ],
+        "actions": [
+          "GET /tasks/1 before any POST \u2014 expect 404",
+          "POST /tasks/ to create a task",
+          "GET /tasks/{returned_id} \u2014 expect 200 with matching data"
+        ],
+        "expected": [
+          "Pre-creation GET returns HTTP 404",
+          "POST returns HTTP 201",
+          "Post-creation GET returns HTTP 200 with id, title, completed matching created task"
+        ],
+        "trace": [
+          "R-TASK-021: state transition from non-existent to persisted; GET must return task after POST"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app.models import Base\n\nengine_mem4 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionMem4 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem4)\nBase.metadata.create_all(bind=engine_mem4)\n\ndef override_get_db4():\n    db = SessionMem4()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db4\nclient4 = TestClient(app)\n\ndef test_post_task_state_transition_nonexistent_to_persisted():\n    r_before = client4.get(\"/tasks/1\")\n    assert r_before.status_code == 404\n    r_post = client4.post(\"/tasks/\", json={\"title\": \"Book flight tickets\", \"completed\": True})\n    assert r_post.status_code == 201\n    created = r_post.json()\n    assert created[\"title\"] == \"Book flight tickets\"\n    assert created[\"completed\"] == True\n    task_id = created[\"id\"]\n    r_after = client4.get(f\"/tasks/{task_id}\")\n    assert r_after.status_code == 200\n    fetched = r_after.json()\n    assert fetched[\"id\"] == task_id\n    assert fetched[\"title\"] == \"Book flight tickets\"\n    assert fetched[\"completed\"] == True\n\ntest_post_task_state_transition_nonexistent_to_persisted()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_post_task_completed_boolean_both_values",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite database"
+        ],
+        "actions": [
+          "POST /tasks/ with completed=true, verify response and GET both show completed=true",
+          "POST /tasks/ with completed=false, verify response and GET both show completed=false"
+        ],
+        "expected": [
+          "Task with completed=true: POST 201, GET 200, completed field is exactly true",
+          "Task with completed=false: POST 201, GET 200, completed field is exactly false",
+          "GET /tasks/?completed=true returns only the true task",
+          "GET /tasks/?completed=false returns only the false task"
+        ],
+        "trace": [
+          "R-TASK-021: persistence of completed boolean; DT covers both boolean branches to catch boolean-negation mutations"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app.models import Base\n\nengine_mem5 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nSessionMem5 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem5)\nBase.metadata.create_all(bind=engine_mem5)\n\ndef override_get_db5():\n    db = SessionMem5()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db5\nclient5 = TestClient(app)\n\ndef test_post_task_completed_boolean_both_values():\n    r_true = client5.post(\"/tasks/\", json={\"title\": \"Renew gym membership\", \"completed\": True})\n    assert r_true.status_code == 201\n    d_true = r_true.json()\n    assert d_true[\"completed\"] == True\n    id_true = d_true[\"id\"]\n    g_true = client5.get(f\"/tasks/{id_true}\")\n    assert g_true.status_code == 200\n    assert g_true.json()[\"completed\"] == True\n    r_false = client5.post(\"/tasks/\", json={\"title\": \"Organize desk\", \"completed\": False})\n    assert r_false.status_code == 201\n    d_false = r_false.json()\n    assert d_false[\"completed\"] == False\n    id_false = d_false[\"id\"]\n    g_false = client5.get(f\"/tasks/{id_false}\")\n    assert g_false.status_code == 200\n    assert g_false.json()[\"completed\"] == False\n    r_filter_true = client5.get(\"/tasks/?completed=true\")\n    assert r_filter_true.status_code == 200\n    ids_true = [t[\"id\"] for t in r_filter_true.json()]\n    assert id_true in ids_true\n    assert id_false not in ids_true\n\ntest_post_task_completed_boolean_both_values()\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-021",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5658,
+    "output_tokens": 4031,
+    "latency_ms": 48895,
+    "wall_ms": 48895,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-021\",\n  \"reasoning\": \"R-TASK-021 requires that POST /tasks/ commits new task rows so subsequent GET calls return them. I design: (1) a positive EP test that POSTs a valid task, checks 201 + exact payload fields, then GETs by ID and verifies persistence; (2) a negative NEG test that POSTs with a missing required field (title) and asserts exactly 422; (3) a BVA test at the title length boundary (1-char min, 100-char max, 101-char over-max) to catch off-by-one mutations on Field constraints; (4) a STC test verifying the state transition from non-existent to persisted (GET 404 before POST, 200 after); (5) a DT test covering the completed boolean both True and False to catch boolean-negation mutations. All tests use in-process TestClient with SQLite in-memory override to remain deterministic and idempotent.\",\n  \"tests\": [\n    {\n      \"name\": \"test_post_task_persists_and_get_returns_exact_payload\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App is running in-process with a clean in-memory SQLite database\",\n        \"No prior tasks exist\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title='Read chapter 5', description='Signal pulse', completed=false\",\n        \"Assert 201 response with exact fields\",\n        \"GET /tasks/{id} with the returned id\",\n        \"Assert 200 and payload matches created task\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 201\",\n        \"Response JSON contains title='Read chapter 5', description='Signal pulse', completed=false, id is integer\",\n        \"GET /tasks/{id} returns HTTP 200\",\n        \"GET payload title, description, completed match POST payload exactly\"\n      ],\n      \"trace\": [\n        \"R-TASK-021: new task rows committed so subsequent GET returns them\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app.models import Base\\n\\nengine_mem = create_engine(\\\"sqlite:///:memory:\\\", connect_args={\\\"check_same_thread\\\": False})\\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\\nBase.metadata.create_all(bind=engine_mem)\\n\\ndef override_get_db():\\n    db = SessionMem()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_post_task_persists_and_get_returns_exact_payload():\\n    payload = {\\\"title\\\": \\\"Read chapter 5\\\", \\\"description\\\": \\\"Signal pulse\\\", \\\"completed\\\": False}\\n    r_post = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r_post.status_code == 201\\n    data = r_post.json()\\n    assert data[\\\"title\\\"] == \\\"Read chapter 5\\\"\\n    assert data[\\\"description\\\"] == \\\"Signal pulse\\\"\\n    assert data[\\\"completed\\\"] == False\\n    assert isinstance(data[\\\"id\\\"], int)\\n    task_id = data[\\\"id\\\"]\\n    r_get = client.get(f\\\"/tasks/{task_id}\\\")\\n    assert r_get.status_code == 200\\n    got = r_get.json()\\n    assert got[\\\"id\\\"] == task_id\\n    assert got[\\\"title\\\"] == \\\"Read chapter 5\\\"\\n    assert got[\\\"description\\\"] == \\\"Signal pulse\\\"\\n    assert got[\\\"completed\\\"] == False\\n\\ntest_post_task_persists_and_get_returns_exact_payload()\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_post_task_missing_title_returns_422\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is running in-process with a clean in-memory SQLite database\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with body missing the required 'title' field\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity is returned\",\n        \"No task is created in the database\"\n      ],\n      \"trace\": [\n        \"R-TASK-021 error pathway: HTTP 4xx on client error\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.or"
+  }
+}

@@ -1,0 +1,249 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-016",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Accept comma-separated status codes",
+    "statement": "The system shall select one code at random when /status/<code> is called with a comma-separated list.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "accept comma-separated status codes"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /status/200,301,404"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-016",
+    "reasoning": "The requirement states that GET /status/<codes> with a comma-separated list shall select one code at random. The view_status_code handler splits on commas, builds a weighted_choice list, and returns status_code(code). Tests must: (1) verify a valid comma-separated list returns one of the listed codes (positive/EP), (2) verify an invalid code in the list returns 400 (negative/NEG), (3) verify a single-element list (boundary between comma and non-comma path, BVA), (4) verify weighted codes are accepted and return one of the listed codes (DT), (5) verify that all codes in the list are reachable over many trials (mutation-resilient probabilistic coverage), and (6) verify that a code NOT in the list is never returned (exact-value assertion). The random selection means we must run multiple trials to assert that the returned code is always a member of the input set and never outside it.",
+    "tests": [
+      {
+        "name": "test_comma_separated_returns_one_of_listed_codes_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Endpoint GET /status/200,301,404 is registered"
+        ],
+        "actions": [
+          "Import app from httpbin.core",
+          "Create test client",
+          "Send GET /status/200,301,404 repeatedly (50 trials)",
+          "Collect all returned status codes"
+        ],
+        "expected": [
+          "Every response status code is exactly one of {200, 301, 404}",
+          "No status code outside the set is ever returned",
+          "At least one distinct code from the set is observed"
+        ],
+        "trace": [
+          "R-HTTPBIN-016: system shall select one code at random from comma-separated list",
+          "view_status_code splits on comma, calls weighted_choice, returns status_code(code)"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\nallowed = {200, 301, 404}\nobserved = set()\nfor _ in range(50):\n    r = client.get('/status/200,301,404')\n    assert r.status_code in allowed, f'Unexpected status {r.status_code} not in {allowed}'\n    observed.add(r.status_code)\nassert len(observed) >= 1\n\ndef test_comma_separated_returns_one_of_listed_codes_positive():\n    client2 = app.test_client()\n    allowed2 = {200, 301, 404}\n    observed2 = set()\n    for _ in range(50):\n        r = client2.get('/status/200,301,404')\n        assert r.status_code in allowed2, f'Got {r.status_code}'\n        observed2.add(r.status_code)\n    assert len(observed2) >= 1\n"
+      },
+      {
+        "name": "test_invalid_code_in_comma_list_returns_400",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Endpoint GET /status/<codes> is registered"
+        ],
+        "actions": [
+          "Import app from httpbin.core",
+          "Create test client",
+          "Send GET /status/200,abc,404 (non-integer code in list)"
+        ],
+        "expected": [
+          "Response status code is exactly 400",
+          "Response is not 200, 404, or any other code"
+        ],
+        "trace": [
+          "R-HTTPBIN-016: error pathway HTTP 4xx on client error",
+          "view_status_code catches ValueError on int(code) and returns Response('Invalid status code', status=400)"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_invalid_code_in_comma_list_returns_400():\n    client = app.test_client()\n    r = client.get('/status/200,abc,404')\n    assert r.status_code == 400, f'Expected 400, got {r.status_code}'\n    assert b'Invalid status code' in r.data\n"
+      },
+      {
+        "name": "test_single_code_no_comma_exact_status",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Endpoint GET /status/200 (no comma) is registered"
+        ],
+        "actions": [
+          "Import app from httpbin.core",
+          "Create test client",
+          "Send GET /status/200 (single code, no comma \u2014 boundary of comma-split path)"
+        ],
+        "expected": [
+          "Response status code is exactly 200",
+          "The comma-split branch is NOT taken (no random selection)"
+        ],
+        "trace": [
+          "R-HTTPBIN-016: boundary between single-code path and comma-separated path",
+          "view_status_code checks 'if \",\" not in codes' \u2014 single code takes deterministic path"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_single_code_no_comma_exact_status():\n    client = app.test_client()\n    r = client.get('/status/200')\n    assert r.status_code == 200, f'Expected 200, got {r.status_code}'\n    r2 = client.get('/status/404')\n    assert r2.status_code == 404, f'Expected 404, got {r2.status_code}'\n    r3 = client.get('/status/500')\n    assert r3.status_code == 500, f'Expected 500, got {r3.status_code}'\n"
+      },
+      {
+        "name": "test_weighted_comma_list_returns_only_listed_codes",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Endpoint GET /status/200:3,500:1 is registered (weighted syntax)"
+        ],
+        "actions": [
+          "Import app from httpbin.core",
+          "Create test client",
+          "Send GET /status/200:3,500:1 repeatedly (60 trials)",
+          "Collect all returned status codes"
+        ],
+        "expected": [
+          "Every response status code is exactly one of {200, 500}",
+          "No status code outside {200, 500} is ever returned",
+          "Both 200 and 500 are observed at least once across 60 trials"
+        ],
+        "trace": [
+          "R-HTTPBIN-016: weighted comma-separated list \u2014 code:weight syntax parsed by view_status_code",
+          "weighted_choice selects from (int(code), float(weight)) tuples"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_weighted_comma_list_returns_only_listed_codes():\n    client = app.test_client()\n    allowed = {200, 500}\n    observed = set()\n    for _ in range(60):\n        r = client.get('/status/200:3,500:1')\n        assert r.status_code in allowed, f'Got unexpected {r.status_code}'\n        observed.add(r.status_code)\n    assert 200 in observed, '200 never observed in 60 trials'\n    assert 500 in observed, '500 never observed in 60 trials'\n"
+      },
+      {
+        "name": "test_two_code_comma_list_both_reachable",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Endpoint GET /status/200,500 is registered"
+        ],
+        "actions": [
+          "Import app from httpbin.core",
+          "Create test client",
+          "Send GET /status/200,500 repeatedly (80 trials)",
+          "Assert both codes appear and no other code appears"
+        ],
+        "expected": [
+          "Every response is exactly 200 or exactly 500",
+          "Both 200 and 500 are observed (random selection covers both)",
+          "No response is 201, 404, 301, or any other code"
+        ],
+        "trace": [
+          "R-HTTPBIN-016: random selection must be able to return any listed code",
+          "Catches mutations that always return first or always return last code"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_two_code_comma_list_both_reachable():\n    client = app.test_client()\n    allowed = {200, 500}\n    observed = set()\n    for _ in range(80):\n        r = client.get('/status/200,500')\n        assert r.status_code in allowed, f'Got {r.status_code}, not in {allowed}'\n        observed.add(r.status_code)\n    assert observed == {200, 500}, f'Expected both codes observed, got {observed}'\n"
+      },
+      {
+        "name": "test_invalid_weight_in_comma_list_returns_400",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Endpoint GET /status/200:bad,404 is registered"
+        ],
+        "actions": [
+          "Import app from httpbin.core",
+          "Create test client",
+          "Send GET /status/200:bad,404 (non-float weight)"
+        ],
+        "expected": [
+          "Response status code is exactly 400",
+          "Response body contains 'Invalid status code'"
+        ],
+        "trace": [
+          "R-HTTPBIN-016: error pathway \u2014 ValueError on float(weight) triggers 400",
+          "view_status_code catches ValueError in choices.append and returns 400"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_invalid_weight_in_comma_list_returns_400():\n    client = app.test_client()\n    r = client.get('/status/200:bad,404')\n    assert r.status_code == 400, f'Expected 400, got {r.status_code}'\n    assert b'Invalid status code' in r.data, f'Expected error body, got {r.data}'\n"
+      },
+      {
+        "name": "test_boundary_two_element_list_minimum_comma_case",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Endpoint GET /status/200,404 is registered (minimum comma list: exactly one comma)"
+        ],
+        "actions": [
+          "Import app from httpbin.core",
+          "Create test client",
+          "Send GET /status/200,404 (exactly one comma \u2014 minimum for comma-split path)",
+          "Run 40 trials"
+        ],
+        "expected": [
+          "Every response is exactly 200 or exactly 404",
+          "Neither 201 nor 403 nor any other code appears",
+          "The comma-split branch IS taken (not the single-code branch)"
+        ],
+        "trace": [
+          "R-HTTPBIN-016: BVA on comma count \u2014 one comma is the minimum to trigger random selection",
+          "Catches mutation that changes ',' check to require two or more commas"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_boundary_two_element_list_minimum_comma_case():\n    client = app.test_client()\n    allowed = {200, 404}\n    not_allowed = {201, 403, 500, 301}\n    observed = set()\n    for _ in range(40):\n        r = client.get('/status/200,404')\n        assert r.status_code in allowed, f'Got {r.status_code}'\n        assert r.status_code not in not_allowed\n        observed.add(r.status_code)\n    assert len(observed) >= 1\n"
+      },
+      {
+        "name": "test_three_code_list_never_returns_unlisted_code",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Endpoint GET /status/200,301,500 is registered"
+        ],
+        "actions": [
+          "Import app from httpbin.core",
+          "Create test client",
+          "Send GET /status/200,301,500 for 60 trials",
+          "Assert exact membership and non-membership"
+        ],
+        "expected": [
+          "Every response is exactly 200, 301, or 500",
+          "302, 404, 201 are never returned",
+          "All three codes are observed across 60 trials"
+        ],
+        "trace": [
+          "R-HTTPBIN-016: three-element list \u2014 random selection must cover all three",
+          "Catches mutations that truncate the choices list or skip the last element"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_three_code_list_never_returns_unlisted_code():\n    client = app.test_client()\n    allowed = {200, 301, 500}\n    observed = set()\n    for _ in range(60):\n        r = client.get('/status/200,301,500')\n        assert r.status_code in allowed, f'Unexpected {r.status_code}'\n        observed.add(r.status_code)\n    assert 200 in observed, '200 never seen'\n    assert 301 in observed, '301 never seen'\n    assert 500 in observed, '500 never seen'\n    assert observed == {200, 301, 500}, f'Extra codes observed: {observed}'\n"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-016",
+  "domain": "http_utilities",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 1.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9474,
+    "output_tokens": 3605,
+    "latency_ms": 55691,
+    "wall_ms": 55691,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-016\",\n  \"reasoning\": \"The requirement states that GET /status/<codes> with a comma-separated list shall select one code at random. The view_status_code handler splits on commas, builds a weighted_choice list, and returns status_code(code). Tests must: (1) verify a valid comma-separated list returns one of the listed codes (positive/EP), (2) verify an invalid code in the list returns 400 (negative/NEG), (3) verify a single-element list (boundary between comma and non-comma path, BVA), (4) verify weighted codes are accepted and return one of the listed codes (DT), (5) verify that all codes in the list are reachable over many trials (mutation-resilient probabilistic coverage), and (6) verify that a code NOT in the list is never returned (exact-value assertion). The random selection means we must run multiple trials to assert that the returned code is always a member of the input set and never outside it.\",\n  \"tests\": [\n    {\n      \"name\": \"test_comma_separated_returns_one_of_listed_codes_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"Endpoint GET /status/200,301,404 is registered\"\n      ],\n      \"actions\": [\n        \"Import app from httpbin.core\",\n        \"Create test client\",\n        \"Send GET /status/200,301,404 repeatedly (50 trials)\",\n        \"Collect all returned status codes\"\n      ],\n      \"expected\": [\n        \"Every response status code is exactly one of {200, 301, 404}\",\n        \"No status code outside the set is ever returned\",\n        \"At least one distinct code from the set is observed\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-016: system shall select one code at random from comma-separated list\",\n        \"view_status_code splits on comma, calls weighted_choice, returns status_code(code)\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\nallowed = {200, 301, 404}\\nobserved = set()\\nfor _ in range(50):\\n    r = client.get('/status/200,301,404')\\n    assert r.status_code in allowed, f'Unexpected status {r.status_code} not in {allowed}'\\n    observed.add(r.status_code)\\nassert len(observed) >= 1\\n\\ndef test_comma_separated_returns_one_of_listed_codes_positive():\\n    client2 = app.test_client()\\n    allowed2 = {200, 301, 404}\\n    observed2 = set()\\n    for _ in range(50):\\n        r = client2.get('/status/200,301,404')\\n        assert r.status_code in allowed2, f'Got {r.status_code}'\\n        observed2.add(r.status_code)\\n    assert len(observed2) >= 1\\n\"\n    },\n    {\n      \"name\": \"test_invalid_code_in_comma_list_returns_400\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"Endpoint GET /status/<codes> is registered\"\n      ],\n      \"actions\": [\n        \"Import app from httpbin.core\",\n        \"Create test client\",\n        \"Send GET /status/200,abc,404 (non-integer code in list)\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 400\",\n        \"Response is not 200, 404, or any other code\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-016: error pathway HTTP 4xx on client error\",\n        \"view_status_code catches ValueError on int(code) and returns Response('Invalid status code', status=400)\"\n      ],\n      \"executable\": \"from httpbin.core import app\\n\\ndef test_invalid_code_in_comma_list_returns_400():\\n    client = app.test_client()\\n    r = client.get('/status/200,abc,404')\\n    assert r.status_code == 400, f'Expected 400, got {r.status_code}'\\n    assert b'Invalid status code' in r.data\\n\"\n    },\n    {\n      \"name\": \"test_single_code_no_comma_exact_status\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"Endpoint GET /status/200 (no comma) is registered\"\n      ],\n      \"actions\": [\n        \"Import app from httpbin.core\",\n        \"Create"
+  }
+}

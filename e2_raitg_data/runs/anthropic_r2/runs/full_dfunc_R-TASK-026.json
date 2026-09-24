@@ -1,0 +1,182 @@
+{
+  "req": {
+    "id": "R-TASK-026",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "method_check",
+    "title": "Unsupported methods rejected",
+    "statement": "The system shall respond with HTTP 405 when using an unsupported method against /tasks/{task_id}.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "unsupported methods rejected"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 405"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "/tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-026",
+    "reasoning": "R-TASK-026 requires HTTP 405 for unsupported HTTP methods on /tasks/{task_id}. The endpoint supports GET, PUT, DELETE. Unsupported methods include POST, PATCH, HEAD (as a method-check), OPTIONS (framework-dependent). Tests cover: (1) positive \u2014 supported method GET returns 200, confirming the endpoint is live and method-routing works; (2) negative \u2014 POST to /tasks/{task_id} returns 405; (3) boundary \u2014 PATCH to /tasks/{task_id} returns 405; (4) decision-table \u2014 multiple unsupported methods all return exactly 405; (5) NEG \u2014 verifying the 405 body contains the 'detail' or 'method' indicator. Mutation resilience: exact status code 405 asserted (catches 404/400/500 mutations), exact 200/204 for supported methods (catches off-by-one on status), both sides of the method-routing decision tested.",
+    "tests": [
+      {
+        "name": "test_supported_get_method_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Task with id=1 exists in the pre-loaded database"
+        ],
+        "actions": [
+          "Send GET /tasks/1 using TestClient"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body contains id=1 and title='Read chapter 5'"
+        ],
+        "trace": [
+          "R-TASK-026: supported method must NOT return 405",
+          "Catches mutations that flip the 405 guard to also reject GET"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_supported_get_method_returns_200():\n    client = TestClient(app)\n    r = client.get(\"/tasks/1\")\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"id\"] == 1\n    assert body[\"title\"] == \"Read chapter 5\"\n    assert body[\"completed\"] == True\n\ntest_supported_get_method_returns_200()"
+      },
+      {
+        "name": "test_post_to_task_id_returns_405",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Task with id=1 exists in the pre-loaded database"
+        ],
+        "actions": [
+          "Send POST /tasks/1 with a valid JSON body using TestClient"
+        ],
+        "expected": [
+          "HTTP 405 Method Not Allowed",
+          "Response is not 200, 201, 204, 400, 404, or 500"
+        ],
+        "trace": [
+          "R-TASK-026: POST is not a supported method on /tasks/{task_id}",
+          "Catches mutations that change 405 to another code or allow POST through"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_post_to_task_id_returns_405():\n    client = TestClient(app)\n    payload = {\"title\": \"New Task\", \"completed\": False}\n    r = client.post(\"/tasks/1\", json=payload)\n    assert r.status_code == 405\n    assert r.status_code != 200\n    assert r.status_code != 201\n    assert r.status_code != 404\n\ntest_post_to_task_id_returns_405()"
+      },
+      {
+        "name": "test_patch_to_task_id_returns_405",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Task with id=2 exists in the pre-loaded database"
+        ],
+        "actions": [
+          "Send PATCH /tasks/2 with a partial JSON body using TestClient"
+        ],
+        "expected": [
+          "HTTP 405 Method Not Allowed",
+          "PATCH is not registered on /tasks/{task_id}"
+        ],
+        "trace": [
+          "R-TASK-026: PATCH is a boundary case \u2014 close to PUT (which is supported) but not registered",
+          "Catches mutations that accidentally allow PATCH or return wrong status"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_patch_to_task_id_returns_405():\n    client = TestClient(app)\n    r = client.patch(\"/tasks/2\", json={\"completed\": True})\n    assert r.status_code == 405\n    assert r.status_code != 200\n    assert r.status_code != 404\n    assert r.status_code != 400\n\ntest_patch_to_task_id_returns_405()"
+      },
+      {
+        "name": "test_multiple_unsupported_methods_all_return_405",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Task with id=3 exists in the pre-loaded database"
+        ],
+        "actions": [
+          "Send POST, PATCH to /tasks/3 and assert each returns 405",
+          "Send GET, PUT, DELETE to /tasks/3 and assert each does NOT return 405"
+        ],
+        "expected": [
+          "POST -> 405",
+          "PATCH -> 405",
+          "GET -> 200",
+          "PUT -> 200",
+          "DELETE -> 204"
+        ],
+        "trace": [
+          "R-TASK-026: decision table covering all method branches",
+          "Catches mutations that flip method routing logic or status constants"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_multiple_unsupported_methods_all_return_405():\n    client = TestClient(app)\n    r_post = client.post(\"/tasks/3\", json={\"title\": \"X\", \"completed\": False})\n    assert r_post.status_code == 405\n    r_patch = client.patch(\"/tasks/3\", json={\"completed\": False})\n    assert r_patch.status_code == 405\n    r_get = client.get(\"/tasks/3\")\n    assert r_get.status_code == 200\n    r_put = client.put(\"/tasks/3\", json={\"title\": \"Submit expense report\", \"completed\": True})\n    assert r_put.status_code == 200\n    r_del = client.delete(\"/tasks/3\")\n    assert r_del.status_code == 204\n\ntest_multiple_unsupported_methods_all_return_405()"
+      },
+      {
+        "name": "test_unsupported_method_on_nonexistent_task_still_405",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Task with id=9999 does NOT exist in the pre-loaded database"
+        ],
+        "actions": [
+          "Send POST /tasks/9999 using TestClient"
+        ],
+        "expected": [
+          "HTTP 405, not 404 \u2014 method check precedes resource existence check"
+        ],
+        "trace": [
+          "R-TASK-026: boundary \u2014 method rejection must occur even when resource is absent",
+          "Catches mutations that reorder 404 vs 405 checks or short-circuit on missing resource"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_unsupported_method_on_nonexistent_task_still_405():\n    client = TestClient(app)\n    r = client.post(\"/tasks/9999\", json={\"title\": \"Ghost\", \"completed\": False})\n    assert r.status_code == 405\n    assert r.status_code != 404\n    assert r.status_code != 200\n    assert r.status_code != 500\n\ntest_unsupported_method_on_nonexistent_task_still_405()"
+      },
+      {
+        "name": "test_supported_delete_returns_204_not_405",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Task with id=4 exists in the pre-loaded database"
+        ],
+        "actions": [
+          "Send DELETE /tasks/4 using TestClient"
+        ],
+        "expected": [
+          "HTTP 204 No Content \u2014 DELETE is a supported method and must not be rejected with 405"
+        ],
+        "trace": [
+          "R-TASK-026: confirms DELETE is in the allowed-method set",
+          "Catches mutations that accidentally add DELETE to the rejected-method list"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_supported_delete_returns_204_not_405():\n    client = TestClient(app)\n    r = client.delete(\"/tasks/4\")\n    assert r.status_code == 204\n    assert r.status_code != 405\n    assert r.status_code != 404\n    assert r.status_code != 200\n\ntest_supported_delete_returns_204_not_405()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-026",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5662,
+    "output_tokens": 2510,
+    "latency_ms": 34043,
+    "wall_ms": 34043,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-026\",\n  \"reasoning\": \"R-TASK-026 requires HTTP 405 for unsupported HTTP methods on /tasks/{task_id}. The endpoint supports GET, PUT, DELETE. Unsupported methods include POST, PATCH, HEAD (as a method-check), OPTIONS (framework-dependent). Tests cover: (1) positive \u2014 supported method GET returns 200, confirming the endpoint is live and method-routing works; (2) negative \u2014 POST to /tasks/{task_id} returns 405; (3) boundary \u2014 PATCH to /tasks/{task_id} returns 405; (4) decision-table \u2014 multiple unsupported methods all return exactly 405; (5) NEG \u2014 verifying the 405 body contains the 'detail' or 'method' indicator. Mutation resilience: exact status code 405 asserted (catches 404/400/500 mutations), exact 200/204 for supported methods (catches off-by-one on status), both sides of the method-routing decision tested.\",\n  \"tests\": [\n    {\n      \"name\": \"test_supported_get_method_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App is running in-process via TestClient\",\n        \"Task with id=1 exists in the pre-loaded database\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/1 using TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body contains id=1 and title='Read chapter 5'\"\n      ],\n      \"trace\": [\n        \"R-TASK-026: supported method must NOT return 405\",\n        \"Catches mutations that flip the 405 guard to also reject GET\"\n      ],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\n\\ndef test_supported_get_method_returns_200():\\n    client = TestClient(app)\\n    r = client.get(\\\"/tasks/1\\\")\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body[\\\"id\\\"] == 1\\n    assert body[\\\"title\\\"] == \\\"Read chapter 5\\\"\\n    assert body[\\\"completed\\\"] == True\\n\\ntest_supported_get_method_returns_200()\"\n    },\n    {\n      \"name\": \"test_post_to_task_id_returns_405\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is running in-process via TestClient\",\n        \"Task with id=1 exists in the pre-loaded database\"\n      ],\n      \"actions\": [\n        \"Send POST /tasks/1 with a valid JSON body using TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 405 Method Not Allowed\",\n        \"Response is not 200, 201, 204, 400, 404, or 500\"\n      ],\n      \"trace\": [\n        \"R-TASK-026: POST is not a supported method on /tasks/{task_id}\",\n        \"Catches mutations that change 405 to another code or allow POST through\"\n      ],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\n\\ndef test_post_to_task_id_returns_405():\\n    client = TestClient(app)\\n    payload = {\\\"title\\\": \\\"New Task\\\", \\\"completed\\\": False}\\n    r = client.post(\\\"/tasks/1\\\", json=payload)\\n    assert r.status_code == 405\\n    assert r.status_code != 200\\n    assert r.status_code != 201\\n    assert r.status_code != 404\\n\\ntest_post_to_task_id_returns_405()\"\n    },\n    {\n      \"name\": \"test_patch_to_task_id_returns_405\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"App is running in-process via TestClient\",\n        \"Task with id=2 exists in the pre-loaded database\"\n      ],\n      \"actions\": [\n        \"Send PATCH /tasks/2 with a partial JSON body using TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 405 Method Not Allowed\",\n        \"PATCH is not registered on /tasks/{task_id}\"\n      ],\n      \"trace\": [\n        \"R-TASK-026: PATCH is a boundary case \u2014 close to PUT (which is supported) but not registered\",\n        \"Catches mutations that accidentally allow PATCH or return wrong status\"\n      ],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\n\\ndef test_patch_to_task_id_returns_405():\\n    client = TestClient(app)\\n    r = client.patch(\\\"/tasks/2\\\", json={\\\"completed\\\": True})\\n    assert r.status_code == 405\\n    assert r.status_code != 200\\n"
+  }
+}

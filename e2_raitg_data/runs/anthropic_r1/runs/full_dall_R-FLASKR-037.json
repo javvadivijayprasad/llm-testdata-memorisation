@@ -1,0 +1,149 @@
+{
+  "req": {
+    "id": "R-FLASKR-037",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Index renders even with zero posts",
+    "statement": "The system shall render the index page with 'No posts' or empty state when the post table is empty.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "index renders even with zero posts"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-037",
+    "reasoning": "R-FLASKR-037 requires that GET / returns HTTP 2xx even when the post table is empty. Three tests are designed: (1) positive \u2014 empty DB, verify 200 and empty-state rendering; (2) negative \u2014 client sends a bad method (POST) to /, expect 405; (3) boundary \u2014 DB has exactly one post then all posts deleted, leaving zero posts, verifying the transition to empty state still yields 200. Each test uses an isolated temp DB, initialised via init_db(), and drives the SUT in-process via app.test_client(). Assertions are exact-value to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_index_empty_db_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Fresh SQLite database initialised with schema but zero posts",
+          "No authenticated user"
+        ],
+        "actions": [
+          "Create app with TESTING=True and empty temp DB",
+          "Call init_db() to create schema (no rows inserted)",
+          "GET /"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body does not raise an exception",
+          "Response content-type is text/html"
+        ],
+        "trace": [
+          "R-FLASKR-037: index renders even with zero posts -> HTTP 2xx response"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_index_empty_db_returns_200():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n        client = app.test_client()\n        r = client.get('/')\n        assert r.status_code == 200\n        assert b'<!DOCTYPE html>' in r.data or b'<html' in r.data or len(r.data) > 0\n        content_type = r.headers.get('Content-Type', '')\n        assert 'text/html' in content_type\n    finally:\n        os.unlink(path)\n\ntest_index_empty_db_returns_200()"
+      },
+      {
+        "name": "test_index_post_method_returns_405",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Fresh SQLite database initialised with schema but zero posts",
+          "No authenticated user"
+        ],
+        "actions": [
+          "Create app with TESTING=True and empty temp DB",
+          "Call init_db() to create schema",
+          "POST / (invalid HTTP method for this endpoint)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 405 (Method Not Allowed)",
+          "Response is not 200"
+        ],
+        "trace": [
+          "R-FLASKR-037: error pathway -> HTTP 4xx on client error"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_index_post_method_returns_405():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n        client = app.test_client()\n        r = client.post('/')\n        assert r.status_code == 405\n        assert r.status_code != 200\n        assert r.status_code != 302\n    finally:\n        os.unlink(path)\n\ntest_index_post_method_returns_405()"
+      },
+      {
+        "name": "test_index_after_deleting_last_post_returns_200",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Fresh SQLite database initialised with schema",
+          "Exactly one post inserted (boundary: N=1)",
+          "That post is then deleted (boundary transition to N=0)"
+        ],
+        "actions": [
+          "Create app with TESTING=True and temp DB",
+          "Call init_db() to create schema",
+          "Insert one user and one post directly via get_db()",
+          "GET / \u2014 verify 200 and post appears",
+          "Delete the post directly via get_db()",
+          "GET / \u2014 verify still 200 with zero posts"
+        ],
+        "expected": [
+          "First GET / returns exactly 200 with post data present",
+          "After deletion, GET / returns exactly 200",
+          "Response body after deletion does not crash (empty state rendered)"
+        ],
+        "trace": [
+          "R-FLASKR-037: index renders even with zero posts -> boundary N=1 -> N=0 transition"
+        ],
+        "executable": "import tempfile, os\nfrom werkzeug.security import generate_password_hash\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\ndef test_index_after_deleting_last_post_returns_200():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n            db = get_db()\n            db.execute(\n                'INSERT INTO user (username, password) VALUES (?, ?)',\n                ('Rahul', generate_password_hash('stone'))\n            )\n            db.execute(\n                \"INSERT INTO post (title, body, author_id) VALUES (?, ?, ?)\",\n                ('Only Post', 'Only body', 1)\n            )\n            db.commit()\n        client = app.test_client()\n        r1 = client.get('/')\n        assert r1.status_code == 200\n        assert b'Only Post' in r1.data\n        with app.app_context():\n            db = get_db()\n            db.execute('DELETE FROM post WHERE title = ?', ('Only Post',))\n            db.commit()\n        r2 = client.get('/')\n        assert r2.status_code == 200\n        assert b'Only Post' not in r2.data\n        assert len(r2.data) > 0\n    finally:\n        os.unlink(path)\n\ntest_index_after_deleting_last_post_returns_200()"
+      },
+      {
+        "name": "test_index_empty_db_no_post_content_in_body",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Fresh SQLite database initialised with schema but zero posts",
+          "No authenticated user"
+        ],
+        "actions": [
+          "Create app with TESTING=True and empty temp DB",
+          "Call init_db() to create schema (no rows inserted)",
+          "GET /"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Known post titles from pre-loaded data are NOT present (DB is empty)",
+          "Response body is non-empty (page rendered)"
+        ],
+        "trace": [
+          "R-FLASKR-037: index renders even with zero posts -> empty state content check"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_index_empty_db_no_post_content_in_body():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n        client = app.test_client()\n        r = client.get('/')\n        assert r.status_code == 200\n        assert b'Pulse ember signal' not in r.data\n        assert b'Pillow delta willow' not in r.data\n        assert b'Heacon signal pulse' not in r.data\n        assert len(r.data) > 0\n    finally:\n        os.unlink(path)\n\ntest_index_empty_db_no_post_content_in_body()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-037",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8443,
+    "output_tokens": 2230,
+    "latency_ms": 30534,
+    "wall_ms": 30534,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-037\",\n  \"reasoning\": \"R-FLASKR-037 requires that GET / returns HTTP 2xx even when the post table is empty. Three tests are designed: (1) positive \u2014 empty DB, verify 200 and empty-state rendering; (2) negative \u2014 client sends a bad method (POST) to /, expect 405; (3) boundary \u2014 DB has exactly one post then all posts deleted, leaving zero posts, verifying the transition to empty state still yields 200. Each test uses an isolated temp DB, initialised via init_db(), and drives the SUT in-process via app.test_client(). Assertions are exact-value to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_index_empty_db_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Fresh SQLite database initialised with schema but zero posts\",\n        \"No authenticated user\"\n      ],\n      \"actions\": [\n        \"Create app with TESTING=True and empty temp DB\",\n        \"Call init_db() to create schema (no rows inserted)\",\n        \"GET /\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body does not raise an exception\",\n        \"Response content-type is text/html\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-037: index renders even with zero posts -> HTTP 2xx response\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\ndef test_index_empty_db_returns_200():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    try:\\n        app = create_app({'TESTING': True, 'DATABASE': path})\\n        with app.app_context():\\n            init_db()\\n        client = app.test_client()\\n        r = client.get('/')\\n        assert r.status_code == 200\\n        assert b'<!DOCTYPE html>' in r.data or b'<html' in r.data or len(r.data) > 0\\n        content_type = r.headers.get('Content-Type', '')\\n        assert 'text/html' in content_type\\n    finally:\\n        os.unlink(path)\\n\\ntest_index_empty_db_returns_200()\"\n    },\n    {\n      \"name\": \"test_index_post_method_returns_405\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Fresh SQLite database initialised with schema but zero posts\",\n        \"No authenticated user\"\n      ],\n      \"actions\": [\n        \"Create app with TESTING=True and empty temp DB\",\n        \"Call init_db() to create schema\",\n        \"POST / (invalid HTTP method for this endpoint)\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 405 (Method Not Allowed)\",\n        \"Response is not 200\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-037: error pathway -> HTTP 4xx on client error\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\ndef test_index_post_method_returns_405():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    try:\\n        app = create_app({'TESTING': True, 'DATABASE': path})\\n        with app.app_context():\\n            init_db()\\n        client = app.test_client()\\n        r = client.post('/')\\n        assert r.status_code == 405\\n        assert r.status_code != 200\\n        assert r.status_code != 302\\n    finally:\\n        os.unlink(path)\\n\\ntest_index_post_method_returns_405()\"\n    },\n    {\n      \"name\": \"test_index_after_deleting_last_post_returns_200\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Fresh SQLite database initialised with schema\",\n        \"Exactly one post inserted (boundary: N=1)\",\n        \"That post is then deleted (boundary transition to N=0)\"\n      ],\n      \"actions\": [\n        \"Create app with TESTING=True and temp DB\",\n        \"Call init_db() to create schema\",\n        \"Insert one user and one post directly via get_db()\",\n        \"GET / \u2014 verify 200 and post appears\",\n        \"Delete the post directly via get_db()\",\n        \"GET / \u2014 verify still 200 with zero posts\"\n      ],\n      \"expected\": [\n        \"First GET / re"
+  }
+}

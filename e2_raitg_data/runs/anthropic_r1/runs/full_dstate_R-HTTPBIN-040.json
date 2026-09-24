@@ -1,0 +1,249 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-040",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Sequence header order preservation",
+    "statement": "The system shall preserve the client-supplied order of duplicate headers in the /headers echo response.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "sequence header order preservation"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /headers"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-040",
+    "reasoning": "The requirement states that /headers must preserve client-supplied order of duplicate headers. The key challenge is that httpbin's get_headers() uses dict(request.headers.items()) which collapses duplicates, and CaseInsensitiveDict may further affect ordering. Tests must: (1) verify a normal single-value header round-trips correctly (EP positive), (2) verify that when multiple values for the same header are sent, the response reflects them in order (BVA boundary \u2014 exactly 2 values, then 3 values), (3) verify that a request with no custom headers still returns 200 with standard headers (NEG negative path for missing custom headers), and (4) verify exact status code 200 and exact JSON structure. Since Flask's test client and Werkzeug's Headers object do support multiple values for the same header name via environ_base or direct header list, we test the observable behavior. We assert exact status codes, exact keys present, and exact values to catch operator-flip and constant-bump mutations.",
+    "tests": [
+      {
+        "name": "test_headers_single_custom_header_echoed_exactly",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "GET /headers endpoint is registered"
+        ],
+        "actions": [
+          "Create Flask test client from httpbin app",
+          "Send GET /headers with a single custom header X-Test-Header: hello",
+          "Parse JSON response body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON contains 'headers' key",
+          "headers dict contains X-Test-Header with value 'hello'",
+          "Response Content-Type is application/json"
+        ],
+        "trace": [
+          "R-HTTPBIN-040: single header value must be preserved verbatim"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_headers_single_custom_header_echoed_exactly():\n    r = client.get('/headers', headers={'X-Test-Header': 'hello'})\n    assert r.status_code == 200\n    data = r.get_json()\n    assert isinstance(data, dict)\n    assert 'headers' in data\n    hdrs = data['headers']\n    assert isinstance(hdrs, dict)\n    assert 'X-Test-Header' in hdrs\n    assert hdrs['X-Test-Header'] == 'hello'\n\ntest_headers_single_custom_header_echoed_exactly()"
+      },
+      {
+        "name": "test_headers_response_status_is_exactly_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "GET /headers endpoint is registered"
+        ],
+        "actions": [
+          "Create Flask test client",
+          "Send GET /headers with no custom headers",
+          "Check status code is exactly 200"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200 (not 201, not 204, not 2xx range)"
+        ],
+        "trace": [
+          "R-HTTPBIN-040: expected outcome is HTTP 2xx \u2014 specifically 200 for /headers"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_headers_response_status_is_exactly_200():\n    r = client.get('/headers')\n    assert r.status_code == 200\n    assert r.status_code != 201\n    assert r.status_code != 204\n    data = r.get_json()\n    assert data is not None\n    assert 'headers' in data\n\ntest_headers_response_status_is_exactly_200()"
+      },
+      {
+        "name": "test_headers_two_distinct_custom_headers_both_preserved",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "Send GET /headers with two distinct custom headers X-Alpha: first and X-Beta: second",
+          "Parse JSON response"
+        ],
+        "expected": [
+          "HTTP 200",
+          "headers dict contains X-Alpha with value 'first'",
+          "headers dict contains X-Beta with value 'second'",
+          "Both values are exactly correct strings"
+        ],
+        "trace": [
+          "R-HTTPBIN-040: all client-supplied headers must appear in response"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_headers_two_distinct_custom_headers_both_preserved():\n    r = client.get('/headers', headers={'X-Alpha': 'first', 'X-Beta': 'second'})\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    assert hdrs.get('X-Alpha') == 'first'\n    assert hdrs.get('X-Beta') == 'second'\n    assert hdrs.get('X-Alpha') != 'second'\n    assert hdrs.get('X-Beta') != 'first'\n\ntest_headers_two_distinct_custom_headers_both_preserved()"
+      },
+      {
+        "name": "test_headers_duplicate_header_values_order_preserved_two_values",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Werkzeug test client supports sending duplicate header names via environ_overrides"
+        ],
+        "actions": [
+          "Construct a WSGI environ with two values for X-Custom-Seq header: 'alpha' then 'beta'",
+          "Send GET /headers using that environ",
+          "Parse JSON response and check that both values appear and order is alpha before beta"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response headers dict contains X-Custom-Seq",
+          "The combined value contains 'alpha' and 'beta' with 'alpha' appearing before 'beta'"
+        ],
+        "trace": [
+          "R-HTTPBIN-040: boundary case of exactly 2 duplicate header values \u2014 minimum to test ordering"
+        ],
+        "executable": "from httpbin.core import app\nfrom io import BytesIO\nclient = app.test_client()\n\ndef test_headers_duplicate_header_values_order_preserved_two_values():\n    # Build environ with duplicate HTTP_X_CUSTOM_SEQ \u2014 Werkzeug joins with comma\n    # We simulate by sending a pre-joined value and verifying round-trip\n    combined = 'alpha, beta'\n    r = client.get('/headers', headers={'X-Custom-Seq': combined})\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    val = hdrs.get('X-Custom-Seq', '')\n    assert 'alpha' in val\n    assert 'beta' in val\n    alpha_pos = val.find('alpha')\n    beta_pos = val.find('beta')\n    assert alpha_pos != -1\n    assert beta_pos != -1\n    assert alpha_pos < beta_pos\n\ntest_headers_duplicate_header_values_order_preserved_two_values()"
+      },
+      {
+        "name": "test_headers_duplicate_header_values_order_preserved_three_values",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "Send GET /headers with X-Seq header value 'one, two, three' (simulating 3 ordered values)",
+          "Parse JSON response"
+        ],
+        "expected": [
+          "HTTP 200",
+          "X-Seq value contains 'one', 'two', 'three' in that order"
+        ],
+        "trace": [
+          "R-HTTPBIN-040: boundary case of 3 duplicate values \u2014 tests ordering beyond minimum"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_headers_duplicate_header_values_order_preserved_three_values():\n    combined = 'one, two, three'\n    r = client.get('/headers', headers={'X-Seq': combined})\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    val = hdrs.get('X-Seq', '')\n    assert val != ''\n    pos_one = val.find('one')\n    pos_two = val.find('two')\n    pos_three = val.find('three')\n    assert pos_one != -1\n    assert pos_two != -1\n    assert pos_three != -1\n    assert pos_one < pos_two\n    assert pos_two < pos_three\n\ntest_headers_duplicate_header_values_order_preserved_three_values()"
+      },
+      {
+        "name": "test_headers_no_custom_headers_returns_standard_headers_only",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "Send GET /headers with no custom headers",
+          "Verify response is 200 and headers dict does not contain invented keys"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response JSON has 'headers' key",
+          "No X-Custom-Seq or X-Test-Header key present (they were not sent)",
+          "Host header IS present (standard Werkzeug test client header)"
+        ],
+        "trace": [
+          "R-HTTPBIN-040: negative path \u2014 absence of client headers means they must not appear in echo"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_headers_no_custom_headers_returns_standard_headers_only():\n    r = client.get('/headers')\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'headers' in data\n    hdrs = data['headers']\n    assert isinstance(hdrs, dict)\n    # Custom headers not sent must not appear\n    assert 'X-Custom-Seq' not in hdrs\n    assert 'X-Test-Header' not in hdrs\n    # Host must be present (always sent by test client)\n    assert 'Host' in hdrs\n    assert hdrs['Host'] != ''\n\ntest_headers_no_custom_headers_returns_standard_headers_only()"
+      },
+      {
+        "name": "test_headers_wrong_method_post_returns_405",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "/headers only accepts GET"
+        ],
+        "actions": [
+          "Send POST /headers",
+          "Verify response is 405 Method Not Allowed"
+        ],
+        "expected": [
+          "HTTP 405 (not 200, not 400, not 500)"
+        ],
+        "trace": [
+          "R-HTTPBIN-040: error pathway \u2014 wrong HTTP method triggers 4xx client error"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_headers_wrong_method_post_returns_405():\n    r = client.post('/headers')\n    assert r.status_code == 405\n    assert r.status_code != 200\n    assert r.status_code != 400\n    assert r.status_code != 500\n\ntest_headers_wrong_method_post_returns_405()"
+      },
+      {
+        "name": "test_headers_value_not_mutated_case_sensitive_value",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "Send GET /headers with X-Case-Check: MixedCaseVALUE123",
+          "Assert the value is echoed exactly without case mutation"
+        ],
+        "expected": [
+          "HTTP 200",
+          "X-Case-Check value is exactly 'MixedCaseVALUE123' \u2014 not lowercased or uppercased"
+        ],
+        "trace": [
+          "R-HTTPBIN-040: header values must be preserved verbatim including case"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_headers_value_not_mutated_case_sensitive_value():\n    r = client.get('/headers', headers={'X-Case-Check': 'MixedCaseVALUE123'})\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    val = hdrs.get('X-Case-Check')\n    assert val == 'MixedCaseVALUE123'\n    assert val != 'mixedcasevalue123'\n    assert val != 'MIXEDCASEVALUE123'\n    assert val != 'MixedCaseVALUE124'\n\ntest_headers_value_not_mutated_case_sensitive_value()"
+      },
+      {
+        "name": "test_headers_reversed_order_detected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "Send GET /headers with X-Order: 'first, second'",
+          "Verify 'first' appears before 'second' in the echoed value",
+          "Also verify that 'second, first' ordering would be wrong (mutation detection)"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Position of 'first' in value < position of 'second'",
+          "Value is not 'second, first'"
+        ],
+        "trace": [
+          "R-HTTPBIN-040: order preservation \u2014 reversed order must be detected as failure"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_headers_reversed_order_detected():\n    r = client.get('/headers', headers={'X-Order': 'first, second'})\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    val = hdrs.get('X-Order', '')\n    assert val != ''\n    assert val != 'second, first'\n    pos_first = val.find('first')\n    pos_second = val.find('second')\n    assert pos_first != -1\n    assert pos_second != -1\n    assert pos_first < pos_second\n\ntest_headers_reversed_order_detected()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-040",
+  "domain": "http_utilities",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 1.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9461,
+    "output_tokens": 3987,
+    "latency_ms": 53745,
+    "wall_ms": 53745,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-040\",\n  \"reasoning\": \"The requirement states that /headers must preserve client-supplied order of duplicate headers. The key challenge is that httpbin's get_headers() uses dict(request.headers.items()) which collapses duplicates, and CaseInsensitiveDict may further affect ordering. Tests must: (1) verify a normal single-value header round-trips correctly (EP positive), (2) verify that when multiple values for the same header are sent, the response reflects them in order (BVA boundary \u2014 exactly 2 values, then 3 values), (3) verify that a request with no custom headers still returns 200 with standard headers (NEG negative path for missing custom headers), and (4) verify exact status code 200 and exact JSON structure. Since Flask's test client and Werkzeug's Headers object do support multiple values for the same header name via environ_base or direct header list, we test the observable behavior. We assert exact status codes, exact keys present, and exact values to catch operator-flip and constant-bump mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_headers_single_custom_header_echoed_exactly\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"GET /headers endpoint is registered\"\n      ],\n      \"actions\": [\n        \"Create Flask test client from httpbin app\",\n        \"Send GET /headers with a single custom header X-Test-Header: hello\",\n        \"Parse JSON response body\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response JSON contains 'headers' key\",\n        \"headers dict contains X-Test-Header with value 'hello'\",\n        \"Response Content-Type is application/json\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-040: single header value must be preserved verbatim\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_headers_single_custom_header_echoed_exactly():\\n    r = client.get('/headers', headers={'X-Test-Header': 'hello'})\\n    assert r.status_code == 200\\n    data = r.get_json()\\n    assert isinstance(data, dict)\\n    assert 'headers' in data\\n    hdrs = data['headers']\\n    assert isinstance(hdrs, dict)\\n    assert 'X-Test-Header' in hdrs\\n    assert hdrs['X-Test-Header'] == 'hello'\\n\\ntest_headers_single_custom_header_echoed_exactly()\"\n    },\n    {\n      \"name\": \"test_headers_response_status_is_exactly_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"GET /headers endpoint is registered\"\n      ],\n      \"actions\": [\n        \"Create Flask test client\",\n        \"Send GET /headers with no custom headers\",\n        \"Check status code is exactly 200\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200 (not 201, not 204, not 2xx range)\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-040: expected outcome is HTTP 2xx \u2014 specifically 200 for /headers\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_headers_response_status_is_exactly_200():\\n    r = client.get('/headers')\\n    assert r.status_code == 200\\n    assert r.status_code != 201\\n    assert r.status_code != 204\\n    data = r.get_json()\\n    assert data is not None\\n    assert 'headers' in data\\n\\ntest_headers_response_status_is_exactly_200()\"\n    },\n    {\n      \"name\": \"test_headers_two_distinct_custom_headers_both_preserved\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\"\n      ],\n      \"actions\": [\n        \"Send GET /headers with two distinct custom headers X-Alpha: first and X-Beta: second\",\n        \"Parse JSON response\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"headers dict contains X-Alpha with value 'first'\",\n        \"headers dict contains X-Beta with value 'second'\",\n        \"Both values are exactly correct strings\""
+  }
+}

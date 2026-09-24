@@ -1,0 +1,193 @@
+{
+  "req": {
+    "id": "R-FLASKR-026",
+    "domain": "blogging",
+    "layer": "Integration",
+    "category": "db_conn",
+    "title": "Close db connection after request",
+    "statement": "The system shall close the sqlite3 connection at the end of every request via teardown_appcontext.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "close db connection after request"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-026",
+    "reasoning": "R-FLASKR-026 requires that the sqlite3 connection is closed after every request via teardown_appcontext. The key mechanism is: init_app() registers close_db via app.teardown_appcontext(close_db); close_db() pops 'db' from Flask's g and calls db.close(). Tests must verify: (1) a normal request succeeds and the connection is cleaned up (positive/EP), (2) the teardown fires even when no DB was touched in the request (boundary/BVA \u2014 g has no 'db' key, close_db must handle None gracefully), (3) the teardown fires after an error response (negative/NEG \u2014 4xx path still triggers teardown). We instrument close_db by monkey-patching within the app context to count calls, and also verify via g.pop behavior. We use unittest.mock.patch to spy on close_db and sqlite3.Connection.close to confirm the actual close() is called exactly once per request that opened a connection.",
+    "tests": [
+      {
+        "name": "test_db_connection_closed_after_normal_request",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp database",
+          "Database initialized with schema and seed data",
+          "close_db is registered via teardown_appcontext"
+        ],
+        "actions": [
+          "Spy on sqlite3.Connection.close using unittest.mock.patch",
+          "Make GET /hello request via test_client",
+          "Assert HTTP 200 response",
+          "Assert sqlite3.Connection.close was NOT called (no DB opened for /hello)",
+          "Make GET / request which triggers get_db()",
+          "Assert HTTP 200 response",
+          "Assert sqlite3.Connection.close was called exactly once after the request"
+        ],
+        "expected": [
+          "GET /hello returns 200",
+          "GET / returns 200",
+          "sqlite3.Connection.close called exactly once per DB-touching request",
+          "g does not retain 'db' after request teardown"
+        ],
+        "trace": [
+          "R-FLASKR-026",
+          "flaskr/db.py:close_db",
+          "flaskr/db.py:init_app -> app.teardown_appcontext(close_db)"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom unittest.mock import patch, MagicMock\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\n# Positive: GET /hello does not open DB; close should not be called\nclose_call_count = []\noriginal_close = sqlite3.Connection.close\ndef counting_close(self):\n    close_call_count.append(1)\n    original_close(self)\n\nwith patch.object(sqlite3.Connection, 'close', counting_close):\n    r = client.get('/hello')\n    assert r.status_code == 200\n    assert b'Hello' in r.data\n    hello_closes = len(close_call_count)\n    assert hello_closes == 0\n\n# Positive: GET / opens DB; close_db must call db.close() exactly once\nclose_call_count.clear()\nwith patch.object(sqlite3.Connection, 'close', counting_close):\n    r2 = client.get('/')\n    assert r2.status_code == 200\n    assert len(close_call_count) == 1\n\nos.unlink(path)\nprint('test_db_connection_closed_after_normal_request PASSED')"
+      },
+      {
+        "name": "test_db_close_not_called_when_no_connection_opened",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp database",
+          "close_db registered via teardown_appcontext",
+          "Request to /hello endpoint which does NOT call get_db()"
+        ],
+        "actions": [
+          "Patch sqlite3.Connection.close to count invocations",
+          "Make GET /hello request (no DB access in this view)",
+          "Assert response is 200 with expected body",
+          "Assert close was called exactly 0 times (boundary: g has no 'db' key)",
+          "Verify close_db handles None gracefully (g.pop returns None)"
+        ],
+        "expected": [
+          "GET /hello returns HTTP 200",
+          "Response body contains 'Hello, World!'",
+          "sqlite3.Connection.close called 0 times (no connection was opened)",
+          "No exception raised during teardown when g has no 'db'"
+        ],
+        "trace": [
+          "R-FLASKR-026",
+          "flaskr/db.py:close_db -> db = g.pop('db', None); if db is not None: db.close()"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom unittest.mock import patch\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\nclose_calls = []\noriginal_close = sqlite3.Connection.close\ndef spy_close(self):\n    close_calls.append(id(self))\n    original_close(self)\n\n# Boundary: /hello never calls get_db(), so g['db'] is never set\n# close_db must handle g.pop('db', None) == None without error\nwith patch.object(sqlite3.Connection, 'close', spy_close):\n    r = client.get('/hello')\n    assert r.status_code == 200\n    assert r.data == b'Hello, World!'\n    # Exact boundary: zero closes because no connection was opened\n    assert len(close_calls) == 0\n\n# Also directly test close_db with no db in g\nfrom flaskr.db import close_db\nwith app.app_context():\n    # No get_db() called, so g has no 'db'\n    try:\n        close_db()\n        no_error = True\n    except Exception as ex:\n        no_error = False\n    assert no_error is True\n\nos.unlink(path)\nprint('test_db_close_not_called_when_no_connection_opened PASSED')"
+      },
+      {
+        "name": "test_db_connection_closed_after_error_response",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp database",
+          "Database initialized with schema and seed data",
+          "close_db registered via teardown_appcontext"
+        ],
+        "actions": [
+          "Make GET /999/update request which triggers get_db() then aborts with 404",
+          "Assert HTTP 302 (redirect to login since not authenticated) or 404",
+          "Make POST /auth/login with wrong credentials to trigger 200 with error (DB opened)",
+          "Assert sqlite3.Connection.close called exactly once even on error path",
+          "Verify teardown fires on 4xx responses"
+        ],
+        "expected": [
+          "Error path (wrong credentials) returns HTTP 200 with error message",
+          "sqlite3.Connection.close called exactly once after the error-path request",
+          "Teardown fires regardless of response status code"
+        ],
+        "trace": [
+          "R-FLASKR-026",
+          "flaskr/db.py:close_db registered via teardown_appcontext fires on every request end"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom unittest.mock import patch\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\nclose_calls = []\noriginal_close = sqlite3.Connection.close\ndef spy_close(self):\n    close_calls.append(1)\n    original_close(self)\n\n# NEG: POST /auth/login with wrong password opens DB, returns 200 with error\n# teardown_appcontext must still call close_db -> db.close() exactly once\nwith patch.object(sqlite3.Connection, 'close', spy_close):\n    r = client.post('/auth/login',\n                    data={'username': 'Rahul', 'password': 'wrongpassword'})\n    # Wrong password -> re-renders login page with 200\n    assert r.status_code == 200\n    assert b'Incorrect password.' in r.data\n    # Exact: close must have been called exactly once (DB was opened for user lookup)\n    assert len(close_calls) == 1\n\n# NEG: GET a non-existent route -> 404, no DB opened, close not called\nclose_calls.clear()\nwith patch.object(sqlite3.Connection, 'close', spy_close):\n    r2 = client.get('/nonexistent_route_xyz')\n    assert r2.status_code == 404\n    assert len(close_calls) == 0\n\nos.unlink(path)\nprint('test_db_connection_closed_after_error_response PASSED')"
+      },
+      {
+        "name": "test_teardown_appcontext_registered_exactly",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Flask app created with TESTING=True",
+          "init_app called during create_app which registers close_db via teardown_appcontext"
+        ],
+        "actions": [
+          "Inspect app's teardown_appcontext_funcs to confirm close_db is registered",
+          "Make two sequential requests each opening the DB",
+          "Assert close is called exactly once per request (not zero, not two)"
+        ],
+        "expected": [
+          "close_db appears in teardown_appcontext_funcs",
+          "After first request: close called exactly 1 time total",
+          "After second request: close called exactly 2 times total",
+          "State transitions: open->closed per request, not leaked across requests"
+        ],
+        "trace": [
+          "R-FLASKR-026",
+          "flaskr/db.py:init_app -> app.teardown_appcontext(close_db)",
+          "flaskr/db.py:close_db"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom unittest.mock import patch\nfrom flaskr import create_app\nfrom flaskr.db import init_db, close_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\n# STC: Verify close_db is registered in teardown_appcontext_funcs\nteardown_funcs = app.teardown_appcontext_funcs\nfunc_names = [f.__name__ for f in teardown_funcs]\nassert 'close_db' in func_names, f'close_db not in teardown_appcontext_funcs: {func_names}'\n\nclient = app.test_client()\nclose_calls = []\noriginal_close = sqlite3.Connection.close\ndef spy_close(self):\n    close_calls.append(1)\n    original_close(self)\n\nwith patch.object(sqlite3.Connection, 'close', spy_close):\n    # First request: DB opened by load_logged_in_user + index query\n    r1 = client.get('/')\n    assert r1.status_code == 200\n    assert len(close_calls) == 1  # exactly 1 after first request\n\n    # Second request: another full lifecycle\n    r2 = client.get('/')\n    assert r2.status_code == 200\n    assert len(close_calls) == 2  # exactly 2 after second request\n\nos.unlink(path)\nprint('test_teardown_appcontext_registered_exactly PASSED')"
+      },
+      {
+        "name": "test_close_db_direct_unit_with_and_without_connection",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask app created with TESTING=True",
+          "App context pushed manually"
+        ],
+        "actions": [
+          "Push app context, call get_db() to open connection, then call close_db()",
+          "Assert db.close() was called exactly once",
+          "Assert g no longer has 'db' key after close_db()",
+          "Call close_db() again (boundary: second call with no db in g)",
+          "Assert no exception and close not called again"
+        ],
+        "expected": [
+          "First close_db() call: db.close() invoked exactly once",
+          "After first close_db(): g.get('db') is None",
+          "Second close_db() call: no exception, close not called again (total still 1)"
+        ],
+        "trace": [
+          "R-FLASKR-026",
+          "flaskr/db.py:close_db -> db = g.pop('db', None); if db is not None: db.close()"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom unittest.mock import patch\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db, close_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclose_calls = []\noriginal_close = sqlite3.Connection.close\ndef spy_close(self):\n    close_calls.append(1)\n    original_close(self)\n\nwith app.app_context():\n    with patch.object(sqlite3.Connection, 'close', spy_close):\n        db_conn = get_db()\n        assert 'db' in g.__dict__ or hasattr(g, '_get_current_object')\n        # Verify connection is open (not closed yet)\n        assert len(close_calls) == 0\n\n        # First close_db: should close the connection\n        close_db()\n        assert len(close_calls) == 1\n\n        # g should no longer have 'db'\n        assert g.get('db') is None\n\n        # Boundary: second close_db with no db in g -> no error, no extra close\n        close_db()\n        assert len(close_calls) == 1  # still exactly 1, not 2\n\nos.unlink(path)\nprint('test_close_db_direct_unit_with_and_without_connection PASSED')"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-026",
+  "domain": "blogging",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6330,
+    "output_tokens": 4048,
+    "latency_ms": 56635,
+    "wall_ms": 56635,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-026\",\n  \"reasoning\": \"R-FLASKR-026 requires that the sqlite3 connection is closed after every request via teardown_appcontext. The key mechanism is: init_app() registers close_db via app.teardown_appcontext(close_db); close_db() pops 'db' from Flask's g and calls db.close(). Tests must verify: (1) a normal request succeeds and the connection is cleaned up (positive/EP), (2) the teardown fires even when no DB was touched in the request (boundary/BVA \u2014 g has no 'db' key, close_db must handle None gracefully), (3) the teardown fires after an error response (negative/NEG \u2014 4xx path still triggers teardown). We instrument close_db by monkey-patching within the app context to count calls, and also verify via g.pop behavior. We use unittest.mock.patch to spy on close_db and sqlite3.Connection.close to confirm the actual close() is called exactly once per request that opened a connection.\",\n  \"tests\": [\n    {\n      \"name\": \"test_db_connection_closed_after_normal_request\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp database\",\n        \"Database initialized with schema and seed data\",\n        \"close_db is registered via teardown_appcontext\"\n      ],\n      \"actions\": [\n        \"Spy on sqlite3.Connection.close using unittest.mock.patch\",\n        \"Make GET /hello request via test_client\",\n        \"Assert HTTP 200 response\",\n        \"Assert sqlite3.Connection.close was NOT called (no DB opened for /hello)\",\n        \"Make GET / request which triggers get_db()\",\n        \"Assert HTTP 200 response\",\n        \"Assert sqlite3.Connection.close was called exactly once after the request\"\n      ],\n      \"expected\": [\n        \"GET /hello returns 200\",\n        \"GET / returns 200\",\n        \"sqlite3.Connection.close called exactly once per DB-touching request\",\n        \"g does not retain 'db' after request teardown\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-026\",\n        \"flaskr/db.py:close_db\",\n        \"flaskr/db.py:init_app -> app.teardown_appcontext(close_db)\"\n      ],\n      \"executable\": \"import tempfile, os, sqlite3\\nfrom unittest.mock import patch, MagicMock\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\n\\n# Positive: GET /hello does not open DB; close should not be called\\nclose_call_count = []\\noriginal_close = sqlite3.Connection.close\\ndef counting_close(self):\\n    close_call_count.append(1)\\n    original_close(self)\\n\\nwith patch.object(sqlite3.Connection, 'close', counting_close):\\n    r = client.get('/hello')\\n    assert r.status_code == 200\\n    assert b'Hello' in r.data\\n    hello_closes = len(close_call_count)\\n    assert hello_closes == 0\\n\\n# Positive: GET / opens DB; close_db must call db.close() exactly once\\nclose_call_count.clear()\\nwith patch.object(sqlite3.Connection, 'close', counting_close):\\n    r2 = client.get('/')\\n    assert r2.status_code == 200\\n    assert len(close_call_count) == 1\\n\\nos.unlink(path)\\nprint('test_db_connection_closed_after_normal_request PASSED')\"\n    },\n    {\n      \"name\": \"test_db_close_not_called_when_no_connection_opened\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp database\",\n        \"close_db registered via teardown_appcontext\",\n        \"Request to /hello endpoint which does NOT call get_db()\"\n      ],\n      \"actions\": [\n        \"Patch sqlite3.Connection.close to count invocations\",\n        \"Make GET /hello request (no DB access in this view)\",\n        \"Assert response is 200 with expected body\",\n        \"Assert close was called exactly 0 times (boundary: g has no 'db' key)\",\n        \"Verify close_db handles None gracefully (g.pop returns None)\"\n      ],\n      \"expected\": [\n        \"GE"
+  }
+}

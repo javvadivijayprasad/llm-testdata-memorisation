@@ -1,0 +1,162 @@
+{
+  "req": {
+    "id": "R-FLASKR-043",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "security",
+    "title": "Session cookie has HttpOnly attribute",
+    "statement": "The system shall set HttpOnly on the session cookie.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "session cookie has httponly attribute"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "Set-Cookie"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-043",
+    "reasoning": "The requirement mandates that the session cookie carries the HttpOnly attribute. Flask sets the session cookie on any response that writes to the session (e.g. a successful login). We test: (1) positive \u2013 after a successful POST /auth/login the Set-Cookie header contains 'HttpOnly'; (2) negative \u2013 a plain GET to a non-session-writing endpoint does NOT set a session cookie at all, so there is nothing to check HttpOnly on (verifying the cookie is only emitted when a session is created); (3) boundary \u2013 the HttpOnly flag must appear as a distinct token in the Set-Cookie value, not merely as a substring of another attribute name, and the response status must be exactly 302 (redirect after login). Additional tests cover the exact cookie attribute string and confirm the flag is present on the register-then-login flow (STC).",
+    "tests": [
+      {
+        "name": "test_session_cookie_has_httponly_after_login",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App created with TESTING=True and a fresh temp database initialised with fixture data",
+          "User 'test' with password 'test' exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with username=test, password=test",
+          "Inspect the Set-Cookie header of the response"
+        ],
+        "expected": [
+          "Response status is exactly 302",
+          "Set-Cookie header is present",
+          "Set-Cookie header value contains the token 'HttpOnly' (case-insensitive)"
+        ],
+        "trace": [
+          "R-FLASKR-043: session cookie must carry HttpOnly attribute"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\ndef test_session_cookie_has_httponly_after_login():\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    set_cookie = r.headers.get('Set-Cookie', '')\n    assert set_cookie != '', 'Expected Set-Cookie header to be present after login'\n    assert 'HttpOnly' in set_cookie or 'httponly' in set_cookie.lower(), (\n        f'HttpOnly not found in Set-Cookie: {set_cookie}'\n    )\n"
+      },
+      {
+        "name": "test_no_session_cookie_on_unauthenticated_get",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App created with TESTING=True and a fresh temp database",
+          "No prior login; session is empty"
+        ],
+        "actions": [
+          "GET / (blog index) without any prior authentication"
+        ],
+        "expected": [
+          "Response status is exactly 200",
+          "No Set-Cookie header is emitted (no session mutation occurred)"
+        ],
+        "trace": [
+          "R-FLASKR-043: HttpOnly is only relevant when a session cookie is actually set; verifying no spurious cookie is emitted"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\ndef test_no_session_cookie_on_unauthenticated_get():\n    r = client.get('/')\n    assert r.status_code == 200\n    set_cookie = r.headers.get('Set-Cookie', '')\n    # A plain read-only request must not create a new session cookie\n    assert set_cookie == '', (\n        f'Unexpected Set-Cookie on unauthenticated GET /: {set_cookie}'\n    )\n"
+      },
+      {
+        "name": "test_httponly_is_distinct_token_not_substring",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App created with TESTING=True and a fresh temp database initialised with fixture data",
+          "User 'test' with password 'test' exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with username=test, password=test",
+          "Split the Set-Cookie header on semicolons",
+          "Check each token individually for the exact string 'HttpOnly' (stripped)"
+        ],
+        "expected": [
+          "Response status is exactly 302",
+          "At least one semicolon-delimited token in Set-Cookie equals 'HttpOnly' (case-insensitive, stripped)",
+          "The token is not merely a prefix or suffix of another attribute name"
+        ],
+        "trace": [
+          "R-FLASKR-043: HttpOnly must appear as a standalone attribute token, not embedded in another name"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\ndef test_httponly_is_distinct_token_not_substring():\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    set_cookie = r.headers.get('Set-Cookie', '')\n    assert set_cookie != '', 'Set-Cookie header missing after login'\n    tokens = [t.strip() for t in set_cookie.split(';')]\n    httponly_tokens = [t for t in tokens if t.lower() == 'httponly']\n    assert len(httponly_tokens) == 1, (\n        f'Expected exactly one HttpOnly token, got {httponly_tokens} in: {set_cookie}'\n    )\n"
+      },
+      {
+        "name": "test_session_cookie_httponly_after_register_and_login",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App created with TESTING=True and a fresh temp database initialised with fixture data",
+          "A new user 'newuser' does not yet exist"
+        ],
+        "actions": [
+          "POST /auth/register with username=newuser, password=newpass (creates user)",
+          "POST /auth/login with username=newuser, password=newpass",
+          "Inspect Set-Cookie header of the login response"
+        ],
+        "expected": [
+          "Register response status is exactly 302",
+          "Login response status is exactly 302",
+          "Set-Cookie header on login response contains 'HttpOnly' token"
+        ],
+        "trace": [
+          "R-FLASKR-043: HttpOnly must be set on the session cookie regardless of how the user was created"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\ndef test_session_cookie_httponly_after_register_and_login():\n    r_reg = client.post('/auth/register', data={'username': 'newuser', 'password': 'newpass'})\n    assert r_reg.status_code == 302\n    r_login = client.post('/auth/login', data={'username': 'newuser', 'password': 'newpass'})\n    assert r_login.status_code == 302\n    set_cookie = r_login.headers.get('Set-Cookie', '')\n    assert set_cookie != '', 'Set-Cookie header missing after login of newly registered user'\n    tokens = [t.strip().lower() for t in set_cookie.split(';')]\n    assert 'httponly' in tokens, (\n        f'HttpOnly not found as distinct token in Set-Cookie: {set_cookie}'\n    )\n"
+      },
+      {
+        "name": "test_failed_login_does_not_set_session_cookie",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "App created with TESTING=True and a fresh temp database initialised with fixture data",
+          "User 'test' exists but wrong password will be supplied"
+        ],
+        "actions": [
+          "POST /auth/login with username=test, password=wrongpassword"
+        ],
+        "expected": [
+          "Response status is exactly 200 (re-renders login form with error)",
+          "No Set-Cookie header is emitted (no session should be created on failed login)"
+        ],
+        "trace": [
+          "R-FLASKR-043: HttpOnly cookie must NOT be set when login fails; session is not created"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\ndef test_failed_login_does_not_set_session_cookie():\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'wrongpassword'})\n    assert r.status_code == 200\n    set_cookie = r.headers.get('Set-Cookie', '')\n    # On failed login no session is written so no session cookie should appear\n    assert set_cookie == '', (\n        f'Unexpected Set-Cookie on failed login: {set_cookie}'\n    )\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-043",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5440,
+    "output_tokens": 2698,
+    "latency_ms": 35063,
+    "wall_ms": 35063,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-043\",\n  \"reasoning\": \"The requirement mandates that the session cookie carries the HttpOnly attribute. Flask sets the session cookie on any response that writes to the session (e.g. a successful login). We test: (1) positive \u2013 after a successful POST /auth/login the Set-Cookie header contains 'HttpOnly'; (2) negative \u2013 a plain GET to a non-session-writing endpoint does NOT set a session cookie at all, so there is nothing to check HttpOnly on (verifying the cookie is only emitted when a session is created); (3) boundary \u2013 the HttpOnly flag must appear as a distinct token in the Set-Cookie value, not merely as a substring of another attribute name, and the response status must be exactly 302 (redirect after login). Additional tests cover the exact cookie attribute string and confirm the flag is present on the register-then-login flow (STC).\",\n  \"tests\": [\n    {\n      \"name\": \"test_session_cookie_has_httponly_after_login\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App created with TESTING=True and a fresh temp database initialised with fixture data\",\n        \"User 'test' with password 'test' exists in the database\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=test, password=test\",\n        \"Inspect the Set-Cookie header of the response\"\n      ],\n      \"expected\": [\n        \"Response status is exactly 302\",\n        \"Set-Cookie header is present\",\n        \"Set-Cookie header value contains the token 'HttpOnly' (case-insensitive)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-043: session cookie must carry HttpOnly attribute\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\n\\ndef test_session_cookie_has_httponly_after_login():\\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\\n    assert r.status_code == 302\\n    set_cookie = r.headers.get('Set-Cookie', '')\\n    assert set_cookie != '', 'Expected Set-Cookie header to be present after login'\\n    assert 'HttpOnly' in set_cookie or 'httponly' in set_cookie.lower(), (\\n        f'HttpOnly not found in Set-Cookie: {set_cookie}'\\n    )\\n\"\n    },\n    {\n      \"name\": \"test_no_session_cookie_on_unauthenticated_get\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App created with TESTING=True and a fresh temp database\",\n        \"No prior login; session is empty\"\n      ],\n      \"actions\": [\n        \"GET / (blog index) without any prior authentication\"\n      ],\n      \"expected\": [\n        \"Response status is exactly 200\",\n        \"No Set-Cookie header is emitted (no session mutation occurred)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-043: HttpOnly is only relevant when a session cookie is actually set; verifying no spurious cookie is emitted\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\n\\ndef test_no_session_cookie_on_unauthenticated_get():\\n    r = client.get('/')\\n    assert r.status_code == 200\\n    set_cookie = r.headers.get('Set-Cookie', '')\\n    # A plain read-only request must not create a new session cookie\\n    assert set_cookie == '', (\\n        f'Unexpected Set-Cookie on unauthenticated GET /: {set_cookie}'\\n    )\\n\"\n    },\n    {\n      \"name\": \"test_httponly_is_distinct_token_not_substring\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"App created with TESTING=True and a fresh temp database initialised with fixture data\",\n        \"User 'test' with password 'test' exists in the database\"\n      ],\n      \""
+  }
+}

@@ -1,0 +1,168 @@
+{
+  "req": {
+    "id": "R-FLASKR-036",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Login case-sensitive username",
+    "statement": "The system shall treat usernames as case-sensitive on POST /auth/login.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "login case-sensitive username"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /auth/login"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-036",
+    "reasoning": "The violation is that test[4] has kind='negative' but heuristic='STC'. STC (State Transition Coverage) is not valid for a negative test under the rule-based verifier. To fix this, I change test[4]'s heuristic from 'STC' to 'NEG', which is the correct heuristic for a negative test verifying that wrong-case credentials produce no session. All other tests are preserved exactly as they were.",
+    "tests": [
+      {
+        "name": "test_login_exact_case_username_succeeds",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains user id=1 with username='Rahul' and password='stone'",
+          "Flask test client is initialised with TESTING=True"
+        ],
+        "actions": [
+          "POST /auth/login with username='Rahul' and password='stone'"
+        ],
+        "expected": [
+          "HTTP 302 redirect (login success)",
+          "Location header is '/' (redirects to index)",
+          "No error message in response body"
+        ],
+        "trace": [
+          "R-FLASKR-036: exact-case username must authenticate successfully"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_login_exact_case_username_succeeds():\n    fd2, path2 = tempfile.mkstemp()\n    os.close(fd2)\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\n    with app2.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client2 = app2.test_client()\n    r2 = client2.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r2.status_code == 302\n    assert r2.headers['Location'] == '/'\n    os.unlink(path2)\n\ntest_login_exact_case_username_succeeds()"
+      },
+      {
+        "name": "test_login_wrong_case_username_fails",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains user id=1 with username='Rahul' (capital R) and password='stone'",
+          "Flask test client is initialised with TESTING=True"
+        ],
+        "actions": [
+          "POST /auth/login with username='rahul' (all lowercase) and password='stone'"
+        ],
+        "expected": [
+          "HTTP 200 (login page re-rendered, not redirected)",
+          "Response body contains 'Incorrect username.' error message",
+          "No session user_id set"
+        ],
+        "trace": [
+          "R-FLASKR-036: lowercase variant of registered username must be rejected"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_login_wrong_case_username_fails():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'rahul', 'password': 'stone'})\n    assert r.status_code == 200, f'Expected 200, got {r.status_code}'\n    assert b'Incorrect username.' in r.data, 'Expected Incorrect username. error'\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess, 'Session should not contain user_id'\n    os.unlink(path)\n\ntest_login_wrong_case_username_fails()"
+      },
+      {
+        "name": "test_login_case_variants_all_rejected_except_exact",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains user id=1 with username='Rahul' and password='stone'",
+          "Flask test client is initialised with TESTING=True"
+        ],
+        "actions": [
+          "POST /auth/login with username='RAHUL' (all-upper) and password='stone'",
+          "POST /auth/login with username='rahul' (all-lower) and password='stone'",
+          "POST /auth/login with username='rAHUL' (inverted case) and password='stone'",
+          "POST /auth/login with username='Rahul' (exact case) and password='stone'"
+        ],
+        "expected": [
+          "All-upper 'RAHUL': HTTP 200 with 'Incorrect username.' in body",
+          "All-lower 'rahul': HTTP 200 with 'Incorrect username.' in body",
+          "Inverted 'rAHUL': HTTP 200 with 'Incorrect username.' in body",
+          "Exact 'Rahul': HTTP 302 redirect to '/'"
+        ],
+        "trace": [
+          "R-FLASKR-036: only exact-case username authenticates; all other case variants must fail"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_login_case_variants_all_rejected_except_exact():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    wrong_cases = ['RAHUL', 'rahul', 'rAHUL']\n    for variant in wrong_cases:\n        r = client.post('/auth/login', data={'username': variant, 'password': 'stone'})\n        assert r.status_code == 200, f'Variant {variant!r}: expected 200, got {r.status_code}'\n        assert b'Incorrect username.' in r.data, f'Variant {variant!r}: expected Incorrect username. error'\n    r_ok = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r_ok.status_code == 302, f'Exact case: expected 302, got {r_ok.status_code}'\n    assert r_ok.headers['Location'] == '/'\n    os.unlink(path)\n\ntest_login_case_variants_all_rejected_except_exact()"
+      },
+      {
+        "name": "test_login_uppercase_registered_user_lowercase_attempt_fails",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database contains user id=2 with username='Anjali' and password='cloud'",
+          "Flask test client is initialised with TESTING=True"
+        ],
+        "actions": [
+          "POST /auth/login with username='anjali' (lowercase) and password='cloud'",
+          "POST /auth/login with username='ANJALI' (uppercase) and password='cloud'",
+          "POST /auth/login with username='Anjali' (exact) and password='cloud'"
+        ],
+        "expected": [
+          "'anjali': HTTP 200 with 'Incorrect username.' in body",
+          "'ANJALI': HTTP 200 with 'Incorrect username.' in body",
+          "'Anjali': HTTP 302 redirect to '/'"
+        ],
+        "trace": [
+          "R-FLASKR-036: decision table \u2014 username case mismatch always yields 4xx-equivalent (200+error); exact match yields 2xx-equivalent (302)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_login_uppercase_registered_user_lowercase_attempt_fails():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r1 = client.post('/auth/login', data={'username': 'anjali', 'password': 'cloud'})\n    assert r1.status_code == 200\n    assert b'Incorrect username.' in r1.data\n    r2 = client.post('/auth/login', data={'username': 'ANJALI', 'password': 'cloud'})\n    assert r2.status_code == 200\n    assert b'Incorrect username.' in r2.data\n    r3 = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\n    assert r3.status_code == 302\n    assert r3.headers['Location'] == '/'\n    os.unlink(path)\n\ntest_login_uppercase_registered_user_lowercase_attempt_fails()"
+      },
+      {
+        "name": "test_login_case_sensitive_no_session_on_wrong_case",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains user id=1 with username='Rahul' and password='stone'",
+          "Flask test client is initialised with TESTING=True",
+          "No user is currently logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username='ishaan' (wrong case, non-existent user) and password='stone'",
+          "Inspect session to confirm user_id is absent",
+          "POST /auth/login with username='Rahul' (exact case) and password='stone'",
+          "Inspect session to confirm user_id is present"
+        ],
+        "expected": [
+          "Wrong-case attempt: HTTP 200, no session user_id, 'Incorrect username.' in body",
+          "Exact-case attempt: HTTP 302, session contains user_id"
+        ],
+        "trace": [
+          "R-FLASKR-036: wrong-case username must never establish an authenticated session; exact-case must establish session"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_login_case_sensitive_no_session_on_wrong_case():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r_wrong = client.post('/auth/login', data={'username': 'ishaan', 'password': 'stone'})\n    assert r_wrong.status_code == 200, f'Expected 200, got {r_wrong.status_code}'\n    assert b'Incorrect username.' in r_wrong.data, 'Expected Incorrect username. error'\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess, 'Session must not contain user_id after wrong-case attempt'\n    r_ok = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r_ok.status_code == 302, f'Expected 302, got {r_ok.status_code}'\n    assert r_ok.headers['Location'] == '/'\n    with client.session_transaction() as sess2:\n        assert 'user_id' in sess2, 'Session must contain user_id after exact-case login'\n    os.unlink(path)\n\ntest_login_case_sensitive_no_session_on_wrong_case()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-036",
+  "domain": "blogging",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6570,
+    "output_tokens": 3219,
+    "latency_ms": 38813,
+    "wall_ms": 38813,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-036\",\n  \"reasoning\": \"The requirement states that usernames are case-sensitive on POST /auth/login. This means 'Rahul' and 'rahul' are different users. We need: (1) a positive test confirming exact-case login succeeds (302 redirect), (2) a negative test confirming wrong-case username fails (200 with error message, not redirect), (3) a boundary/decision-table test covering all case variants (all-upper, all-lower, mixed) to ensure only the exact registered casing works. The pre-loaded user 'Rahul' with password 'stone' is used throughout. The login view returns a redirect (302) on success and re-renders the form (200) with a flashed error on failure.\",\n  \"tests\": [\n    {\n      \"name\": \"test_login_exact_case_username_succeeds\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains user id=1 with username='Rahul' and password='stone'\",\n        \"Flask test client is initialised with TESTING=True\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='Rahul' and password='stone'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect (login success)\",\n        \"Location header is '/' (redirects to index)\",\n        \"No error message in response body\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-036: exact-case username must authenticate successfully\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\nclient = app.test_client()\\n\\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\nassert r.status_code == 302, f'Expected 302, got {r.status_code}'\\nassert r.headers['Location'] == '/', f'Expected redirect to /, got {r.headers[\\\"Location\\\"]}'\\nos.unlink(path)\\n\\ndef test_login_exact_case_username_succeeds():\\n    fd2, path2 = tempfile.mkstemp()\\n    os.close(fd2)\\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\\n    with app2.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client2 = app2.test_client()\\n    r2 = client2.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r2.status_code == 302\\n    assert r2.headers['Location'] == '/'\\n    os.unlink(path2)\"\n    },\n    {\n      \"name\": \"test_login_wrong_case_username_fails\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database contains user id=1 with username='Rahul' (capital R) and password='stone'\",\n        \"Flask test client is initialised with TESTING=True\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='rahul' (all lowercase) and password='stone'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 (login page re-rendered, not redirected)\",\n        \"Response body contains 'Incorrect username.' error message\",\n        \"No session user_id set\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-036: lowercase variant of registered username must be rejected\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_login_wrong_case_username_fails():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'rahul', 'password': 'stone'})\\n    assert r.status_code == 200, f'Expected 200, got {r.status_code}'\\n    assert b'Incorrect username.' in r.data, 'Expected Incorrect username. error'\\n    with client.session_transaction() as sess:\\n        assert 'user_id' not in sess, 'Session should not contain user_id'\\n    os.unlink(path)\"\n    },\n    {\n      \"name\": \"test_login_case_variants_all_rejected_except_exact\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions"
+  }
+}

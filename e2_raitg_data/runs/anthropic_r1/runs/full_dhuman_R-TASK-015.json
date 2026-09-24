@@ -1,0 +1,164 @@
+{
+  "req": {
+    "id": "R-TASK-015",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Mark task complete",
+    "statement": "The system shall set completed=true when a PUT payload includes {\"completed\": true}.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "mark task complete"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-015",
+    "reasoning": "The requirement states that PUT /tasks/{task_id} with {\"completed\": true} must set completed=true and return HTTP 2xx. I design: (1) a positive EP test that creates a task with completed=false then PUTs completed=true and asserts the exact field value and status code; (2) a negative NEG test that PUTs to a non-existent task_id and asserts HTTP 404 with exact detail; (3) a boundary STC test that verifies the state transition from completed=true back to completed=false (the inverse boolean path, catching boolean-negation and and->or mutations); (4) a DT test that sends completed=true alongside other fields and asserts only completed changes as expected; (5) a BVA test that sends an empty body (no completed field) and asserts completed is NOT changed, catching mutations in the exclude_unset logic. Each test uses an in-process FastAPI TestClient with a fresh SQLite DB via dependency override, ensuring determinism and idempotency.",
+    "tests": [
+      {
+        "name": "test_put_completed_true_sets_completed_field",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "A task exists with completed=false",
+          "PUT /tasks/{task_id} endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with completed=false",
+          "PUT /tasks/{task_id} with body {\"completed\": true}"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON has completed == true",
+          "Response JSON id matches created task id",
+          "Response JSON title matches original title"
+        ],
+        "trace": [
+          "R-TASK-015: system shall set completed=true when PUT payload includes {\"completed\": true}"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import Base, get_db\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ncreate_resp = client.post('/tasks/', json={'title': 'My Task', 'completed': False})\nassert create_resp.status_code == 201\ntask_id = create_resp.json()['id']\nassert create_resp.json()['completed'] == False\n\nput_resp = client.put(f'/tasks/{task_id}', json={'completed': True})\nassert put_resp.status_code == 200\nbody = put_resp.json()\nassert body['completed'] == True\nassert body['id'] == task_id\nassert body['title'] == 'My Task'\n\napp.dependency_overrides.clear()\nos.unlink(tf)"
+      },
+      {
+        "name": "test_put_completed_true_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No task with id 99999 exists in the database"
+        ],
+        "actions": [
+          "PUT /tasks/99999 with body {\"completed\": true}"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response JSON detail contains 'not found'"
+        ],
+        "trace": [
+          "R-TASK-015 error pathway: HTTP 4xx on client error (task not found)"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import Base, get_db\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nput_resp = client.put('/tasks/99999', json={'completed': True})\nassert put_resp.status_code == 404\nbody = put_resp.json()\nassert 'detail' in body\nassert '99999' in body['detail']\nassert 'not found' in body['detail'].lower()\n\napp.dependency_overrides.clear()\nos.unlink(tf)"
+      },
+      {
+        "name": "test_put_completed_true_then_false_state_transition",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "A task exists with completed=true",
+          "PUT /tasks/{task_id} endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with completed=true",
+          "PUT /tasks/{task_id} with body {\"completed\": false}",
+          "Assert completed is now false",
+          "PUT /tasks/{task_id} with body {\"completed\": true}",
+          "Assert completed is now true"
+        ],
+        "expected": [
+          "After first PUT: HTTP 200, completed == false",
+          "After second PUT: HTTP 200, completed == true"
+        ],
+        "trace": [
+          "R-TASK-015: state transition coverage \u2014 both boolean directions of completed field; catches boolean-negation mutations"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import Base, get_db\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ncreate_resp = client.post('/tasks/', json={'title': 'Toggle Task', 'completed': True})\nassert create_resp.status_code == 201\ntask_id = create_resp.json()['id']\nassert create_resp.json()['completed'] == True\n\nput_false = client.put(f'/tasks/{task_id}', json={'completed': False})\nassert put_false.status_code == 200\nassert put_false.json()['completed'] == False\n\nput_true = client.put(f'/tasks/{task_id}', json={'completed': True})\nassert put_true.status_code == 200\nassert put_true.json()['completed'] == True\n\napp.dependency_overrides.clear()\nos.unlink(tf)"
+      },
+      {
+        "name": "test_put_completed_true_with_other_fields_only_updates_specified",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "A task exists with completed=false and a known title"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with title='Original' and completed=false",
+          "PUT /tasks/{task_id} with body {\"completed\": true, \"title\": \"Updated\"}"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "completed == true",
+          "title == 'Updated'",
+          "id unchanged"
+        ],
+        "trace": [
+          "R-TASK-015: decision table \u2014 completed=true combined with other fields; catches mutations that ignore completed when other fields present"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import Base, get_db\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ncreate_resp = client.post('/tasks/', json={'title': 'Original', 'completed': False})\nassert create_resp.status_code == 201\ntask_id = create_resp.json()['id']\n\nput_resp = client.put(f'/tasks/{task_id}', json={'completed': True, 'title': 'Updated'})\nassert put_resp.status_code == 200\nbody = put_resp.json()\nassert body['completed'] == True\nassert body['title'] == 'Updated'\nassert body['id'] == task_id\n\napp.dependency_overrides.clear()\nos.unlink(tf)"
+      },
+      {
+        "name": "test_put_empty_body_does_not_change_completed",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "A task exists with completed=false"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with completed=false",
+          "PUT /tasks/{task_id} with empty JSON body {}"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "completed remains false (exclude_unset logic not mutated)",
+          "title unchanged"
+        ],
+        "trace": [
+          "R-TASK-015: BVA boundary \u2014 omitting completed from payload must NOT set it to true; catches mutations in exclude_unset or default-value logic"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import Base, get_db\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSession()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ncreate_resp = client.post('/tasks/', json={'title': 'Stable Task', 'completed': False})\nassert create_resp.status_code == 201\ntask_id = create_resp.json()['id']\n\nput_resp = client.put(f'/tasks/{task_id}', json={})\nassert put_resp.status_code == 200\nbody = put_resp.json()\nassert body['completed'] == False\nassert body['title'] == 'Stable Task'\nassert body['id'] == task_id\n\napp.dependency_overrides.clear()\nos.unlink(tf)"
+      }
+    ]
+  },
+  "req_id": "R-TASK-015",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4855,
+    "output_tokens": 3218,
+    "latency_ms": 37706,
+    "wall_ms": 37706,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-015\",\n  \"reasoning\": \"The requirement states that PUT /tasks/{task_id} with {\\\"completed\\\": true} must set completed=true and return HTTP 2xx. I design: (1) a positive EP test that creates a task with completed=false then PUTs completed=true and asserts the exact field value and status code; (2) a negative NEG test that PUTs to a non-existent task_id and asserts HTTP 404 with exact detail; (3) a boundary STC test that verifies the state transition from completed=true back to completed=false (the inverse boolean path, catching boolean-negation and and->or mutations); (4) a DT test that sends completed=true alongside other fields and asserts only completed changes as expected; (5) a BVA test that sends an empty body (no completed field) and asserts completed is NOT changed, catching mutations in the exclude_unset logic. Each test uses an in-process FastAPI TestClient with a fresh SQLite DB via dependency override, ensuring determinism and idempotency.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_completed_true_sets_completed_field\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"A task exists with completed=false\",\n        \"PUT /tasks/{task_id} endpoint is available\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a task with completed=false\",\n        \"PUT /tasks/{task_id} with body {\\\"completed\\\": true}\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response JSON has completed == true\",\n        \"Response JSON id matches created task id\",\n        \"Response JSON title matches original title\"\n      ],\n      \"trace\": [\n        \"R-TASK-015: system shall set completed=true when PUT payload includes {\\\"completed\\\": true}\"\n      ],\n      \"executable\": \"import os, tempfile\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import Base, get_db\\n\\ntf = tempfile.mktemp(suffix='.db')\\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSession()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ncreate_resp = client.post('/tasks/', json={'title': 'My Task', 'completed': False})\\nassert create_resp.status_code == 201\\ntask_id = create_resp.json()['id']\\nassert create_resp.json()['completed'] == False\\n\\nput_resp = client.put(f'/tasks/{task_id}', json={'completed': True})\\nassert put_resp.status_code == 200\\nbody = put_resp.json()\\nassert body['completed'] == True\\nassert body['id'] == task_id\\nassert body['title'] == 'My Task'\\n\\napp.dependency_overrides.clear()\\nos.unlink(tf)\"\n    },\n    {\n      \"name\": \"test_put_completed_true_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"No task with id 99999 exists in the database\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/99999 with body {\\\"completed\\\": true}\"\n      ],\n      \"expected\": [\n        \"HTTP 404 response\",\n        \"Response JSON detail contains 'not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-015 error pathway: HTTP 4xx on client error (task not found)\"\n      ],\n      \"executable\": \"import os, tempfile\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import Base, get_db\\n\\ntf = tempfile.mktemp(suffix='.db')\\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSession()\\n    try:\\n        yield db\\n    "
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "req": {
+    "id": "R-FLASKR-018",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "validation",
+    "title": "Update requires title",
+    "statement": "The system shall render 'Title is required.' when POST /<id>/update omits the title.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "update requires title"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "'Title is required.'"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /<id>/update"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-018",
+    "reasoning": "R-FLASKR-018 requires that POST /<id>/update with a missing title renders 'Title is required.' and returns HTTP 2xx. Three tests are designed: (1) positive \u2014 valid update with title succeeds and redirects (EP, confirms the non-error path so mutations to the error branch are caught); (2) negative \u2014 POST with empty title string returns 2xx and contains exact error text (NEG + EP, catches string-mutation and condition-flip mutations); (3) boundary \u2014 POST with title='' (zero-length, the exact boundary) vs title=' ' (one space, non-empty) to catch off-by-one / truthiness mutations on the `if not title` guard (BVA). All tests use pre-loaded data: post id=2 belongs to user Rahul (id=1), so we log in as Rahul. Assertions use exact status codes and exact byte strings to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_update_with_valid_title_redirects",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains pre-loaded rows (user id=1 Rahul, post id=2 author_id=1)",
+          "User Rahul is logged in via POST /auth/login",
+          "Post id=2 exists and belongs to Rahul"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "POST /2/update with title='Updated Title', body='Updated body'"
+        ],
+        "expected": [
+          "HTTP 302 redirect response",
+          "Location header equals '/'",
+          "Response does NOT contain 'Title is required.'"
+        ],
+        "trace": [
+          "R-FLASKR-018: positive path \u2014 title present, no error rendered",
+          "Catches mutations that flip the `if not title` condition to always-true"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\n# Log in as Rahul (author of post id=2)\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302, f'Login failed: {r.status_code}'\n\n# POST update with a valid non-empty title\nr = client.post('/2/update', data={'title': 'Updated Title', 'body': 'Updated body'})\nassert r.status_code == 302, f'Expected 302 redirect, got {r.status_code}'\nassert r.headers['Location'] == '/', f'Unexpected redirect: {r.headers.get(\"Location\")}'\nassert b'Title is required.' not in r.data\n\nos.unlink(path)"
+      },
+      {
+        "name": "test_update_missing_title_shows_error",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains pre-loaded rows (user id=1 Rahul, post id=2 author_id=1)",
+          "User Rahul is logged in via POST /auth/login",
+          "POST body omits title (empty string)"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "POST /2/update with title='', body='Some body'"
+        ],
+        "expected": [
+          "HTTP 200 response (re-renders the update form)",
+          "Response body contains exact bytes b'Title is required.'",
+          "Response body does NOT contain a redirect to '/'"
+        ],
+        "trace": [
+          "R-FLASKR-018: primary error pathway \u2014 empty title triggers validation message",
+          "Catches string-mutation ('Title is required.' -> anything else)",
+          "Catches condition-flip mutation (`if not title` -> `if title`)",
+          "Catches flash/render suppression mutations"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\n# Log in as Rahul (author of post id=2)\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302, f'Login failed: {r.status_code}'\n\n# POST update with empty title\nr = client.post('/2/update', data={'title': '', 'body': 'Some body'})\nassert r.status_code == 200, f'Expected 200, got {r.status_code}'\nassert b'Title is required.' in r.data, 'Error message not found in response'\n\nos.unlink(path)"
+      },
+      {
+        "name": "test_update_title_boundary_empty_vs_single_space",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains pre-loaded rows (user id=1 Rahul, post id=2 author_id=1)",
+          "User Rahul is logged in via POST /auth/login"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "POST /2/update with title='' (zero-length \u2014 boundary at falsy)",
+          "POST /2/update with title=' ' (one space \u2014 boundary at truthy)"
+        ],
+        "expected": [
+          "title='' (empty): HTTP 200 with 'Title is required.' in body",
+          "title=' ' (single space): HTTP 302 redirect (no error, space is truthy in Python)"
+        ],
+        "trace": [
+          "R-FLASKR-018: BVA on the `if not title` guard",
+          "Catches off-by-one / truthiness mutations: `not title` vs `len(title) == 0` vs `title is None`",
+          "Catches mutations that change the boundary condition direction"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\n# Log in as Rahul (author of post id=2)\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302, f'Login failed: {r.status_code}'\n\n# Boundary: title is exactly empty string (falsy) \u2014 must show error\nr_empty = client.post('/2/update', data={'title': '', 'body': 'body text'})\nassert r_empty.status_code == 200, f'Expected 200 for empty title, got {r_empty.status_code}'\nassert b'Title is required.' in r_empty.data, 'Error message missing for empty title'\n\n# Boundary: title is a single space (truthy in Python) \u2014 must NOT show error\nr_space = client.post('/2/update', data={'title': ' ', 'body': 'body text'})\nassert r_space.status_code == 302, f'Expected 302 for space title, got {r_space.status_code}'\nassert b'Title is required.' not in r_space.data, 'Unexpected error for single-space title'\nassert r_space.headers['Location'] == '/', f'Unexpected redirect: {r_space.headers.get(\"Location\")}'\n\nos.unlink(path)"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-018",
+  "domain": "blogging",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6574,
+    "output_tokens": 2130,
+    "latency_ms": 30710,
+    "wall_ms": 30710,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-018\",\n  \"reasoning\": \"R-FLASKR-018 requires that POST /<id>/update with a missing title renders 'Title is required.' and returns HTTP 2xx. Three tests are designed: (1) positive \u2014 valid update with title succeeds and redirects (EP, confirms the non-error path so mutations to the error branch are caught); (2) negative \u2014 POST with empty title string returns 2xx and contains exact error text (NEG + EP, catches string-mutation and condition-flip mutations); (3) boundary \u2014 POST with title='' (zero-length, the exact boundary) vs title=' ' (one space, non-empty) to catch off-by-one / truthiness mutations on the `if not title` guard (BVA). All tests use pre-loaded data: post id=2 belongs to user Rahul (id=1), so we log in as Rahul. Assertions use exact status codes and exact byte strings to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_update_with_valid_title_redirects\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains pre-loaded rows (user id=1 Rahul, post id=2 author_id=1)\",\n        \"User Rahul is logged in via POST /auth/login\",\n        \"Post id=2 exists and belongs to Rahul\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul, password=stone\",\n        \"POST /2/update with title='Updated Title', body='Updated body'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect response\",\n        \"Location header equals '/'\",\n        \"Response does NOT contain 'Title is required.'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-018: positive path \u2014 title present, no error rendered\",\n        \"Catches mutations that flip the `if not title` condition to always-true\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\n\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\n\\n# Log in as Rahul (author of post id=2)\\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\nassert r.status_code == 302, f'Login failed: {r.status_code}'\\n\\n# POST update with a valid non-empty title\\nr = client.post('/2/update', data={'title': 'Updated Title', 'body': 'Updated body'})\\nassert r.status_code == 302, f'Expected 302 redirect, got {r.status_code}'\\nassert r.headers['Location'] == '/', f'Unexpected redirect: {r.headers.get(\\\"Location\\\")}'\\nassert b'Title is required.' not in r.data\\n\\nos.unlink(path)\"\n    },\n    {\n      \"name\": \"test_update_missing_title_shows_error\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database contains pre-loaded rows (user id=1 Rahul, post id=2 author_id=1)\",\n        \"User Rahul is logged in via POST /auth/login\",\n        \"POST body omits title (empty string)\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul, password=stone\",\n        \"POST /2/update with title='', body='Some body'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response (re-renders the update form)\",\n        \"Response body contains exact bytes b'Title is required.'\",\n        \"Response body does NOT contain a redirect to '/'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-018: primary error pathway \u2014 empty title triggers validation message\",\n        \"Catches string-mutation ('Title is required.' -> anything else)\",\n        \"Catches condition-flip mutation (`if not title` -> `if title`)\",\n        \"Catches flash/render suppression mutations\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\n\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\n\\n# Log in as Rahul (author of post id=2)\\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\nassert r.statu"
+  }
+}

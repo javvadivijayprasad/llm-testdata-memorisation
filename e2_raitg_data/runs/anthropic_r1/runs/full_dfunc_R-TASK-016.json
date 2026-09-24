@@ -1,0 +1,134 @@
+{
+  "req": {
+    "id": "R-TASK-016",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Task has default completed=false",
+    "statement": "The system shall default the completed field to false when POST /tasks/ omits it.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task has default completed=false"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-016",
+    "reasoning": "R-TASK-016 requires that POST /tasks/ defaults completed=false when the field is omitted. Three test cases are designed: (1) positive EP test \u2014 omit 'completed' entirely, assert response is 201 and completed==false; (2) negative NEG test \u2014 explicitly send completed=true to confirm the field is NOT defaulted when provided (distinguishes default logic from forced override); (3) boundary DT test \u2014 send a minimal payload with only 'title' (no description, no completed) to confirm the schema default fires at the absolute minimum valid input boundary, and also verify that sending completed=false explicitly yields the same result as omitting it (boolean invariant both sides). Each test uses an in-memory SQLite DB via dependency override so it is isolated, deterministic, and idempotent.",
+    "tests": [
+      {
+        "name": "test_post_task_omit_completed_defaults_to_false",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is available via dependency injection",
+          "Request body omits the 'completed' field"
+        ],
+        "actions": [
+          "POST /tasks/ with JSON body containing only 'title' and 'description'",
+          "Inspect response status code",
+          "Inspect 'completed' field in response JSON"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON contains 'completed' equal to false (boolean)",
+          "Response JSON contains 'title' equal to the submitted title",
+          "Response JSON contains an integer 'id'"
+        ],
+        "trace": [
+          "R-TASK-016: system shall default completed=false when POST /tasks/ omits it"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\ndef test_post_task_omit_completed_defaults_to_false():\n    engine = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\n    Base.metadata.create_all(bind=engine)\n    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n    def override_get_db():\n        db = TestingSession()\n        try:\n            yield db\n        finally:\n            db.close()\n    app.dependency_overrides[get_db] = override_get_db\n    client = TestClient(app)\n    payload = {\"title\": \"Test default completed\", \"description\": \"Some description\"}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"completed\"] == False\n    assert body[\"completed\"] is False\n    assert body[\"title\"] == \"Test default completed\"\n    assert isinstance(body[\"id\"], int)\n    app.dependency_overrides.clear()\n\ntest_post_task_omit_completed_defaults_to_false()"
+      },
+      {
+        "name": "test_post_task_explicit_completed_true_not_overridden_by_default",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is available via dependency injection",
+          "Request body explicitly sets 'completed' to true"
+        ],
+        "actions": [
+          "POST /tasks/ with JSON body containing 'title' and 'completed': true",
+          "Inspect response status code",
+          "Inspect 'completed' field in response JSON"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON contains 'completed' equal to true (boolean, NOT defaulted to false)",
+          "This distinguishes default-only logic from always-false logic"
+        ],
+        "trace": [
+          "R-TASK-016: default applies only when field is omitted; explicit true must be preserved",
+          "Boolean invariant: both true and false sides of completed must be tested"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\ndef test_post_task_explicit_completed_true_not_overridden_by_default():\n    engine = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\n    Base.metadata.create_all(bind=engine)\n    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n    def override_get_db():\n        db = TestingSession()\n        try:\n            yield db\n        finally:\n            db.close()\n    app.dependency_overrides[get_db] = override_get_db\n    client = TestClient(app)\n    payload = {\"title\": \"Explicit true task\", \"completed\": True}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"completed\"] == True\n    assert body[\"completed\"] is True\n    assert body[\"title\"] == \"Explicit true task\"\n    app.dependency_overrides.clear()\n\ntest_post_task_explicit_completed_true_not_overridden_by_default()"
+      },
+      {
+        "name": "test_post_task_minimal_payload_title_only_completed_defaults_false",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is available via dependency injection",
+          "Request body contains only the minimum required field: 'title' (1 character, boundary minimum length)"
+        ],
+        "actions": [
+          "POST /tasks/ with JSON body containing only 'title' set to a single character (min_length=1 boundary)",
+          "Inspect response status code",
+          "Inspect 'completed' field in response JSON",
+          "Also POST with explicit completed=false and verify same result as omitting it"
+        ],
+        "expected": [
+          "HTTP 201 Created for minimal payload",
+          "Response JSON 'completed' is exactly false",
+          "HTTP 201 Created for explicit completed=false payload",
+          "Response JSON 'completed' is exactly false in both cases",
+          "HTTP 422 for empty title (below min_length=1 boundary)"
+        ],
+        "trace": [
+          "R-TASK-016: default fires at minimum valid input (title only, no description, no completed)",
+          "BVA on title min_length=1: boundary at exactly 1 char must succeed",
+          "BVA on title min_length=1: boundary at 0 chars (empty string) must fail with 422"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\ndef test_post_task_minimal_payload_title_only_completed_defaults_false():\n    engine = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\n    Base.metadata.create_all(bind=engine)\n    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n    def override_get_db():\n        db = TestingSession()\n        try:\n            yield db\n        finally:\n            db.close()\n    app.dependency_overrides[get_db] = override_get_db\n    client = TestClient(app)\n    r1 = client.post(\"/tasks/\", json={\"title\": \"A\"})\n    assert r1.status_code == 201\n    b1 = r1.json()\n    assert b1[\"completed\"] is False\n    assert b1[\"completed\"] == False\n    assert b1[\"title\"] == \"A\"\n    r2 = client.post(\"/tasks/\", json={\"title\": \"B\", \"completed\": False})\n    assert r2.status_code == 201\n    b2 = r2.json()\n    assert b2[\"completed\"] is False\n    assert b2[\"completed\"] == False\n    r3 = client.post(\"/tasks/\", json={\"title\": \"\"})\n    assert r3.status_code == 422\n    app.dependency_overrides.clear()\n\ntest_post_task_minimal_payload_title_only_completed_defaults_false()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-016",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5664,
+    "output_tokens": 2294,
+    "latency_ms": 30886,
+    "wall_ms": 30886,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-016\",\n  \"reasoning\": \"R-TASK-016 requires that POST /tasks/ defaults completed=false when the field is omitted. Three test cases are designed: (1) positive EP test \u2014 omit 'completed' entirely, assert response is 201 and completed==false; (2) negative NEG test \u2014 explicitly send completed=true to confirm the field is NOT defaulted when provided (distinguishes default logic from forced override); (3) boundary DT test \u2014 send a minimal payload with only 'title' (no description, no completed) to confirm the schema default fires at the absolute minimum valid input boundary, and also verify that sending completed=false explicitly yields the same result as omitting it (boolean invariant both sides). Each test uses an in-memory SQLite DB via dependency override so it is isolated, deterministic, and idempotent.\",\n  \"tests\": [\n    {\n      \"name\": \"test_post_task_omit_completed_defaults_to_false\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is available via dependency injection\",\n        \"Request body omits the 'completed' field\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with JSON body containing only 'title' and 'description'\",\n        \"Inspect response status code\",\n        \"Inspect 'completed' field in response JSON\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response JSON contains 'completed' equal to false (boolean)\",\n        \"Response JSON contains 'title' equal to the submitted title\",\n        \"Response JSON contains an integer 'id'\"\n      ],\n      \"trace\": [\n        \"R-TASK-016: system shall default completed=false when POST /tasks/ omits it\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\n\\ndef test_post_task_omit_completed_defaults_to_false():\\n    engine = create_engine(\\\"sqlite:///:memory:\\\", connect_args={\\\"check_same_thread\\\": False})\\n    Base.metadata.create_all(bind=engine)\\n    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\n    def override_get_db():\\n        db = TestingSession()\\n        try:\\n            yield db\\n        finally:\\n            db.close()\\n    app.dependency_overrides[get_db] = override_get_db\\n    client = TestClient(app)\\n    payload = {\\\"title\\\": \\\"Test default completed\\\", \\\"description\\\": \\\"Some description\\\"}\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body[\\\"completed\\\"] == False\\n    assert body[\\\"completed\\\"] is False\\n    assert body[\\\"title\\\"] == \\\"Test default completed\\\"\\n    assert isinstance(body[\\\"id\\\"], int)\\n    app.dependency_overrides.clear()\\n\\ntest_post_task_omit_completed_defaults_to_false()\"\n    },\n    {\n      \"name\": \"test_post_task_explicit_completed_true_not_overridden_by_default\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is available via dependency injection\",\n        \"Request body explicitly sets 'completed' to true\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with JSON body containing 'title' and 'completed': true\",\n        \"Inspect response status code\",\n        \"Inspect 'completed' field in response JSON\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response JSON contains 'completed' equal to true (boolean, NOT defaulted to false)\",\n        \"This distinguishes default-only logic from always-false logic\"\n      ],\n      \"trace\": [\n        \"R-TASK-016: default applies only when field is omitted; explicit true must be preserved\",\n        \"Boolean invariant: both true and false sides of completed must be tested\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\"
+  }
+}

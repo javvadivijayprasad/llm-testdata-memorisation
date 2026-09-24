@@ -1,0 +1,214 @@
+{
+  "req": {
+    "id": "R-TASK-038",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "validation",
+    "title": "Task update rejects id changes",
+    "statement": "The system shall ignore any id field in the PUT body and only mutate the task addressed by the URL.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task update rejects id changes"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-038",
+    "reasoning": "R-TASK-038 requires that when a client sends a PUT /tasks/{id} request with an 'id' field in the body, the system ignores that field and mutates only the task addressed by the URL path parameter. The TaskUpdate schema does not include an 'id' field, so FastAPI/Pydantic will strip it before it reaches crud.update_task. Tests must verify: (1) positive \u2014 a PUT with a body containing a different id still returns 2xx and the response id matches the URL id, not the body id; (2) negative \u2014 a PUT to a non-existent task id returns 404; (3) boundary \u2014 a PUT where the body id equals an existing but different task's id still updates only the URL-addressed task and leaves the other task untouched. Additional tests cover exact field values and mutation-resilient assertions on status codes and response body fields.",
+    "tests": [
+      {
+        "name": "test_put_ignores_body_id_returns_url_task",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task with id=1 exists (title='Read chapter 5', completed=true)",
+          "Task with id=2 exists (title='Book flight tickets', completed=true)"
+        ],
+        "actions": [
+          "Send PUT /tasks/1 with JSON body {\"title\": \"Updated Title\", \"id\": 2}",
+          "Inspect response status code and body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body id == 1 (URL id, not body id 2)",
+          "Response body title == 'Updated Title'",
+          "Response body completed == true (unchanged)"
+        ],
+        "trace": [
+          "R-TASK-038: system shall ignore id field in PUT body",
+          "R-TASK-038: only mutate task addressed by URL"
+        ],
+        "executable": "import os, sys\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\nTestingSessionLocal = sessionmaker(bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nclient.post('/tasks/', json={'title': 'Read chapter 5', 'completed': True})\nclient.post('/tasks/', json={'title': 'Book flight tickets', 'completed': True})\n\ndef test_put_ignores_body_id_returns_url_task():\n    r = client.put('/tasks/1', json={'title': 'Updated Title', 'id': 2})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 1\n    assert body['title'] == 'Updated Title'\n    assert body['completed'] == True\n\ntest_put_ignores_body_id_returns_url_task()"
+      },
+      {
+        "name": "test_put_body_id_does_not_mutate_other_task",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task with id=1 exists",
+          "Task with id=2 exists (title='Book flight tickets')"
+        ],
+        "actions": [
+          "Send PUT /tasks/1 with JSON body {\"title\": \"Changed\", \"id\": 2}",
+          "Send GET /tasks/2 to verify task 2 is unchanged"
+        ],
+        "expected": [
+          "PUT returns HTTP 200 with id==1",
+          "GET /tasks/2 returns HTTP 200 with title=='Book flight tickets' (unchanged)"
+        ],
+        "trace": [
+          "R-TASK-038: only mutate the task addressed by the URL",
+          "R-TASK-038: body id field must not redirect mutation to another task"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine2 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSession2 = sessionmaker(bind=engine2)\nBase.metadata.create_all(bind=engine2)\n\ndef override2():\n    db = Session2()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override2\nclient2 = TestClient(app)\n\nclient2.post('/tasks/', json={'title': 'Task One', 'completed': False})\nclient2.post('/tasks/', json={'title': 'Book flight tickets', 'completed': True})\n\ndef test_put_body_id_does_not_mutate_other_task():\n    r_put = client2.put('/tasks/1', json={'title': 'Changed', 'id': 2})\n    assert r_put.status_code == 200\n    assert r_put.json()['id'] == 1\n    assert r_put.json()['title'] == 'Changed'\n    r_get = client2.get('/tasks/2')\n    assert r_get.status_code == 200\n    assert r_get.json()['id'] == 2\n    assert r_get.json()['title'] == 'Book flight tickets'\n\ntest_put_body_id_does_not_mutate_other_task()"
+      },
+      {
+        "name": "test_put_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No task with id=9999 exists in the database"
+        ],
+        "actions": [
+          "Send PUT /tasks/9999 with valid JSON body {\"title\": \"Ghost Task\", \"id\": 1}"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response detail contains 'not found'"
+        ],
+        "trace": [
+          "R-TASK-038: error pathway \u2014 HTTP 4xx on client error",
+          "R-TASK-038: URL-addressed task must exist for mutation to occur"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine3 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSession3 = sessionmaker(bind=engine3)\nBase.metadata.create_all(bind=engine3)\n\ndef override3():\n    db = Session3()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override3\nclient3 = TestClient(app)\n\ndef test_put_nonexistent_task_returns_404():\n    r = client3.put('/tasks/9999', json={'title': 'Ghost Task', 'id': 1})\n    assert r.status_code == 404\n    body = r.json()\n    assert 'detail' in body\n    assert '9999' in body['detail']\n\ntest_put_nonexistent_task_returns_404()"
+      },
+      {
+        "name": "test_put_body_id_zero_ignored_url_id_used",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task with id=1 exists",
+          "id=0 is a boundary value below the minimum valid task id"
+        ],
+        "actions": [
+          "Send PUT /tasks/1 with JSON body {\"title\": \"Boundary Test\", \"id\": 0}",
+          "Inspect response id field"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response id == 1 (URL id), not 0",
+          "Response title == 'Boundary Test'"
+        ],
+        "trace": [
+          "R-TASK-038: body id=0 (boundary below valid range) must be ignored",
+          "BVA: id=0 is boundary-1 for minimum valid id=1"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine4 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSession4 = sessionmaker(bind=engine4)\nBase.metadata.create_all(bind=engine4)\n\ndef override4():\n    db = Session4()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override4\nclient4 = TestClient(app)\n\nclient4.post('/tasks/', json={'title': 'Original Title', 'completed': False})\n\ndef test_put_body_id_zero_ignored_url_id_used():\n    r = client4.put('/tasks/1', json={'title': 'Boundary Test', 'id': 0})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 1\n    assert body['id'] != 0\n    assert body['title'] == 'Boundary Test'\n\ntest_put_body_id_zero_ignored_url_id_used()"
+      },
+      {
+        "name": "test_put_body_id_large_value_ignored",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task with id=1 exists",
+          "id=999999 is a large boundary value that does not correspond to any task"
+        ],
+        "actions": [
+          "Send PUT /tasks/1 with JSON body {\"title\": \"Large ID Test\", \"id\": 999999}",
+          "Inspect response id and title"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response id == 1 (URL id), not 999999",
+          "Response title == 'Large ID Test'"
+        ],
+        "trace": [
+          "R-TASK-038: body id=999999 (large boundary) must be ignored",
+          "BVA: upper boundary mutation \u2014 body id far exceeds URL id"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine5 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSession5 = sessionmaker(bind=engine5)\nBase.metadata.create_all(bind=engine5)\n\ndef override5():\n    db = Session5()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override5\nclient5 = TestClient(app)\n\nclient5.post('/tasks/', json={'title': 'Original', 'completed': False})\n\ndef test_put_body_id_large_value_ignored():\n    r = client5.put('/tasks/1', json={'title': 'Large ID Test', 'id': 999999})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 1\n    assert body['id'] != 999999\n    assert body['title'] == 'Large ID Test'\n    assert body['completed'] == False\n\ntest_put_body_id_large_value_ignored()"
+      },
+      {
+        "name": "test_put_same_id_in_body_and_url_succeeds",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task with id=1 exists (completed=false)"
+        ],
+        "actions": [
+          "Send PUT /tasks/1 with JSON body {\"title\": \"Same ID\", \"completed\": true, \"id\": 1}",
+          "Verify response reflects update and id is unchanged"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response id == 1",
+          "Response title == 'Same ID'",
+          "Response completed == true"
+        ],
+        "trace": [
+          "R-TASK-038: when body id matches URL id, system still returns 2xx and mutates correctly",
+          "STC: state transition from incomplete to complete task while body id == URL id"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine6 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSession6 = sessionmaker(bind=engine6)\nBase.metadata.create_all(bind=engine6)\n\ndef override6():\n    db = Session6()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override6\nclient6 = TestClient(app)\n\nclient6.post('/tasks/', json={'title': 'Initial Title', 'completed': False})\n\ndef test_put_same_id_in_body_and_url_succeeds():\n    r = client6.put('/tasks/1', json={'title': 'Same ID', 'completed': True, 'id': 1})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 1\n    assert body['title'] == 'Same ID'\n    assert body['completed'] == True\n\ntest_put_same_id_in_body_and_url_succeeds()"
+      },
+      {
+        "name": "test_put_with_body_id_response_schema_exact",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task with id=1 exists",
+          "Task with id=2 exists"
+        ],
+        "actions": [
+          "Send PUT /tasks/2 with body {\"title\": \"Schema Check\", \"completed\": false, \"id\": 1}",
+          "Assert exact response fields: id, title, completed"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response id == 2 (not 1)",
+          "Response title == 'Schema Check'",
+          "Response completed == false",
+          "Response contains 'created_at' field"
+        ],
+        "trace": [
+          "R-TASK-038: body id=1 ignored; URL id=2 used",
+          "EP: equivalence class \u2014 body id differs from URL id, system uses URL id"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine7 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSession7 = sessionmaker(bind=engine7)\nBase.metadata.create_all(bind=engine7)\n\ndef override7():\n    db = Session7()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override7\nclient7 = TestClient(app)\n\nclient7.post('/tasks/', json={'title': 'Task A', 'completed': True})\nclient7.post('/tasks/', json={'title': 'Task B', 'completed': True})\n\ndef test_put_with_body_id_response_schema_exact():\n    r = client7.put('/tasks/2', json={'title': 'Schema Check', 'completed': False, 'id': 1})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 2\n    assert body['id'] != 1\n    assert body['title'] == 'Schema Check'\n    assert body['completed'] == False\n    assert 'created_at' in body\n\ntest_put_with_body_id_response_schema_exact()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-038",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5659,
+    "output_tokens": 4449,
+    "latency_ms": 52603,
+    "wall_ms": 52603,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-038\",\n  \"reasoning\": \"R-TASK-038 requires that when a client sends a PUT /tasks/{id} request with an 'id' field in the body, the system ignores that field and mutates only the task addressed by the URL path parameter. The TaskUpdate schema does not include an 'id' field, so FastAPI/Pydantic will strip it before it reaches crud.update_task. Tests must verify: (1) positive \u2014 a PUT with a body containing a different id still returns 2xx and the response id matches the URL id, not the body id; (2) negative \u2014 a PUT to a non-existent task id returns 404; (3) boundary \u2014 a PUT where the body id equals an existing but different task's id still updates only the URL-addressed task and leaves the other task untouched. Additional tests cover exact field values and mutation-resilient assertions on status codes and response body fields.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_ignores_body_id_returns_url_task\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Task with id=1 exists (title='Read chapter 5', completed=true)\",\n        \"Task with id=2 exists (title='Book flight tickets', completed=true)\"\n      ],\n      \"actions\": [\n        \"Send PUT /tasks/1 with JSON body {\\\"title\\\": \\\"Updated Title\\\", \\\"id\\\": 2}\",\n        \"Inspect response status code and body\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body id == 1 (URL id, not body id 2)\",\n        \"Response body title == 'Updated Title'\",\n        \"Response body completed == true (unchanged)\"\n      ],\n      \"trace\": [\n        \"R-TASK-038: system shall ignore id field in PUT body\",\n        \"R-TASK-038: only mutate task addressed by URL\"\n      ],\n      \"executable\": \"import os, sys\\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.database import Base, get_db\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\n\\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nTestingSessionLocal = sessionmaker(bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\nclient.post('/tasks/', json={'title': 'Read chapter 5', 'completed': True})\\nclient.post('/tasks/', json={'title': 'Book flight tickets', 'completed': True})\\n\\ndef test_put_ignores_body_id_returns_url_task():\\n    r = client.put('/tasks/1', json={'title': 'Updated Title', 'id': 2})\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body['id'] == 1\\n    assert body['title'] == 'Updated Title'\\n    assert body['completed'] == True\\n\\ntest_put_ignores_body_id_returns_url_task()\"\n    },\n    {\n      \"name\": \"test_put_body_id_does_not_mutate_other_task\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"DT\",\n      \"preconditions\": [\n        \"Task with id=1 exists\",\n        \"Task with id=2 exists (title='Book flight tickets')\"\n      ],\n      \"actions\": [\n        \"Send PUT /tasks/1 with JSON body {\\\"title\\\": \\\"Changed\\\", \\\"id\\\": 2}\",\n        \"Send GET /tasks/2 to verify task 2 is unchanged\"\n      ],\n      \"expected\": [\n        \"PUT returns HTTP 200 with id==1\",\n        \"GET /tasks/2 returns HTTP 200 with title=='Book flight tickets' (unchanged)\"\n      ],\n      \"trace\": [\n        \"R-TASK-038: only mutate the task addressed by the URL\",\n        \"R-TASK-038: body id field must not redirect mutation to another task\"\n      ],\n      \"executable\": \"import os\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.database import Base, get_db\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\n\\nengine2 = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nSession2 = sessionmaker(bind=engine2)\\nBase.metadata.create_all(bind=engine2)\\n\\ndef over"
+  }
+}

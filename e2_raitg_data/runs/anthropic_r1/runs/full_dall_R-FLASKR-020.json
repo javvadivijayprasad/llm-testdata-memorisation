@@ -1,0 +1,209 @@
+{
+  "req": {
+    "id": "R-FLASKR-020",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "authz",
+    "title": "Delete only by author",
+    "statement": "The system shall respond with HTTP 403 Forbidden when a user attempts to delete a post they did not author.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete only by author"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 403"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /<id>/delete"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-020",
+    "reasoning": "The violation was test[5] having kind=negative but heuristic=STC. STC (State Transition Coverage) is appropriate for boundary or positive kinds when tracing state changes, but for a negative test the correct heuristic is NEG (negative testing) or DT (decision table). Since test[5] exercises a third-user authorization failure \u2014 a straightforward negative equivalence partition \u2014 the fix is to change heuristic from STC to NEG. All other tests are preserved exactly as they were.",
+    "tests": [
+      {
+        "name": "test_author_can_delete_own_post_returns_redirect",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=2 authored by user id=1 (Rahul, password=stone)",
+          "User Rahul is authenticated"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Login as Rahul (author of post 2)",
+          "POST to /2/delete"
+        ],
+        "expected": [
+          "HTTP 302 redirect (successful delete, not 403)",
+          "Location header points to /"
+        ],
+        "trace": [
+          "R-FLASKR-020: author is permitted \u2014 success path"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302\n\nr = client.post('/2/delete')\nassert r.status_code == 302\nassert r.headers['Location'] == '/'\nos.unlink(path)"
+      },
+      {
+        "name": "test_non_author_delete_returns_403",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=2 authored by user id=1 (Rahul)",
+          "User Anjali (id=2, password=cloud) is NOT the author of post 2"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Login as Anjali (not the author of post 2)",
+          "POST to /2/delete"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden \u2014 exactly 403, not 200, not 302, not 404"
+        ],
+        "trace": [
+          "R-FLASKR-020: non-author must receive 403"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\nr = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\nassert r.status_code == 302\n\nr = client.post('/2/delete')\nassert r.status_code == 403\nos.unlink(path)"
+      },
+      {
+        "name": "test_unauthenticated_delete_redirects_to_login_not_403",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "No user is logged in (anonymous session)"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "POST to /2/delete without logging in"
+        ],
+        "expected": [
+          "HTTP 302 redirect to /auth/login (login_required decorator fires before authz check)"
+        ],
+        "trace": [
+          "R-FLASKR-020: unauthenticated path \u2014 login_required fires first, distinct from 403"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\nr = client.post('/2/delete')\nassert r.status_code == 302\nassert '/auth/login' in r.headers['Location']\nos.unlink(path)"
+      },
+      {
+        "name": "test_non_author_delete_different_post_returns_403",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=7 authored by Anjali (id=2)",
+          "Rahul (id=1) is NOT the author of post 7"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Login as Rahul",
+          "POST to /7/delete (Anjali's post)"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden \u2014 exactly 403"
+        ],
+        "trace": [
+          "R-FLASKR-020: cross-user delete attempt on a different post must also return 403"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302\n\nr = client.post('/7/delete')\nassert r.status_code == 403\nos.unlink(path)"
+      },
+      {
+        "name": "test_author_boundary_same_user_owns_some_not_others",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "James (id=5) authored posts 1, 4, 5, 16 but NOT post 2 (Rahul's)"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Login as James",
+          "POST to /1/delete (James owns it) \u2014 expect 302",
+          "POST to /2/delete (Rahul owns it) \u2014 expect 403"
+        ],
+        "expected": [
+          "DELETE own post (id=1): HTTP 302",
+          "DELETE other's post (id=2): HTTP 403 exactly"
+        ],
+        "trace": [
+          "R-FLASKR-020: boundary between author_id match and mismatch for the same logged-in user"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\nr = client.post('/auth/login', data={'username': 'James', 'password': 'river'})\nassert r.status_code == 302\n\nr_own = client.post('/1/delete')\nassert r_own.status_code == 302\nassert r_own.headers['Location'] == '/'\n\nr_other = client.post('/2/delete')\nassert r_other.status_code == 403\nos.unlink(path)"
+      },
+      {
+        "name": "test_third_user_cannot_delete_post_authored_by_second_user",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=17 authored by Ishaan (id=3)",
+          "Diya (id=4, password=cloud) has never authored post 17"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Login as Diya",
+          "POST to /17/delete"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden \u2014 exactly 403, confirming authz check fires for any non-author"
+        ],
+        "trace": [
+          "R-FLASKR-020: authenticated but wrong author yields 403 \u2014 negative equivalence partition"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\nr = client.post('/auth/login', data={'username': 'Diya', 'password': 'cloud'})\nassert r.status_code == 302\n\nr = client.post('/17/delete')\nassert r.status_code == 403\nos.unlink(path)"
+      },
+      {
+        "name": "test_author_delete_post_verify_post_removed_from_db",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=3 authored by Rahul (id=1, password=stone)"
+        ],
+        "actions": [
+          "Create app with temp DB",
+          "Login as Rahul",
+          "POST to /3/delete",
+          "Verify post no longer accessible via GET /3/update (404)"
+        ],
+        "expected": [
+          "DELETE returns HTTP 302",
+          "Subsequent GET /3/update returns 404 confirming deletion"
+        ],
+        "trace": [
+          "R-FLASKR-020: positive path \u2014 author deletes, post is gone"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\nclient = app.test_client()\n\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302\n\nr = client.post('/3/delete')\nassert r.status_code == 302\n\nr_check = client.get('/3/update')\nassert r_check.status_code == 404\nos.unlink(path)"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-020",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8444,
+    "output_tokens": 3218,
+    "latency_ms": 41352,
+    "wall_ms": 41352,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-020\",\n  \"reasoning\": \"The requirement states that only the author of a post may delete it; any other authenticated user must receive HTTP 403. We need: (1) a positive case where the author successfully deletes their own post (2xx/redirect), (2) a negative case where a non-author receives exactly 403, and (3) a boundary case that tests the state transition at the authorization boundary \u2014 a user who is the author of some posts but not others, verifying the per-post author check is applied precisely. Additional tests cover the decision-table branches (unauthenticated user, wrong user, correct user) and boundary \u00b11 on the author_id comparison to kill operator-flip mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_author_can_delete_own_post_returns_redirect\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database pre-loaded with standard fixture rows\",\n        \"Post id=2 authored by user id=1 (Rahul, password=stone)\",\n        \"User Rahul is authenticated\"\n      ],\n      \"actions\": [\n        \"Create app with temp DB\",\n        \"Login as Rahul (author of post 2)\",\n        \"POST to /2/delete\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect (successful delete, not 403)\",\n        \"Location header points to /\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-020: author is permitted \u2014 success path\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\nclient = app.test_client()\\n\\n# Login as Rahul who authored post id=2\\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\nassert r.status_code == 302\\n\\n# Author deletes their own post\\nr = client.post('/2/delete')\\nassert r.status_code == 302\\nassert r.headers['Location'] == '/'\\nos.unlink(path)\"\n    },\n    {\n      \"name\": \"test_non_author_delete_returns_403\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database pre-loaded with standard fixture rows\",\n        \"Post id=2 authored by user id=1 (Rahul)\",\n        \"User Anjali (id=2, password=cloud) is NOT the author of post 2\"\n      ],\n      \"actions\": [\n        \"Create app with temp DB\",\n        \"Login as Anjali (not the author of post 2)\",\n        \"POST to /2/delete\"\n      ],\n      \"expected\": [\n        \"HTTP 403 Forbidden \u2014 exactly 403, not 200, not 302, not 404\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-020: non-author must receive 403\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\nclient = app.test_client()\\n\\n# Login as Anjali (author_id=2), post 2 belongs to Rahul (author_id=1)\\nr = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\\nassert r.status_code == 302\\n\\n# Non-author attempts delete\\nr = client.post('/2/delete')\\nassert r.status_code == 403\\nos.unlink(path)\"\n    },\n    {\n      \"name\": \"test_unauthenticated_delete_redirects_to_login_not_403\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"DT\",\n      \"preconditions\": [\n        \"Database pre-loaded with standard fixture rows\",\n        \"No user is logged in (anonymous session)\"\n      ],\n      \"actions\": [\n        \"Create app with temp DB\",\n        \"POST to /2/delete without logging in\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect to /auth/login (login_required decorator fires before authz check)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-020: unauthenticated path \u2014 login_required fires first, distinct from 403\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'"
+  }
+}

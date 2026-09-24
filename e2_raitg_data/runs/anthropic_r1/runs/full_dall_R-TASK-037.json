@@ -1,0 +1,181 @@
+{
+  "req": {
+    "id": "R-TASK-037",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Task title trimmed of whitespace",
+    "statement": "The system shall trim leading and trailing whitespace from the title on POST /tasks/.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task title trimmed of whitespace"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-037",
+    "reasoning": "R-TASK-037 requires that POST /tasks/ trims leading and trailing whitespace from the task title before persisting it. The SUT source shows that trimming is NOT implemented in crud.create_task or schemas.TaskCreate \u2014 the title is stored as-is. Tests must verify: (1) positive: a title with surrounding whitespace is trimmed in the response (EP \u2014 catches missing strip() mutation), (2) boundary: a title that is only whitespace after trimming becomes empty and should be rejected (BVA \u2014 catches off-by-one on min_length=1), (3) negative: a title with only internal whitespace (no leading/trailing) is stored unchanged (NEG \u2014 distinguishes strip from full whitespace removal), (4) additional positive: leading-only and trailing-only whitespace variants (DT \u2014 catches partial trim mutations). All tests use in-process FastAPI TestClient with an in-memory SQLite DB to remain deterministic and idempotent.",
+    "tests": [
+      {
+        "name": "test_title_leading_and_trailing_whitespace_trimmed",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "POST /tasks/ endpoint is available",
+          "Database is initialized with schema"
+        ],
+        "actions": [
+          "POST /tasks/ with title '  Buy groceries  ' (leading and trailing spaces)",
+          "Inspect response body field 'title'"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' equals 'Buy groceries' (whitespace trimmed)"
+        ],
+        "trace": [
+          "R-TASK-037: system shall trim leading and trailing whitespace from title"
+        ],
+        "executable": "import os, sys\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base\nfrom app.main import app\nfrom app import models\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nTestingSessionLocal = sessionmaker(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\nfrom app.database import get_db\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_title_leading_and_trailing_whitespace_trimmed():\n    payload = {'title': '  Buy groceries  ', 'completed': False}\n    r = client.post('/tasks/', json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body['title'] == 'Buy groceries'\n\ntest_title_leading_and_trailing_whitespace_trimmed()"
+      },
+      {
+        "name": "test_title_only_whitespace_rejected_after_trim",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "POST /tasks/ endpoint is available",
+          "Database is initialized with schema",
+          "Schema enforces min_length=1 on title"
+        ],
+        "actions": [
+          "POST /tasks/ with title '   ' (only spaces, which trims to empty string)",
+          "Inspect response status code"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (title becomes empty after trim, violating min_length=1)"
+        ],
+        "trace": [
+          "R-TASK-037: trimmed title must still satisfy min_length=1 constraint",
+          "schemas.TaskBase: title Field min_length=1"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine2 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine2)\nTestingSessionLocal2 = sessionmaker(bind=engine2)\n\ndef override_get_db2():\n    db = TestingSessionLocal2()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db2\nclient2 = TestClient(app)\n\ndef test_title_only_whitespace_rejected_after_trim():\n    payload = {'title': '   ', 'completed': False}\n    r = client2.post('/tasks/', json=payload)\n    assert r.status_code == 422\n\ntest_title_only_whitespace_rejected_after_trim()"
+      },
+      {
+        "name": "test_title_internal_whitespace_preserved",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "POST /tasks/ endpoint is available",
+          "Database is initialized with schema"
+        ],
+        "actions": [
+          "POST /tasks/ with title 'Fix  login  bug' (internal double spaces, no leading/trailing whitespace)",
+          "Inspect response body field 'title'"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' equals 'Fix  login  bug' (internal spaces preserved, not collapsed)"
+        ],
+        "trace": [
+          "R-TASK-037: only leading/trailing whitespace is trimmed; internal whitespace must not be altered"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine3 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine3)\nTestingSessionLocal3 = sessionmaker(bind=engine3)\n\ndef override_get_db3():\n    db = TestingSessionLocal3()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db3\nclient3 = TestClient(app)\n\ndef test_title_internal_whitespace_preserved():\n    payload = {'title': 'Fix  login  bug', 'completed': False}\n    r = client3.post('/tasks/', json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body['title'] == 'Fix  login  bug'\n    assert body['title'] != 'Fix login bug'\n\ntest_title_internal_whitespace_preserved()"
+      },
+      {
+        "name": "test_title_leading_only_whitespace_trimmed",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "POST /tasks/ endpoint is available",
+          "Database is initialized with schema"
+        ],
+        "actions": [
+          "POST /tasks/ with title '\\t  Write project report' (leading tab and spaces only)",
+          "Inspect response body field 'title'"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' equals 'Write project report' (leading whitespace trimmed)"
+        ],
+        "trace": [
+          "R-TASK-037: leading whitespace (including tabs) must be trimmed"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine4 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine4)\nTestingSessionLocal4 = sessionmaker(bind=engine4)\n\ndef override_get_db4():\n    db = TestingSessionLocal4()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db4\nclient4 = TestClient(app)\n\ndef test_title_leading_only_whitespace_trimmed():\n    payload = {'title': '\\t  Write project report', 'completed': False}\n    r = client4.post('/tasks/', json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body['title'] == 'Write project report'\n    assert not body['title'].startswith('\\t')\n    assert not body['title'].startswith(' ')\n\ntest_title_leading_only_whitespace_trimmed()"
+      },
+      {
+        "name": "test_title_trailing_only_whitespace_trimmed",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "POST /tasks/ endpoint is available",
+          "Database is initialized with schema"
+        ],
+        "actions": [
+          "POST /tasks/ with title 'Call the bank\\n  ' (trailing newline and spaces only)",
+          "Inspect response body field 'title'"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' equals 'Call the bank' (trailing whitespace trimmed)"
+        ],
+        "trace": [
+          "R-TASK-037: trailing whitespace (including newlines) must be trimmed"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine5 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine5)\nTestingSessionLocal5 = sessionmaker(bind=engine5)\n\ndef override_get_db5():\n    db = TestingSessionLocal5()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db5\nclient5 = TestClient(app)\n\ndef test_title_trailing_only_whitespace_trimmed():\n    payload = {'title': 'Call the bank\\n  ', 'completed': False}\n    r = client5.post('/tasks/', json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body['title'] == 'Call the bank'\n    assert not body['title'].endswith(' ')\n    assert not body['title'].endswith('\\n')\n\ntest_title_trailing_only_whitespace_trimmed()"
+      },
+      {
+        "name": "test_title_no_whitespace_unchanged",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "POST /tasks/ endpoint is available",
+          "Database is initialized with schema"
+        ],
+        "actions": [
+          "POST /tasks/ with title 'Organize desk' (no leading or trailing whitespace)",
+          "Inspect response body field 'title'"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' equals 'Organize desk' exactly (no mutation of clean title)"
+        ],
+        "trace": [
+          "R-TASK-037: trimming a title with no surrounding whitespace must leave it unchanged"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base, get_db\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine6 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine6)\nTestingSessionLocal6 = sessionmaker(bind=engine6)\n\ndef override_get_db6():\n    db = TestingSessionLocal6()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db6\nclient6 = TestClient(app)\n\ndef test_title_no_whitespace_unchanged():\n    payload = {'title': 'Organize desk', 'completed': False}\n    r = client6.post('/tasks/', json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body['title'] == 'Organize desk'\n    assert len(body['title']) == len('Organize desk')\n\ntest_title_no_whitespace_unchanged()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-037",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7561,
+    "output_tokens": 3456,
+    "latency_ms": 39561,
+    "wall_ms": 39561,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-037\",\n  \"reasoning\": \"R-TASK-037 requires that POST /tasks/ trims leading and trailing whitespace from the task title before persisting it. The SUT source shows that trimming is NOT implemented in crud.create_task or schemas.TaskCreate \u2014 the title is stored as-is. Tests must verify: (1) positive: a title with surrounding whitespace is trimmed in the response (EP \u2014 catches missing strip() mutation), (2) boundary: a title that is only whitespace after trimming becomes empty and should be rejected (BVA \u2014 catches off-by-one on min_length=1), (3) negative: a title with only internal whitespace (no leading/trailing) is stored unchanged (NEG \u2014 distinguishes strip from full whitespace removal), (4) additional positive: leading-only and trailing-only whitespace variants (DT \u2014 catches partial trim mutations). All tests use in-process FastAPI TestClient with an in-memory SQLite DB to remain deterministic and idempotent.\",\n  \"tests\": [\n    {\n      \"name\": \"test_title_leading_and_trailing_whitespace_trimmed\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"POST /tasks/ endpoint is available\",\n        \"Database is initialized with schema\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title '  Buy groceries  ' (leading and trailing spaces)\",\n        \"Inspect response body field 'title'\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response JSON field 'title' equals 'Buy groceries' (whitespace trimmed)\"\n      ],\n      \"trace\": [\n        \"R-TASK-037: system shall trim leading and trailing whitespace from title\"\n      ],\n      \"executable\": \"import os, sys\\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.database import Base\\nfrom app.main import app\\nfrom app import models\\nfrom fastapi.testclient import TestClient\\n\\nengine = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nBase.metadata.create_all(bind=engine)\\nTestingSessionLocal = sessionmaker(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\nfrom app.database import get_db\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_title_leading_and_trailing_whitespace_trimmed():\\n    payload = {'title': '  Buy groceries  ', 'completed': False}\\n    r = client.post('/tasks/', json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body['title'] == 'Buy groceries'\\n\\ntest_title_leading_and_trailing_whitespace_trimmed()\"\n    },\n    {\n      \"name\": \"test_title_only_whitespace_rejected_after_trim\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"POST /tasks/ endpoint is available\",\n        \"Database is initialized with schema\",\n        \"Schema enforces min_length=1 on title\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title '   ' (only spaces, which trims to empty string)\",\n        \"Inspect response status code\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity (title becomes empty after trim, violating min_length=1)\"\n      ],\n      \"trace\": [\n        \"R-TASK-037: trimmed title must still satisfy min_length=1 constraint\",\n        \"schemas.TaskBase: title Field min_length=1\"\n      ],\n      \"executable\": \"import os\\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.database import Base, get_db\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\n\\nengine2 = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nBase.metadata.create_all(bind=engine2)\\nTestingSessionLocal2 = sessionmaker(bind=engine2)\\n\\ndef override_get_db2():\\n    db = TestingSessionLocal2()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] ="
+  }
+}

@@ -1,0 +1,153 @@
+{
+  "req": {
+    "id": "R-FLASKR-040",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "validation",
+    "title": "Blog post title required on update",
+    "statement": "The system shall reject POST /<id>/update with a missing title, rendering an error.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "blog post title required on update"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /<id>/update"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-040",
+    "reasoning": "R-FLASKR-040 requires that POST /<id>/update rejects a missing title by re-rendering the update form with an error message (HTTP 200, not a redirect). Three test cases are designed: (1) positive \u2014 valid title+body yields a redirect (302) confirming the happy path; (2) negative \u2014 empty title string yields HTTP 200 with 'Title is required.' error text, no DB update; (3) boundary \u2014 whitespace-only title (single space) is treated as truthy by Python's `if not title` check, so it passes validation and redirects, confirming the exact boundary of the falsy check. Each test is self-contained, uses the pre-loaded fixture data (user id=1 / 'test'/'test', post id=1), and asserts exact values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_update_with_valid_title_redirects",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Pre-loaded fixture: user id=1 (test/test), post id=1 owned by user 1",
+          "User 'test' is logged in via POST /auth/login"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/update with title='Updated Title', body='Updated body'"
+        ],
+        "expected": [
+          "HTTP 302 redirect response",
+          "Location header equals '/'",
+          "Database record for post id=1 now has title='Updated Title'"
+        ],
+        "trace": [
+          "R-FLASKR-040: valid title must be accepted and result in redirect",
+          "Catches mutations that flip the redirect vs re-render branch"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_with_valid_title_redirects():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    r = client.post('/1/update', data={'title': 'Updated Title', 'body': 'Updated body'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    with app.app_context():\n        from flaskr.db import get_db\n        post = get_db().execute('SELECT title FROM post WHERE id = 1').fetchone()\n        assert post['title'] == 'Updated Title'\n\ntest_update_with_valid_title_redirects()"
+      },
+      {
+        "name": "test_update_with_empty_title_shows_error",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Pre-loaded fixture: user id=1 (test/test), post id=1 owned by user 1",
+          "User 'test' is logged in via POST /auth/login"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/update with title='' (empty string), body='some body'"
+        ],
+        "expected": [
+          "HTTP 200 response (form re-rendered, not redirected)",
+          "Response body contains exact text 'Title is required.'",
+          "Database record for post id=1 title remains unchanged ('test title')"
+        ],
+        "trace": [
+          "R-FLASKR-040: missing title must be rejected with error message",
+          "Catches mutations that remove the `if not title` guard or change the error string",
+          "Catches mutations that flip 200 vs 302 on error path"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_with_empty_title_shows_error():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    r = client.post('/1/update', data={'title': '', 'body': 'some body'})\n    assert r.status_code == 200\n    assert b'Title is required.' in r.data\n    with app.app_context():\n        from flaskr.db import get_db\n        post = get_db().execute('SELECT title FROM post WHERE id = 1').fetchone()\n        assert post['title'] == 'test title'\n\ntest_update_with_empty_title_shows_error()"
+      },
+      {
+        "name": "test_update_with_whitespace_only_title_is_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Pre-loaded fixture: user id=1 (test/test), post id=1 owned by user 1",
+          "User 'test' is logged in via POST /auth/login"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/update with title=' ' (single space \u2014 truthy in Python), body='body'"
+        ],
+        "expected": [
+          "HTTP 302 redirect (single space is truthy so `if not title` is False)",
+          "Location header equals '/'",
+          "Database record for post id=1 title is now ' ' (single space)"
+        ],
+        "trace": [
+          "R-FLASKR-040: boundary \u2014 the falsy check `if not title` passes for empty string but NOT for whitespace",
+          "Catches mutations that change `if not title` to `if not title.strip()` or similar",
+          "Catches off-by-one / condition-flip mutations on the validation guard"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_with_whitespace_only_title_is_accepted():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    r = client.post('/1/update', data={'title': ' ', 'body': 'body'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    with app.app_context():\n        from flaskr.db import get_db\n        post = get_db().execute('SELECT title FROM post WHERE id = 1').fetchone()\n        assert post['title'] == ' '\n\ntest_update_with_whitespace_only_title_is_accepted()"
+      },
+      {
+        "name": "test_update_empty_title_does_not_redirect",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Pre-loaded fixture: user id=1 (test/test), post id=1 owned by user 1",
+          "User 'test' is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/update with title='' and body='' (both empty)"
+        ],
+        "expected": [
+          "HTTP 200 (not 302) \u2014 confirms no redirect on validation failure",
+          "Response body contains b'Title is required.'",
+          "Response body does NOT contain b'Body is required.' (only title is validated)"
+        ],
+        "trace": [
+          "R-FLASKR-040: decision table \u2014 title empty triggers error; body emptiness is irrelevant",
+          "Catches mutations that add spurious body validation or suppress title validation",
+          "Catches status-code mutations (200 -> 302 or 302 -> 200)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_empty_title_does_not_redirect():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    r = client.post('/1/update', data={'title': '', 'body': ''})\n    assert r.status_code == 200\n    assert b'Title is required.' in r.data\n    assert b'Body is required.' not in r.data\n    assert r.headers.get('Location') is None\n\ntest_update_empty_title_does_not_redirect()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-040",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5451,
+    "output_tokens": 2568,
+    "latency_ms": 32962,
+    "wall_ms": 32962,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-040\",\n  \"reasoning\": \"R-FLASKR-040 requires that POST /<id>/update rejects a missing title by re-rendering the update form with an error message (HTTP 200, not a redirect). Three test cases are designed: (1) positive \u2014 valid title+body yields a redirect (302) confirming the happy path; (2) negative \u2014 empty title string yields HTTP 200 with 'Title is required.' error text, no DB update; (3) boundary \u2014 whitespace-only title (single space) is treated as truthy by Python's `if not title` check, so it passes validation and redirects, confirming the exact boundary of the falsy check. Each test is self-contained, uses the pre-loaded fixture data (user id=1 / 'test'/'test', post id=1), and asserts exact values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_update_with_valid_title_redirects\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App initialised with TESTING=True and a fresh temp database\",\n        \"Pre-loaded fixture: user id=1 (test/test), post id=1 owned by user 1\",\n        \"User 'test' is logged in via POST /auth/login\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='test', password='test'\",\n        \"POST /1/update with title='Updated Title', body='Updated body'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect response\",\n        \"Location header equals '/'\",\n        \"Database record for post id=1 now has title='Updated Title'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-040: valid title must be accepted and result in redirect\",\n        \"Catches mutations that flip the redirect vs re-render branch\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_update_with_valid_title_redirects():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\\n    assert r.status_code == 302\\n    r = client.post('/1/update', data={'title': 'Updated Title', 'body': 'Updated body'})\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/'\\n    with app.app_context():\\n        from flaskr.db import get_db\\n        post = get_db().execute('SELECT title FROM post WHERE id = 1').fetchone()\\n        assert post['title'] == 'Updated Title'\\n\\ntest_update_with_valid_title_redirects()\"\n    },\n    {\n      \"name\": \"test_update_with_empty_title_shows_error\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App initialised with TESTING=True and a fresh temp database\",\n        \"Pre-loaded fixture: user id=1 (test/test), post id=1 owned by user 1\",\n        \"User 'test' is logged in via POST /auth/login\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='test', password='test'\",\n        \"POST /1/update with title='' (empty string), body='some body'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response (form re-rendered, not redirected)\",\n        \"Response body contains exact text 'Title is required.'\",\n        \"Database record for post id=1 title remains unchanged ('test title')\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-040: missing title must be rejected with error message\",\n        \"Catches mutations that remove the `if not title` guard or change the error string\",\n        \"Catches mutations that flip 200 vs 302 on error path\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_update_with_empty_title_shows_error():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'test', 'password': '"
+  }
+}

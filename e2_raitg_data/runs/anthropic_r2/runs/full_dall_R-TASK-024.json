@@ -1,0 +1,292 @@
+{
+  "req": {
+    "id": "R-TASK-024",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "startup",
+    "title": "Create schema on startup",
+    "statement": "The system shall create the tasks table via SQLAlchemy metadata at application startup.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "create schema on startup"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "lifecycle"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-024",
+    "reasoning": "R-TASK-024 requires that the tasks table is created via SQLAlchemy metadata at application startup. The key observable effect is that after importing the app (which triggers models.Base.metadata.create_all(bind=engine)), the tasks table exists and the API endpoints that depend on it respond correctly. Tests cover: (1) positive \u2014 root endpoint returns 200 with exact payload proving app started cleanly; (2) positive \u2014 GET /tasks/ returns 200 with a list (table exists and is queryable); (3) negative \u2014 POST /tasks/ with missing required field (title=null) returns 422 proving schema validation is active; (4) boundary \u2014 POST /tasks/ with title at max length 100 chars is accepted (201), title at 101 chars is rejected (422), catching off-by-one mutations on the schema constraint; (5) state-transition \u2014 after startup, creating a task and then retrieving it by id returns exact fields, proving the table is writable and readable end-to-end.",
+    "tests": [
+      {
+        "name": "test_startup_root_endpoint_returns_200_with_exact_payload",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is imported in-process, triggering models.Base.metadata.create_all()"
+        ],
+        "actions": [
+          "Send GET / to the TestClient"
+        ],
+        "expected": [
+          "HTTP 200",
+          "JSON body exactly matches welcome message, docs path, and version"
+        ],
+        "trace": [
+          "R-TASK-024: schema created on startup enables app to serve requests"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_root_endpoint_returns_200_with_exact_payload():\n    client = TestClient(app)\n    r = client.get(\"/\")\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"message\"] == \"Welcome to Task Manager API\"\n    assert body[\"docs\"] == \"/docs\"\n    assert body[\"version\"] == \"1.0.0\"\n\ntest_startup_root_endpoint_returns_200_with_exact_payload()"
+      },
+      {
+        "name": "test_startup_tasks_table_exists_and_is_queryable",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists in the database"
+        ],
+        "actions": [
+          "Send GET /tasks/ with default parameters"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a JSON list"
+        ],
+        "trace": [
+          "R-TASK-024: tasks table created at startup; GET /tasks/ succeeds only if table exists"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_tasks_table_exists_and_is_queryable():\n    client = TestClient(app)\n    r = client.get(\"/tasks/\")\n    assert r.status_code == 200\n    body = r.json()\n    assert isinstance(body, list)\n\ntest_startup_tasks_table_exists_and_is_queryable()"
+      },
+      {
+        "name": "test_startup_table_writable_create_and_retrieve_task",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists and is writable"
+        ],
+        "actions": [
+          "POST /tasks/ with valid title and completed=false",
+          "GET /tasks/{id} with the returned id"
+        ],
+        "expected": [
+          "POST returns HTTP 201 with exact title and completed=false",
+          "GET returns HTTP 200 with same id, title, completed=false"
+        ],
+        "trace": [
+          "R-TASK-024: table created at startup must be writable and readable"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_table_writable_create_and_retrieve_task():\n    client = TestClient(app)\n    payload = {\"title\": \"Startup test task\", \"description\": None, \"completed\": False}\n    r_create = client.post(\"/tasks/\", json=payload)\n    assert r_create.status_code == 201\n    created = r_create.json()\n    assert created[\"title\"] == \"Startup test task\"\n    assert created[\"completed\"] == False\n    assert \"id\" in created\n    task_id = created[\"id\"]\n    r_get = client.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 200\n    fetched = r_get.json()\n    assert fetched[\"id\"] == task_id\n    assert fetched[\"title\"] == \"Startup test task\"\n    assert fetched[\"completed\"] == False\n\ntest_startup_table_writable_create_and_retrieve_task()"
+      },
+      {
+        "name": "test_startup_schema_rejects_null_title",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists"
+        ],
+        "actions": [
+          "POST /tasks/ with title omitted (null title violates NOT NULL constraint)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response body contains validation error detail"
+        ],
+        "trace": [
+          "R-TASK-024: schema enforces NOT NULL on title; invalid input rejected with 422"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_schema_rejects_null_title():\n    client = TestClient(app)\n    payload = {\"description\": \"Some description\", \"completed\": True}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_startup_schema_rejects_null_title()"
+      },
+      {
+        "name": "test_startup_schema_rejects_empty_string_title",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists"
+        ],
+        "actions": [
+          "POST /tasks/ with title as empty string (violates min_length=1)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity"
+        ],
+        "trace": [
+          "R-TASK-024: schema min_length=1 on title enforced; empty string rejected"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_schema_rejects_empty_string_title():\n    client = TestClient(app)\n    payload = {\"title\": \"\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_startup_schema_rejects_empty_string_title()"
+      },
+      {
+        "name": "test_startup_schema_title_max_length_boundary_100_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists"
+        ],
+        "actions": [
+          "POST /tasks/ with title of exactly 100 characters (max_length boundary)"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Returned title has length exactly 100"
+        ],
+        "trace": [
+          "R-TASK-024: BVA at max_length=100 for title; exactly 100 chars must be accepted"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_schema_title_max_length_boundary_100_accepted():\n    client = TestClient(app)\n    title_100 = \"A\" * 100\n    assert len(title_100) == 100\n    payload = {\"title\": title_100, \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == title_100\n    assert len(body[\"title\"]) == 100\n\ntest_startup_schema_title_max_length_boundary_100_accepted()"
+      },
+      {
+        "name": "test_startup_schema_title_max_length_boundary_101_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists"
+        ],
+        "actions": [
+          "POST /tasks/ with title of exactly 101 characters (one over max_length)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity"
+        ],
+        "trace": [
+          "R-TASK-024: BVA at max_length+1=101 for title; 101 chars must be rejected; catches off-by-one mutation on max_length constant"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_schema_title_max_length_boundary_101_rejected():\n    client = TestClient(app)\n    title_101 = \"A\" * 101\n    assert len(title_101) == 101\n    payload = {\"title\": title_101, \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_startup_schema_title_max_length_boundary_101_rejected()"
+      },
+      {
+        "name": "test_startup_schema_description_max_length_boundary_500_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists"
+        ],
+        "actions": [
+          "POST /tasks/ with description of exactly 500 characters"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Returned description has length exactly 500"
+        ],
+        "trace": [
+          "R-TASK-024: BVA at max_length=500 for description; exactly 500 chars accepted"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_schema_description_max_length_boundary_500_accepted():\n    client = TestClient(app)\n    desc_500 = \"X\" * 500\n    assert len(desc_500) == 500\n    payload = {\"title\": \"Boundary desc test\", \"description\": desc_500, \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"description\"] == desc_500\n    assert len(body[\"description\"]) == 500\n\ntest_startup_schema_description_max_length_boundary_500_accepted()"
+      },
+      {
+        "name": "test_startup_schema_description_max_length_boundary_501_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists"
+        ],
+        "actions": [
+          "POST /tasks/ with description of exactly 501 characters (one over max)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity"
+        ],
+        "trace": [
+          "R-TASK-024: BVA at max_length+1=501 for description; 501 chars rejected; catches off-by-one mutation"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_schema_description_max_length_boundary_501_rejected():\n    client = TestClient(app)\n    desc_501 = \"X\" * 501\n    assert len(desc_501) == 501\n    payload = {\"title\": \"Boundary desc reject\", \"description\": desc_501, \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_startup_schema_description_max_length_boundary_501_rejected()"
+      },
+      {
+        "name": "test_startup_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists"
+        ],
+        "actions": [
+          "GET /tasks/999999 for a task id that does not exist"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response detail contains the missing task id"
+        ],
+        "trace": [
+          "R-TASK-024: table exists but row absent; 404 returned with exact detail message"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_nonexistent_task_returns_404():\n    client = TestClient(app)\n    r = client.get(\"/tasks/999999\")\n    assert r.status_code == 404\n    body = r.json()\n    assert \"detail\" in body\n    assert \"999999\" in body[\"detail\"]\n\ntest_startup_nonexistent_task_returns_404()"
+      },
+      {
+        "name": "test_startup_completed_field_defaults_to_false",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists"
+        ],
+        "actions": [
+          "POST /tasks/ with only title provided (no completed field)"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "completed field in response is exactly False"
+        ],
+        "trace": [
+          "R-TASK-024: schema default for completed=False enforced; catches boolean negation mutation"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_completed_field_defaults_to_false():\n    client = TestClient(app)\n    payload = {\"title\": \"Default completed test\"}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"completed\"] == False\n    assert body[\"completed\"] is not True\n    assert \"id\" in body\n    assert \"created_at\" in body\n\ntest_startup_completed_field_defaults_to_false()"
+      },
+      {
+        "name": "test_startup_create_task_with_completed_true",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app imported in-process, create_all() called",
+          "tasks table exists"
+        ],
+        "actions": [
+          "POST /tasks/ with completed=true explicitly"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "completed field in response is exactly True"
+        ],
+        "trace": [
+          "R-TASK-024: both boolean values for completed tested; catches and->or and negation mutations"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_create_task_with_completed_true():\n    client = TestClient(app)\n    payload = {\"title\": \"Completed task\", \"completed\": True}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"completed\"] == True\n    assert body[\"completed\"] is not False\n    assert body[\"title\"] == \"Completed task\"\n\ntest_startup_create_task_with_completed_true()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-024",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7563,
+    "output_tokens": 4469,
+    "latency_ms": 50852,
+    "wall_ms": 50852,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-024\",\n  \"reasoning\": \"R-TASK-024 requires that the tasks table is created via SQLAlchemy metadata at application startup. The key observable effect is that after importing the app (which triggers models.Base.metadata.create_all(bind=engine)), the tasks table exists and the API endpoints that depend on it respond correctly. Tests cover: (1) positive \u2014 root endpoint returns 200 with exact payload proving app started cleanly; (2) positive \u2014 GET /tasks/ returns 200 with a list (table exists and is queryable); (3) negative \u2014 POST /tasks/ with missing required field (title=null) returns 422 proving schema validation is active; (4) boundary \u2014 POST /tasks/ with title at max length 100 chars is accepted (201), title at 101 chars is rejected (422), catching off-by-one mutations on the schema constraint; (5) state-transition \u2014 after startup, creating a task and then retrieving it by id returns exact fields, proving the table is writable and readable end-to-end.\",\n  \"tests\": [\n    {\n      \"name\": \"test_startup_root_endpoint_returns_200_with_exact_payload\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is imported in-process, triggering models.Base.metadata.create_all()\"\n      ],\n      \"actions\": [\n        \"Send GET / to the TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"JSON body exactly matches welcome message, docs path, and version\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: schema created on startup enables app to serve requests\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_startup_root_endpoint_returns_200_with_exact_payload():\\n    client = TestClient(app)\\n    r = client.get(\\\"/\\\")\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body[\\\"message\\\"] == \\\"Welcome to Task Manager API\\\"\\n    assert body[\\\"docs\\\"] == \\\"/docs\\\"\\n    assert body[\\\"version\\\"] == \\\"1.0.0\\\"\\n\\ntest_startup_root_endpoint_returns_200_with_exact_payload()\"\n    },\n    {\n      \"name\": \"test_startup_tasks_table_exists_and_is_queryable\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app imported in-process, create_all() called\",\n        \"tasks table exists in the database\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/ with default parameters\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body is a JSON list\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: tasks table created at startup; GET /tasks/ succeeds only if table exists\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_startup_tasks_table_exists_and_is_queryable():\\n    client = TestClient(app)\\n    r = client.get(\\\"/tasks/\\\")\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert isinstance(body, list)\\n\\ntest_startup_tasks_table_exists_and_is_queryable()\"\n    },\n    {\n      \"name\": \"test_startup_table_writable_create_and_retrieve_task\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"FastAPI app imported in-process, create_all() called\",\n        \"tasks table exists and is writable\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with valid title and completed=false\",\n        \"GET /tasks/{id} with the returned id\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 201 with exact title and completed=false\",\n        \"GET returns HTTP 200 with same id, title, completed=false\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: table created at startup must be writable and readable\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_startup_table_writable_create_and_retrieve_task():\\n    client = TestClient(app)\\n    payload = {\\\"title\\\": \\\"Startup test task\\\", \\\"description\\\": None, \\\"completed\\\": False}\\n    r_create = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r_cr"
+  }
+}

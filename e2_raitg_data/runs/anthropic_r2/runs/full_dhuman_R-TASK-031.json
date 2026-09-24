@@ -1,0 +1,195 @@
+{
+  "req": {
+    "id": "R-TASK-031",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Task title accepts unicode",
+    "statement": "The system shall accept task titles containing UTF-8 characters and return them intact.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task title accepts unicode"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-031",
+    "reasoning": "R-TASK-031 requires that task titles containing UTF-8 characters are accepted and returned intact. Three test cases are designed: (1) a positive EP test sending a multi-script Unicode title and asserting the exact round-trip value in the 201 response body; (2) a boundary BVA test sending a Unicode title at exactly the max_length=100 character boundary (using multi-byte CJK characters that are each 1 code-point but >1 byte) and asserting 201 + exact title echo; (3) a negative NEG test sending a Unicode title that exceeds max_length=100 characters and asserting exactly 422 (Pydantic validation error). Together these cover the EP partition of valid Unicode, the BVA boundary at 100 code-points, and the NEG path beyond 100 code-points. All assertions use exact values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_unicode_title_roundtrip_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "tasks table is empty",
+          "FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "POST /tasks/ with a title containing Latin, CJK, Arabic, emoji, and combining characters",
+          "Capture the JSON response body"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "response JSON field 'title' equals the submitted Unicode string exactly",
+          "response JSON field 'completed' equals false",
+          "response JSON field 'id' is an integer"
+        ],
+        "trace": [
+          "R-TASK-031: system shall accept UTF-8 titles and return them intact"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\nunicode_title = u\"Caf\\u00e9 \\u4e2d\\u6587 \\u0645\\u0631\\u062d\\u0628\\u0627 \\U0001f600 e\\u0301\"\n\ndef test_unicode_title_roundtrip_positive():\n    r = client.post(\"/tasks/\", json={\"title\": unicode_title, \"description\": None, \"completed\": False})\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == unicode_title\n    assert body[\"completed\"] == False\n    assert isinstance(body[\"id\"], int)\n    assert \"created_at\" in body\n"
+      },
+      {
+        "name": "test_unicode_title_at_max_length_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "tasks table is empty",
+          "FastAPI app is running in-process via TestClient",
+          "title field has max_length=100 code-points per schema"
+        ],
+        "actions": [
+          "POST /tasks/ with a Unicode title of exactly 100 CJK characters (each 3 UTF-8 bytes, 1 code-point)",
+          "Capture the JSON response body"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "response JSON field 'title' equals the 100-character CJK string exactly",
+          "len of returned title equals 100"
+        ],
+        "trace": [
+          "R-TASK-031: UTF-8 titles accepted and returned intact",
+          "BVA at max_length=100 boundary \u2014 catches off-by-one mutations on the limit constant"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ncjk_title_100 = u\"\\u4e2d\" * 100\nassert len(cjk_title_100) == 100\n\ndef test_unicode_title_at_max_length_boundary():\n    r = client.post(\"/tasks/\", json={\"title\": cjk_title_100, \"description\": None, \"completed\": False})\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == cjk_title_100\n    assert len(body[\"title\"]) == 100\n    assert isinstance(body[\"id\"], int)\n"
+      },
+      {
+        "name": "test_unicode_title_exceeds_max_length_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "tasks table is empty",
+          "FastAPI app is running in-process via TestClient",
+          "title field has max_length=100 code-points per schema"
+        ],
+        "actions": [
+          "POST /tasks/ with a Unicode title of 101 CJK characters (one beyond the max_length boundary)",
+          "Capture the HTTP status code"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (Pydantic validation error)",
+          "response body contains 'detail' key indicating validation failure"
+        ],
+        "trace": [
+          "R-TASK-031 error pathway: HTTP 4xx on client error",
+          "NEG + BVA boundary+1 \u2014 catches mutations that relax the max_length constraint or flip the comparison operator"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ncjk_title_101 = u\"\\u4e2d\" * 101\nassert len(cjk_title_101) == 101\n\ndef test_unicode_title_exceeds_max_length_rejected():\n    r = client.post(\"/tasks/\", json={\"title\": cjk_title_101, \"description\": None, \"completed\": False})\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n"
+      },
+      {
+        "name": "test_unicode_title_one_below_max_length_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "tasks table is empty",
+          "FastAPI app is running in-process via TestClient",
+          "title field has max_length=100 code-points per schema"
+        ],
+        "actions": [
+          "POST /tasks/ with a Unicode title of exactly 99 CJK characters (one below the max_length boundary)",
+          "Capture the JSON response body"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "response JSON field 'title' equals the 99-character CJK string exactly",
+          "len of returned title equals 99"
+        ],
+        "trace": [
+          "R-TASK-031: UTF-8 titles accepted and returned intact",
+          "BVA at max_length-1=99 \u2014 catches off-by-one mutations that set limit to 99 instead of 100"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ncjk_title_99 = u\"\\u4e2d\" * 99\nassert len(cjk_title_99) == 99\n\ndef test_unicode_title_one_below_max_length_accepted():\n    r = client.post(\"/tasks/\", json={\"title\": cjk_title_99, \"description\": None, \"completed\": False})\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == cjk_title_99\n    assert len(body[\"title\"]) == 99\n    assert isinstance(body[\"id\"], int)\n"
+      },
+      {
+        "name": "test_unicode_title_empty_string_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "tasks table is empty",
+          "FastAPI app is running in-process via TestClient",
+          "title field has min_length=1 per schema"
+        ],
+        "actions": [
+          "POST /tasks/ with an empty string title (zero Unicode code-points)",
+          "Capture the HTTP status code"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "response body contains 'detail' key"
+        ],
+        "trace": [
+          "R-TASK-031 error pathway: HTTP 4xx on client error",
+          "NEG + BVA at min_length boundary \u2014 catches mutations that remove or relax the min_length=1 constraint"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_unicode_title_empty_string_rejected():\n    r = client.post(\"/tasks/\", json={\"title\": \"\", \"description\": None, \"completed\": False})\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n"
+      },
+      {
+        "name": "test_unicode_title_single_codepoint_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "tasks table is empty",
+          "FastAPI app is running in-process via TestClient",
+          "title field has min_length=1 per schema"
+        ],
+        "actions": [
+          "POST /tasks/ with a title of exactly 1 Unicode code-point (a single emoji, 4 UTF-8 bytes)",
+          "Capture the JSON response body"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "response JSON field 'title' equals the single-code-point string exactly",
+          "len of returned title equals 1"
+        ],
+        "trace": [
+          "R-TASK-031: UTF-8 titles accepted and returned intact",
+          "BVA at min_length=1 boundary \u2014 catches off-by-one mutations on the lower bound"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\nsingle_emoji = u\"\\U0001f600\"\nassert len(single_emoji) == 1\n\ndef test_unicode_title_single_codepoint_accepted():\n    r = client.post(\"/tasks/\", json={\"title\": single_emoji, \"description\": None, \"completed\": False})\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == single_emoji\n    assert len(body[\"title\"]) == 1\n    assert isinstance(body[\"id\"], int)\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-031",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4842,
+    "output_tokens": 2823,
+    "latency_ms": 35338,
+    "wall_ms": 35338,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-031\",\n  \"reasoning\": \"R-TASK-031 requires that task titles containing UTF-8 characters are accepted and returned intact. Three test cases are designed: (1) a positive EP test sending a multi-script Unicode title and asserting the exact round-trip value in the 201 response body; (2) a boundary BVA test sending a Unicode title at exactly the max_length=100 character boundary (using multi-byte CJK characters that are each 1 code-point but >1 byte) and asserting 201 + exact title echo; (3) a negative NEG test sending a Unicode title that exceeds max_length=100 characters and asserting exactly 422 (Pydantic validation error). Together these cover the EP partition of valid Unicode, the BVA boundary at 100 code-points, and the NEG path beyond 100 code-points. All assertions use exact values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_unicode_title_roundtrip_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"tasks table is empty\",\n        \"FastAPI app is running in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with a title containing Latin, CJK, Arabic, emoji, and combining characters\",\n        \"Capture the JSON response body\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"response JSON field 'title' equals the submitted Unicode string exactly\",\n        \"response JSON field 'completed' equals false\",\n        \"response JSON field 'id' is an integer\"\n      ],\n      \"trace\": [\n        \"R-TASK-031: system shall accept UTF-8 titles and return them intact\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\nunicode_title = u\\\"Caf\\\\u00e9 \\\\u4e2d\\\\u6587 \\\\u0645\\\\u0631\\\\u062d\\\\u0628\\\\u0627 \\\\U0001f600 e\\\\u0301\\\"\\n\\ndef test_unicode_title_roundtrip_positive():\\n    r = client.post(\\\"/tasks/\\\", json={\\\"title\\\": unicode_title, \\\"description\\\": None, \\\"completed\\\": False})\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body[\\\"title\\\"] == unicode_title\\n    assert body[\\\"completed\\\"] == False\\n    assert isinstance(body[\\\"id\\\"], int)\\n    assert \\\"created_at\\\" in body\\n\"\n    },\n    {\n      \"name\": \"test_unicode_title_at_max_length_boundary\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"tasks table is empty\",\n        \"FastAPI app is running in-process via TestClient\",\n        \"title field has max_length=100 code-points per schema\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with a Unicode title of exactly 100 CJK characters (each 3 UTF-8 bytes, 1 code-point)\",\n        \"Capture the JSON response body\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"response JSON field 'title' equals the 100-character CJK string exactly\",\n        \"len of returned title equals 100\"\n      ],\n      \"trace\": [\n        \"R-TASK-031: UTF-8 titles accepted and returned intact\",\n        \"BVA at max_length=100 boundary \u2014 catches off-by-one mutations on the limit constant\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ncjk_title_100 = u\\\"\\\\u4e2d\\\" * 100\\nassert len(cjk_title_100) == 100\\n\\ndef test_unicode_title_at_max_length_boundary():\\n    r = client.post(\\\"/tasks/\\\", json={\\\"title\\\": cjk_title_100, \\\"description\\\": None, \\\"completed\\\": False})\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body[\\\"title\\\"] == cjk_title_100\\n    assert len(body[\\\"title\\\"]) == 100\\n    assert isinstance(body[\\\"id\\\"], int)\\n\"\n    },\n    {\n      \"name\": \"test_unicode_title_exceeds_max_length_rejected\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"tasks table is empty\",\n        \"FastAPI app is running in-process via TestClient\",\n        \"title field has max_length=100 code-points per schema\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ wit"
+  }
+}

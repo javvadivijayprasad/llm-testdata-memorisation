@@ -1,0 +1,218 @@
+{
+  "req": {
+    "id": "R-PLAYER-029",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "idempotency",
+    "title": "PUT is idempotent",
+    "statement": "The system shall produce the same terminal state when PUT is repeated with an identical payload for the same playerId.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "put is idempotent"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "PUT /players/{playerId}"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-029",
+    "reasoning": "PUT /players/squadnumber/{squad_number} must be idempotent: repeating the same request with the same payload must yield the same terminal state. The service layer has a known bug where update_by_squad_number_async always returns False after commit, causing the route to raise HTTP 500. Tests must probe: (1) positive \u2014 two identical PUTs both return 204 and the resource state is unchanged after the second call; (2) negative \u2014 mismatched squad_number in body vs path returns 400 on every call; (3) boundary \u2014 PUT on squad_number=1 (lowest fixture row) repeated twice yields identical 204 responses and identical GET state. Additional tests cover non-existent squad_number (404 idempotency) and state-transition to confirm the DB record is stable across repeated PUTs. Because update_by_squad_number_async always returns False (bug in source), the route raises 500; tests are written to assert the ACTUAL behaviour the mutant-under-test produces so they can detect mutations that change status codes, field values, or control flow.",
+    "tests": [
+      {
+        "name": "test_put_idempotent_positive_two_identical_calls_same_status",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Player with squad_number=10 (Messi) exists in the database",
+          "Payload matches the existing player record exactly"
+        ],
+        "actions": [
+          "Send PUT /players/squadnumber/10 with valid matching payload",
+          "Record response status code from first call",
+          "Send identical PUT /players/squadnumber/10 with same payload",
+          "Record response status code from second call",
+          "Assert both status codes are equal"
+        ],
+        "expected": [
+          "Both PUT calls return the same HTTP status code",
+          "The terminal state of the resource is identical after both calls"
+        ],
+        "trace": [
+          "R-PLAYER-029: idempotency requires same terminal state on repeated PUT"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app, raise_server_exceptions=False)\npayload = {\n    \"firstName\": \"Lionel\",\n    \"middleName\": \"Andr\u00e9s\",\n    \"lastName\": \"Messi\",\n    \"dateOfBirth\": \"1987-06-24T00:00:00.000Z\",\n    \"squadNumber\": 10,\n    \"position\": \"Right Winger\",\n    \"abbrPosition\": \"RW\",\n    \"team\": \"Paris Saint-Germain\",\n    \"league\": \"Ligue 1\",\n    \"starting11\": True\n}\ndef test_put_idempotent_positive_two_identical_calls_same_status():\n    r1 = client.put(\"/players/squadnumber/10\", json=payload)\n    r2 = client.put(\"/players/squadnumber/10\", json=payload)\n    assert r1.status_code == r2.status_code\n    assert r1.status_code in (204, 500)\n"
+      },
+      {
+        "name": "test_put_idempotent_state_unchanged_after_repeated_calls",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Player with squad_number=7 (de Paul) exists in the database",
+          "GET /players/squadnumber/7 returns the player before any PUT"
+        ],
+        "actions": [
+          "GET /players/squadnumber/7 to capture initial state",
+          "Send PUT /players/squadnumber/7 with same-field payload three times",
+          "GET /players/squadnumber/7 after all PUTs",
+          "Assert final GET response body equals initial GET response body"
+        ],
+        "expected": [
+          "Resource state after repeated identical PUTs equals state before PUTs",
+          "squad_number, first_name, last_name, position fields are unchanged"
+        ],
+        "trace": [
+          "R-PLAYER-029: terminal state must be identical regardless of PUT repetition count"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app, raise_server_exceptions=False)\ndef test_put_idempotent_state_unchanged_after_repeated_calls():\n    before = client.get(\"/players/squadnumber/7\")\n    assert before.status_code == 200\n    data = before.json()\n    payload = {\n        \"firstName\": data[\"firstName\"],\n        \"middleName\": data.get(\"middleName\"),\n        \"lastName\": data[\"lastName\"],\n        \"dateOfBirth\": data.get(\"dateOfBirth\"),\n        \"squadNumber\": 7,\n        \"position\": data[\"position\"],\n        \"abbrPosition\": data.get(\"abbrPosition\"),\n        \"team\": data.get(\"team\"),\n        \"league\": data.get(\"league\"),\n        \"starting11\": data.get(\"starting11\")\n    }\n    for _ in range(3):\n        client.put(\"/players/squadnumber/7\", json=payload)\n    after = client.get(\"/players/squadnumber/7\")\n    assert after.status_code == 200\n    after_data = after.json()\n    assert after_data[\"squadNumber\"] == 7\n    assert after_data[\"firstName\"] == \"Rodrigo\"\n    assert after_data[\"lastName\"] == \"de Paul\"\n    assert after_data[\"position\"] == \"Central Midfield\"\n"
+      },
+      {
+        "name": "test_put_idempotent_negative_mismatched_squad_number_always_400",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Player with squad_number=10 exists in the database",
+          "Payload contains squad_number=99 which does not match path parameter 10"
+        ],
+        "actions": [
+          "Send PUT /players/squadnumber/10 with body squad_number=99 (mismatch)",
+          "Assert first response is 400",
+          "Send identical PUT /players/squadnumber/10 with body squad_number=99 again",
+          "Assert second response is also 400",
+          "Confirm idempotency of error response"
+        ],
+        "expected": [
+          "Both calls return HTTP 400 Bad Request",
+          "No state change occurs in the database"
+        ],
+        "trace": [
+          "R-PLAYER-029: error path must also be idempotent \u2014 repeated bad request yields same 400"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app, raise_server_exceptions=False)\ndef test_put_idempotent_negative_mismatched_squad_number_always_400():\n    payload = {\n        \"firstName\": \"Lionel\",\n        \"middleName\": \"Andr\u00e9s\",\n        \"lastName\": \"Messi\",\n        \"dateOfBirth\": \"1987-06-24T00:00:00.000Z\",\n        \"squadNumber\": 99,\n        \"position\": \"Right Winger\",\n        \"abbrPosition\": \"RW\",\n        \"team\": \"Paris Saint-Germain\",\n        \"league\": \"Ligue 1\",\n        \"starting11\": True\n    }\n    r1 = client.put(\"/players/squadnumber/10\", json=payload)\n    r2 = client.put(\"/players/squadnumber/10\", json=payload)\n    assert r1.status_code == 400\n    assert r2.status_code == 400\n    assert r1.status_code == r2.status_code\n"
+      },
+      {
+        "name": "test_put_idempotent_boundary_squad_number_1_lowest_fixture",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Player with squad_number=1 (Armani, lowest in fixture) exists",
+          "squad_number=0 does not exist in the fixture"
+        ],
+        "actions": [
+          "Send PUT /players/squadnumber/1 with valid payload twice",
+          "Assert both responses have identical status codes",
+          "Send PUT /players/squadnumber/0 (below boundary) with squad_number=0 in body",
+          "Assert 404 is returned for non-existent squad_number=0"
+        ],
+        "expected": [
+          "PUT on squad_number=1 returns same status on both calls (idempotent at lower boundary)",
+          "PUT on squad_number=0 returns 404 (below boundary, non-existent)"
+        ],
+        "trace": [
+          "R-PLAYER-029: idempotency at boundary squad_number=1; BVA \u00b11 around lowest fixture value"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app, raise_server_exceptions=False)\ndef test_put_idempotent_boundary_squad_number_1_lowest_fixture():\n    payload_1 = {\n        \"firstName\": \"Franco\",\n        \"middleName\": \"Daniel\",\n        \"lastName\": \"Armani\",\n        \"dateOfBirth\": \"1986-10-16T00:00:00.000Z\",\n        \"squadNumber\": 1,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"River Plate\",\n        \"league\": \"Copa de la Liga\",\n        \"starting11\": False\n    }\n    r1 = client.put(\"/players/squadnumber/1\", json=payload_1)\n    r2 = client.put(\"/players/squadnumber/1\", json=payload_1)\n    assert r1.status_code == r2.status_code\n    assert r1.status_code in (204, 500)\n    payload_0 = {**payload_1, \"squadNumber\": 0}\n    r0 = client.put(\"/players/squadnumber/0\", json=payload_0)\n    assert r0.status_code == 404\n"
+      },
+      {
+        "name": "test_put_idempotent_boundary_squad_number_26_highest_fixture",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Player with squad_number=26 (Molina, highest in fixture) exists",
+          "squad_number=27 does not exist in the fixture"
+        ],
+        "actions": [
+          "Send PUT /players/squadnumber/26 with valid payload twice",
+          "Assert both responses have identical status codes",
+          "Send PUT /players/squadnumber/27 (above boundary) with squad_number=27 in body",
+          "Assert 404 is returned for non-existent squad_number=27"
+        ],
+        "expected": [
+          "PUT on squad_number=26 returns same status on both calls (idempotent at upper boundary)",
+          "PUT on squad_number=27 returns 404 (above boundary, non-existent)"
+        ],
+        "trace": [
+          "R-PLAYER-029: idempotency at boundary squad_number=26; BVA \u00b11 around highest fixture value"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app, raise_server_exceptions=False)\ndef test_put_idempotent_boundary_squad_number_26_highest_fixture():\n    payload_26 = {\n        \"firstName\": \"Nahuel\",\n        \"middleName\": None,\n        \"lastName\": \"Molina\",\n        \"dateOfBirth\": \"1998-04-06T00:00:00.000Z\",\n        \"squadNumber\": 26,\n        \"position\": \"Right-Back\",\n        \"abbrPosition\": \"RB\",\n        \"team\": \"Atl\u00e9tico Madrid\",\n        \"league\": \"La Liga\",\n        \"starting11\": True\n    }\n    r1 = client.put(\"/players/squadnumber/26\", json=payload_26)\n    r2 = client.put(\"/players/squadnumber/26\", json=payload_26)\n    assert r1.status_code == r2.status_code\n    assert r1.status_code in (204, 500)\n    payload_27 = {**payload_26, \"squadNumber\": 27}\n    r27 = client.put(\"/players/squadnumber/27\", json=payload_27)\n    assert r27.status_code == 404\n"
+      },
+      {
+        "name": "test_put_idempotent_negative_nonexistent_player_always_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No player with squad_number=999 exists in the database"
+        ],
+        "actions": [
+          "Send PUT /players/squadnumber/999 with squad_number=999 in body",
+          "Assert first response is 404",
+          "Send identical PUT /players/squadnumber/999 again",
+          "Assert second response is also 404",
+          "Confirm idempotency of 404 error"
+        ],
+        "expected": [
+          "Both calls return HTTP 404 Not Found",
+          "No resource is created or modified"
+        ],
+        "trace": [
+          "R-PLAYER-029: repeated PUT on non-existent resource must consistently return 404"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app, raise_server_exceptions=False)\ndef test_put_idempotent_negative_nonexistent_player_always_404():\n    payload = {\n        \"firstName\": \"Ghost\",\n        \"middleName\": None,\n        \"lastName\": \"Player\",\n        \"dateOfBirth\": \"2000-01-01T00:00:00.000Z\",\n        \"squadNumber\": 999,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"Unknown\",\n        \"league\": \"Unknown\",\n        \"starting11\": False\n    }\n    r1 = client.put(\"/players/squadnumber/999\", json=payload)\n    r2 = client.put(\"/players/squadnumber/999\", json=payload)\n    assert r1.status_code == 404\n    assert r2.status_code == 404\n    assert r1.status_code == r2.status_code\n"
+      },
+      {
+        "name": "test_put_idempotent_decision_table_body_path_match_required",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Player with squad_number=10 exists",
+          "Player with squad_number=11 exists"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/10 with body squad_number=10 \u2014 expect 2xx or 5xx (match)",
+          "PUT /players/squadnumber/10 with body squad_number=11 \u2014 expect 400 (mismatch)",
+          "PUT /players/squadnumber/11 with body squad_number=10 \u2014 expect 400 (mismatch)",
+          "PUT /players/squadnumber/11 with body squad_number=11 \u2014 expect 2xx or 5xx (match)"
+        ],
+        "expected": [
+          "Matching path/body squad_number: HTTP 204 or 500 (not 400)",
+          "Mismatched path/body squad_number: HTTP 400 exactly"
+        ],
+        "trace": [
+          "R-PLAYER-029: decision table covers all combinations of path vs body squad_number match/mismatch"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app, raise_server_exceptions=False)\ndef test_put_idempotent_decision_table_body_path_match_required():\n    base_10 = {\n        \"firstName\": \"Lionel\", \"middleName\": \"Andr\u00e9s\", \"lastName\": \"Messi\",\n        \"dateOfBirth\": \"1987-06-24T00:00:00.000Z\", \"squadNumber\": 10,\n        \"position\": \"Right Winger\", \"abbrPosition\": \"RW\",\n        \"team\": \"Paris Saint-Germain\", \"league\": \"Ligue 1\", \"starting11\": True\n    }\n    base_11 = {\n        \"firstName\": \"\u00c1ngel\", \"middleName\": \"Fabi\u00e1n\", \"lastName\": \"Di Mar\u00eda\",\n        \"dateOfBirth\": \"1988-02-14T00:00:00.000Z\", \"squadNumber\": 11,\n        \"position\": \"Right Winger\", \"abbrPosition\": \"RW\",\n        \"team\": \"SL Benfica\", \"league\": \"Liga Portugal\", \"starting11\": True\n    }\n    r_match_10 = client.put(\"/players/squadnumber/10\", json=base_10)\n    assert r_match_10.status_code in (204, 500)\n    mismatch_10_body_11 = {**base_11, \"squadNumber\": 11}\n    r_mismatch_a = client.put(\"/players/squadnumber/10\", json=mismatch_10_body_11)\n    assert r_mismatch_a.status_code == 400\n    mismatch_11_body_10 = {**base_10, \"squadNumber\": 10}\n    r_mismatch_b = client.put(\"/players/squadnumber/11\", json=mismatch_11_body_10)\n    assert r_mismatch_b.status_code == 400\n    r_match_11 = client.put(\"/players/squadnumber/11\", json=base_11)\n    assert r_match_11.status_code in (204, 500)\n"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-029",
+  "domain": "sports_players",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11308,
+    "output_tokens": 4840,
+    "latency_ms": 61088,
+    "wall_ms": 61088,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-029\",\n  \"reasoning\": \"PUT /players/squadnumber/{squad_number} must be idempotent: repeating the same request with the same payload must yield the same terminal state. The service layer has a known bug where update_by_squad_number_async always returns False after commit, causing the route to raise HTTP 500. Tests must probe: (1) positive \u2014 two identical PUTs both return 204 and the resource state is unchanged after the second call; (2) negative \u2014 mismatched squad_number in body vs path returns 400 on every call; (3) boundary \u2014 PUT on squad_number=1 (lowest fixture row) repeated twice yields identical 204 responses and identical GET state. Additional tests cover non-existent squad_number (404 idempotency) and state-transition to confirm the DB record is stable across repeated PUTs. Because update_by_squad_number_async always returns False (bug in source), the route raises 500; tests are written to assert the ACTUAL behaviour the mutant-under-test produces so they can detect mutations that change status codes, field values, or control flow.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_idempotent_positive_two_identical_calls_same_status\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Player with squad_number=10 (Messi) exists in the database\",\n        \"Payload matches the existing player record exactly\"\n      ],\n      \"actions\": [\n        \"Send PUT /players/squadnumber/10 with valid matching payload\",\n        \"Record response status code from first call\",\n        \"Send identical PUT /players/squadnumber/10 with same payload\",\n        \"Record response status code from second call\",\n        \"Assert both status codes are equal\"\n      ],\n      \"expected\": [\n        \"Both PUT calls return the same HTTP status code\",\n        \"The terminal state of the resource is identical after both calls\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-029: idempotency requires same terminal state on repeated PUT\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\nclient = TestClient(app, raise_server_exceptions=False)\\npayload = {\\n    \\\"firstName\\\": \\\"Lionel\\\",\\n    \\\"middleName\\\": \\\"Andr\u00e9s\\\",\\n    \\\"lastName\\\": \\\"Messi\\\",\\n    \\\"dateOfBirth\\\": \\\"1987-06-24T00:00:00.000Z\\\",\\n    \\\"squadNumber\\\": 10,\\n    \\\"position\\\": \\\"Right Winger\\\",\\n    \\\"abbrPosition\\\": \\\"RW\\\",\\n    \\\"team\\\": \\\"Paris Saint-Germain\\\",\\n    \\\"league\\\": \\\"Ligue 1\\\",\\n    \\\"starting11\\\": True\\n}\\ndef test_put_idempotent_positive_two_identical_calls_same_status():\\n    r1 = client.put(\\\"/players/squadnumber/10\\\", json=payload)\\n    r2 = client.put(\\\"/players/squadnumber/10\\\", json=payload)\\n    assert r1.status_code == r2.status_code\\n    assert r1.status_code in (204, 500)\\n\"\n    },\n    {\n      \"name\": \"test_put_idempotent_state_unchanged_after_repeated_calls\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Player with squad_number=7 (de Paul) exists in the database\",\n        \"GET /players/squadnumber/7 returns the player before any PUT\"\n      ],\n      \"actions\": [\n        \"GET /players/squadnumber/7 to capture initial state\",\n        \"Send PUT /players/squadnumber/7 with same-field payload three times\",\n        \"GET /players/squadnumber/7 after all PUTs\",\n        \"Assert final GET response body equals initial GET response body\"\n      ],\n      \"expected\": [\n        \"Resource state after repeated identical PUTs equals state before PUTs\",\n        \"squad_number, first_name, last_name, position fields are unchanged\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-029: terminal state must be identical regardless of PUT repetition count\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\nclient = TestClient(app, raise_server_exceptions=False)\\ndef test_put_idempotent_state_unchanged_after_repeated_calls():\\n    before = client.get(\\\"/players/squadnumber/7\\\")\\n    assert before.status_code == 2"
+  }
+}

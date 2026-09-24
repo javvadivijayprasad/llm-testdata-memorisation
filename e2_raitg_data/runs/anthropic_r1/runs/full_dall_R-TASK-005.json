@@ -1,0 +1,312 @@
+{
+  "req": {
+    "id": "R-TASK-005",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Pagination via skip and limit",
+    "statement": "The system shall skip the first 'skip' items and cap the returned count at 'limit' when both are supplied to GET /tasks/.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "pagination via skip and limit"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/?skip=<s>&limit=<l>"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-005",
+    "reasoning": "The requirement mandates that GET /tasks/?skip=<s>&limit=<l> skips the first 'skip' items and caps results at 'limit'. The pre-loaded dataset has exactly 20 rows (ids 1-20). Tests cover: (1) EP positive \u2014 typical skip+limit returning a deterministic slice; (2) NEG negative \u2014 invalid skip/limit values (negative, zero-limit, out-of-range) triggering 422; (3) BVA boundary \u2014 skip=0/limit=1 (minimum limit), skip=19/limit=1 (last item), skip=20/limit=1 (empty result), limit=1000 (max allowed), limit=1001 (rejected); (4) DT decision-table \u2014 combinations of skip and limit to verify exact count arithmetic; (5) BVA on the skip offset to catch off-by-one mutations in the offset logic. All tests use in-process TestClient with a fresh SQLite DB seeded from the pre-loaded fixture rows, ensuring determinism and idempotency.",
+    "tests": [
+      {
+        "name": "test_pagination_typical_skip_and_limit",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks with ids 1-20",
+          "GET /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=5&limit=3",
+          "Capture response status and JSON body"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 3 tasks",
+          "First task id is 6, second is 7, third is 8 (natural insertion order)"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nrows = [\n    (1,'Read chapter 5','desc1',True),(2,'Book flight tickets','desc2',True),\n    (3,'Submit expense report','desc3',True),(4,'Prepare meeting agenda','desc4',False),\n    (5,'Write project report','desc5',False),(6,'Run unit tests',None,False),\n    (7,'Fix login bug','desc7',False),(8,'Prepare meeting agenda',None,False),\n    (9,'Pay electricity bill','desc9',True),(10,'Organize desk',None,False),\n    (11,'Water the plants','desc11',False),(12,'Review pull request',None,False),\n    (13,'Buy groceries','desc13',False),(14,'Buy groceries',None,False),\n    (15,'Renew gym membership',None,True),(16,'Fix login bug','desc16',False),\n    (17,'Call the bank',None,False),(18,'Reply to emails',None,False),\n    (19,'Schedule dentist appointment',None,True),(20,'Reply to emails','desc20',False)\n]\nfor r in rows:\n    db.add(models.Task(id=r[0],title=r[1],description=r[2],completed=r[3]))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=5&limit=3')\nassert resp.status_code == 200\nbody = resp.json()\nassert len(body) == 3\nassert body[0]['id'] == 6\nassert body[1]['id'] == 7\nassert body[2]['id'] == 8\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_negative_skip_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains 20 pre-loaded tasks",
+          "Query parameter skip has constraint ge=0"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=-1&limit=5",
+          "Capture response status"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (FastAPI validation rejects skip < 0)"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=-1&limit=5')\nassert resp.status_code == 422\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_negative_limit_zero_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains 20 pre-loaded tasks",
+          "Query parameter limit has constraint ge=1"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=0&limit=0",
+          "Capture response status"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (FastAPI validation rejects limit < 1)"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=0&limit=0')\nassert resp.status_code == 422\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_limit_1001_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains 20 pre-loaded tasks",
+          "Query parameter limit has constraint le=1000"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=0&limit=1001",
+          "Capture response status"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (FastAPI validation rejects limit > 1000)"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=0&limit=1001')\nassert resp.status_code == 422\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_bva_skip0_limit1_returns_first_task",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains 20 pre-loaded tasks",
+          "skip=0 is the minimum allowed value",
+          "limit=1 is the minimum allowed value"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=0&limit=1",
+          "Capture response status and JSON body"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 1 task",
+          "The single task has id=1 (no items skipped, cap at 1)"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nrows = [\n    (1,'Read chapter 5','d1',True),(2,'Book flight tickets','d2',True),\n    (3,'Submit expense report','d3',True),(4,'Prepare meeting agenda','d4',False),\n    (5,'Write project report','d5',False),(6,'Run unit tests',None,False),\n    (7,'Fix login bug','d7',False),(8,'Prepare meeting agenda',None,False),\n    (9,'Pay electricity bill','d9',True),(10,'Organize desk',None,False),\n    (11,'Water the plants','d11',False),(12,'Review pull request',None,False),\n    (13,'Buy groceries','d13',False),(14,'Buy groceries',None,False),\n    (15,'Renew gym membership',None,True),(16,'Fix login bug','d16',False),\n    (17,'Call the bank',None,False),(18,'Reply to emails',None,False),\n    (19,'Schedule dentist appointment',None,True),(20,'Reply to emails','d20',False)\n]\nfor r in rows:\n    db.add(models.Task(id=r[0],title=r[1],description=r[2],completed=r[3]))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=0&limit=1')\nassert resp.status_code == 200\nbody = resp.json()\nassert len(body) == 1\nassert body[0]['id'] == 1\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_bva_skip19_limit1_returns_last_task",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks",
+          "skip=19 skips all but the last row"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=19&limit=1",
+          "Capture response status and JSON body"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 1 task",
+          "The single task has id=20 (the last task)"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=19&limit=1')\nassert resp.status_code == 200\nbody = resp.json()\nassert len(body) == 1\nassert body[0]['id'] == 20\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_bva_skip20_limit1_returns_empty",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks",
+          "skip=20 skips all rows (one past the last)"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=20&limit=1",
+          "Capture response status and JSON body"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is an empty list (no items remain after skipping all 20)"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=20&limit=1')\nassert resp.status_code == 200\nbody = resp.json()\nassert len(body) == 0\nassert body == []\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_bva_limit1000_accepted_returns_all",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks",
+          "limit=1000 is the maximum allowed value (le=1000)"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=0&limit=1000",
+          "Capture response status and JSON body"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 20 tasks (all rows, capped at 1000)"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=0&limit=1000')\nassert resp.status_code == 200\nbody = resp.json()\nassert len(body) == 20\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_dt_skip_and_limit_exact_count",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks",
+          "Both skip and limit are supplied simultaneously"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=10&limit=5",
+          "Capture response status, body length, and first/last ids"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body contains exactly 5 tasks",
+          "First task id is 11, last task id is 15"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=10&limit=5')\nassert resp.status_code == 200\nbody = resp.json()\nassert len(body) == 5\nassert body[0]['id'] == 11\nassert body[4]['id'] == 15\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_dt_limit_caps_result_below_remaining",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks",
+          "skip=0, limit=7 \u2014 limit is less than total rows"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=0&limit=7",
+          "Capture response status and body length"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body contains exactly 7 tasks (limit caps the result)",
+          "Task ids are 1 through 7 in order"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=0&limit=7')\nassert resp.status_code == 200\nbody = resp.json()\nassert len(body) == 7\nassert body[0]['id'] == 1\nassert body[6]['id'] == 7\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_bva_skip_one_before_end_limit_exceeds_remaining",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks",
+          "skip=18 leaves 2 rows; limit=5 exceeds remaining count"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=18&limit=5",
+          "Capture response status and body"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body contains exactly 2 tasks (remaining rows, not 5)",
+          "Task ids are 19 and 20"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', description=None, completed=False))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=18&limit=5')\nassert resp.status_code == 200\nbody = resp.json()\nassert len(body) == 2\nassert body[0]['id'] == 19\nassert body[1]['id'] == 20\nos.unlink(tf)"
+      },
+      {
+        "name": "test_pagination_ep_skip_and_limit_response_schema_fields",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains 20 pre-loaded tasks with known field values",
+          "skip=0, limit=1 returns the first task"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=0&limit=1",
+          "Inspect all schema fields of the returned task object"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Returned task has id=1, title='Read chapter 5', completed=True",
+          "Fields id, title, description, completed, created_at are present"
+        ],
+        "trace": [
+          "R-TASK-005"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import Base, get_db\nfrom fastapi.testclient import TestClient\n\ntf = tempfile.mktemp(suffix='.db')\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\nBase.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\ndb = Session()\nrows = [\n    (1,'Read chapter 5','desc1',True),(2,'Book flight tickets','desc2',True),\n    (3,'Submit expense report','desc3',True),(4,'Prepare meeting agenda','desc4',False),\n    (5,'Write project report','desc5',False),(6,'Run unit tests',None,False),\n    (7,'Fix login bug','desc7',False),(8,'Prepare meeting agenda',None,False),\n    (9,'Pay electricity bill','desc9',True),(10,'Organize desk',None,False),\n    (11,'Water the plants','desc11',False),(12,'Review pull request',None,False),\n    (13,'Buy groceries','desc13',False),(14,'Buy groceries',None,False),\n    (15,'Renew gym membership',None,True),(16,'Fix login bug','desc16',False),\n    (17,'Call the bank',None,False),(18,'Reply to emails',None,False),\n    (19,'Schedule dentist appointment',None,True),(20,'Reply to emails','desc20',False)\n]\nfor r in rows:\n    db.add(models.Task(id=r[0],title=r[1],description=r[2],completed=r[3]))\ndb.commit()\ndb.close()\ndef override_get_db():\n    s = Session()\n    try: yield s\n    finally: s.close()\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\nresp = client.get('/tasks/?skip=0&limit=1')\nassert resp.status_code == 200\nbody = resp.json()\nassert len(body) == 1\ntask = body[0]\nassert task['id'] == 1\nassert task['title'] == 'Read chapter 5'\nassert task['completed'] == True\nassert 'created_at' in task\nos.unlink(tf)"
+      }
+    ]
+  },
+  "req_id": "R-TASK-005",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7592,
+    "output_tokens": 7229,
+    "latency_ms": 76220,
+    "wall_ms": 76220,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-005\",\n  \"reasoning\": \"The requirement mandates that GET /tasks/?skip=<s>&limit=<l> skips the first 'skip' items and caps results at 'limit'. The pre-loaded dataset has exactly 20 rows (ids 1-20). Tests cover: (1) EP positive \u2014 typical skip+limit returning a deterministic slice; (2) NEG negative \u2014 invalid skip/limit values (negative, zero-limit, out-of-range) triggering 422; (3) BVA boundary \u2014 skip=0/limit=1 (minimum limit), skip=19/limit=1 (last item), skip=20/limit=1 (empty result), limit=1000 (max allowed), limit=1001 (rejected); (4) DT decision-table \u2014 combinations of skip and limit to verify exact count arithmetic; (5) BVA on the skip offset to catch off-by-one mutations in the offset logic. All tests use in-process TestClient with a fresh SQLite DB seeded from the pre-loaded fixture rows, ensuring determinism and idempotency.\",\n  \"tests\": [\n    {\n      \"name\": \"test_pagination_typical_skip_and_limit\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded tasks with ids 1-20\",\n        \"GET /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/?skip=5&limit=3\",\n        \"Capture response status and JSON body\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body is a list of exactly 3 tasks\",\n        \"First task id is 6, second is 7, third is 8 (natural insertion order)\"\n      ],\n      \"trace\": [\"R-TASK-005\"],\n      \"executable\": \"import os, tempfile\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom app.database import Base, get_db\\nfrom fastapi.testclient import TestClient\\n\\ntf = tempfile.mktemp(suffix='.db')\\nengine = create_engine(f'sqlite:///{tf}', connect_args={'check_same_thread': False})\\nBase.metadata.create_all(bind=engine)\\nSession = sessionmaker(bind=engine)\\ndb = Session()\\nrows = [\\n    (1,'Read chapter 5','desc1',True),(2,'Book flight tickets','desc2',True),\\n    (3,'Submit expense report','desc3',True),(4,'Prepare meeting agenda','desc4',False),\\n    (5,'Write project report','desc5',False),(6,'Run unit tests',None,False),\\n    (7,'Fix login bug','desc7',False),(8,'Prepare meeting agenda',None,False),\\n    (9,'Pay electricity bill','desc9',True),(10,'Organize desk',None,False),\\n    (11,'Water the plants','desc11',False),(12,'Review pull request',None,False),\\n    (13,'Buy groceries','desc13',False),(14,'Buy groceries',None,False),\\n    (15,'Renew gym membership',None,True),(16,'Fix login bug','desc16',False),\\n    (17,'Call the bank',None,False),(18,'Reply to emails',None,False),\\n    (19,'Schedule dentist appointment',None,True),(20,'Reply to emails','desc20',False)\\n]\\nfor r in rows:\\n    db.add(models.Task(id=r[0],title=r[1],description=r[2],completed=r[3]))\\ndb.commit()\\ndb.close()\\ndef override_get_db():\\n    s = Session()\\n    try: yield s\\n    finally: s.close()\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\nresp = client.get('/tasks/?skip=5&limit=3')\\nassert resp.status_code == 200\\nbody = resp.json()\\nassert len(body) == 3\\nassert body[0]['id'] == 6\\nassert body[1]['id'] == 7\\nassert body[2]['id'] == 8\\nos.unlink(tf)\"\n    },\n    {\n      \"name\": \"test_pagination_negative_skip_rejected\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database contains 20 pre-loaded tasks\",\n        \"Query parameter skip has constraint ge=0\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/?skip=-1&limit=5\",\n        \"Capture response status\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity (FastAPI validation rejects skip < 0)\"\n      ],\n      \"trace\": [\"R-TASK-005\"],\n      \"executable\": \"import os, tempfile\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom app.database import Base, get_db\\nfrom fastapi.test"
+  }
+}

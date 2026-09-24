@@ -1,0 +1,165 @@
+{
+  "req": {
+    "id": "R-TASK-039",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "performance",
+    "title": "Rate limit not enforced",
+    "statement": "The system shall not throttle single-client request rates below 60/min.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "rate limit not enforced"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-039",
+    "reasoning": "R-TASK-039 states the system shall NOT throttle single-client request rates below 60/min. This means 60 sequential requests within one minute must all return HTTP 2xx. Tests cover: (1) positive \u2013 exactly 60 requests all succeed (EP, exact-constant mutation kill); (2) boundary \u2013 59 requests succeed (BVA, off-by-one below threshold); (3) boundary \u2013 61 requests succeed (BVA, off-by-one above threshold); (4) negative \u2013 a single malformed request returns 4xx, confirming the error pathway is distinct from rate-limiting (NEG). All tests use in-process FastAPI TestClient, pre-loaded DB rows, and exact status-code assertions to kill comparison-operator and constant mutations.",
+    "tests": [
+      {
+        "name": "test_sixty_requests_all_succeed_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database contains pre-loaded task rows (ids 1-20)",
+          "No external rate-limiting middleware is active"
+        ],
+        "actions": [
+          "Send exactly 60 GET /tasks/ requests sequentially using TestClient",
+          "Collect all response status codes"
+        ],
+        "expected": [
+          "All 60 responses return HTTP 200",
+          "No response returns HTTP 429 or any 4xx/5xx"
+        ],
+        "trace": [
+          "R-TASK-039: system shall not throttle below 60/min",
+          "EP: 60 is the exact stated threshold; all must succeed"
+        ],
+        "executable": "import os, sys\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r039_pos.db')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nREQUIRED_LIMIT = 60\nstatuses = []\nfor _ in range(REQUIRED_LIMIT):\n    r = client.get('/tasks/')\n    statuses.append(r.status_code)\n\nassert len(statuses) == 60\nfor i, code in enumerate(statuses):\n    assert code == 200, f'Request {i+1} returned {code}, expected 200'\n\nBase.metadata.drop_all(bind=engine)\n\ndef test_sixty_requests_all_succeed_positive():\n    pass\n"
+      },
+      {
+        "name": "test_fifty_nine_requests_all_succeed_boundary_below",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database contains pre-loaded task rows (ids 1-20)"
+        ],
+        "actions": [
+          "Send exactly 59 GET /tasks/ requests sequentially using TestClient",
+          "Collect all response status codes"
+        ],
+        "expected": [
+          "All 59 responses return HTTP 200",
+          "No throttling occurs at threshold-1"
+        ],
+        "trace": [
+          "R-TASK-039: threshold is 60/min; 59 is threshold-1",
+          "BVA: off-by-one below boundary; catches n->n+1 constant mutation"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r039_bva59.db')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nBELOW_LIMIT = 59\nstatuses = []\nfor _ in range(BELOW_LIMIT):\n    r = client.get('/tasks/')\n    statuses.append(r.status_code)\n\nassert len(statuses) == 59\nfor i, code in enumerate(statuses):\n    assert code == 200, f'Request {i+1} returned {code}, expected 200'\n\nBase.metadata.drop_all(bind=engine)\n\ndef test_fifty_nine_requests_all_succeed_boundary_below():\n    pass\n"
+      },
+      {
+        "name": "test_sixty_one_requests_all_succeed_boundary_above",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database contains pre-loaded task rows (ids 1-20)"
+        ],
+        "actions": [
+          "Send exactly 61 GET /tasks/ requests sequentially using TestClient",
+          "Collect all response status codes"
+        ],
+        "expected": [
+          "All 61 responses return HTTP 200",
+          "No throttling occurs at threshold+1"
+        ],
+        "trace": [
+          "R-TASK-039: threshold is 60/min; 61 is threshold+1",
+          "BVA: off-by-one above boundary; catches n->n-1 constant mutation"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r039_bva61.db')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nABOVE_LIMIT = 61\nstatuses = []\nfor _ in range(ABOVE_LIMIT):\n    r = client.get('/tasks/')\n    statuses.append(r.status_code)\n\nassert len(statuses) == 61\nfor i, code in enumerate(statuses):\n    assert code == 200, f'Request {i+1} returned {code}, expected 200'\n\nBase.metadata.drop_all(bind=engine)\n\ndef test_sixty_one_requests_all_succeed_boundary_above():\n    pass\n"
+      },
+      {
+        "name": "test_malformed_request_returns_4xx_not_throttle",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database contains pre-loaded task rows (ids 1-20)"
+        ],
+        "actions": [
+          "Send a POST /tasks/ with an empty title (violates min_length=1 schema constraint)",
+          "Inspect the response status code and body"
+        ],
+        "expected": [
+          "Response status code is 422 (Unprocessable Entity) \u2014 a client error, not a rate-limit error",
+          "Response is NOT 429 (rate limit) and NOT 200"
+        ],
+        "trace": [
+          "R-TASK-039 error pathway: HTTP 4xx on client error",
+          "NEG: distinguishes schema-validation 4xx from rate-limit 4xx; catches boolean-negation mutations on error-path branching"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r039_neg.db')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nr = client.post('/tasks/', json={'title': '', 'description': 'bad', 'completed': False})\nassert r.status_code == 422, f'Expected 422, got {r.status_code}'\nassert r.status_code != 200\nassert r.status_code != 429\n\nbody = r.json()\nassert 'detail' in body\n\nBase.metadata.drop_all(bind=engine)\n\ndef test_malformed_request_returns_4xx_not_throttle():\n    pass\n"
+      },
+      {
+        "name": "test_mixed_endpoints_sixty_requests_all_succeed",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database contains pre-loaded task rows (ids 1-20)"
+        ],
+        "actions": [
+          "Send 60 requests alternating between GET /tasks/ and GET /tasks/1",
+          "Collect all response status codes"
+        ],
+        "expected": [
+          "All 60 responses return HTTP 200",
+          "No response is throttled (no 429)"
+        ],
+        "trace": [
+          "R-TASK-039: rate limit applies to single-client across endpoints",
+          "DT: decision table covers multiple endpoint combinations within the 60/min window"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r039_dt.db')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nREQUIRED_LIMIT = 60\nstatuses = []\nfor i in range(REQUIRED_LIMIT):\n    if i % 2 == 0:\n        r = client.get('/tasks/')\n    else:\n        r = client.get('/tasks/1')\n    statuses.append(r.status_code)\n\nassert len(statuses) == 60\nfor i, code in enumerate(statuses):\n    assert code == 200, f'Request {i+1} returned {code}, expected 200'\n\nBase.metadata.drop_all(bind=engine)\n\ndef test_mixed_endpoints_sixty_requests_all_succeed():\n    pass\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-039",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5647,
+    "output_tokens": 2650,
+    "latency_ms": 34271,
+    "wall_ms": 34271,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-039\",\n  \"reasoning\": \"R-TASK-039 states the system shall NOT throttle single-client request rates below 60/min. This means 60 sequential requests within one minute must all return HTTP 2xx. Tests cover: (1) positive \u2013 exactly 60 requests all succeed (EP, exact-constant mutation kill); (2) boundary \u2013 59 requests succeed (BVA, off-by-one below threshold); (3) boundary \u2013 61 requests succeed (BVA, off-by-one above threshold); (4) negative \u2013 a single malformed request returns 4xx, confirming the error pathway is distinct from rate-limiting (NEG). All tests use in-process FastAPI TestClient, pre-loaded DB rows, and exact status-code assertions to kill comparison-operator and constant mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_sixty_requests_all_succeed_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database contains pre-loaded task rows (ids 1-20)\",\n        \"No external rate-limiting middleware is active\"\n      ],\n      \"actions\": [\n        \"Send exactly 60 GET /tasks/ requests sequentially using TestClient\",\n        \"Collect all response status codes\"\n      ],\n      \"expected\": [\n        \"All 60 responses return HTTP 200\",\n        \"No response returns HTTP 429 or any 4xx/5xx\"\n      ],\n      \"trace\": [\n        \"R-TASK-039: system shall not throttle below 60/min\",\n        \"EP: 60 is the exact stated threshold; all must succeed\"\n      ],\n      \"executable\": \"import os, sys\\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r039_pos.db')\\nfrom app.main import app\\nfrom app.database import engine, Base\\nfrom fastapi.testclient import TestClient\\n\\nBase.metadata.drop_all(bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\nREQUIRED_LIMIT = 60\\nstatuses = []\\nfor _ in range(REQUIRED_LIMIT):\\n    r = client.get('/tasks/')\\n    statuses.append(r.status_code)\\n\\nassert len(statuses) == 60\\nfor i, code in enumerate(statuses):\\n    assert code == 200, f'Request {i+1} returned {code}, expected 200'\\n\\nBase.metadata.drop_all(bind=engine)\\n\\ndef test_sixty_requests_all_succeed_positive():\\n    pass\\n\"\n    },\n    {\n      \"name\": \"test_fifty_nine_requests_all_succeed_boundary_below\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database contains pre-loaded task rows (ids 1-20)\"\n      ],\n      \"actions\": [\n        \"Send exactly 59 GET /tasks/ requests sequentially using TestClient\",\n        \"Collect all response status codes\"\n      ],\n      \"expected\": [\n        \"All 59 responses return HTTP 200\",\n        \"No throttling occurs at threshold-1\"\n      ],\n      \"trace\": [\n        \"R-TASK-039: threshold is 60/min; 59 is threshold-1\",\n        \"BVA: off-by-one below boundary; catches n->n+1 constant mutation\"\n      ],\n      \"executable\": \"import os\\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r039_bva59.db')\\nfrom app.main import app\\nfrom app.database import engine, Base\\nfrom fastapi.testclient import TestClient\\n\\nBase.metadata.drop_all(bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\nBELOW_LIMIT = 59\\nstatuses = []\\nfor _ in range(BELOW_LIMIT):\\n    r = client.get('/tasks/')\\n    statuses.append(r.status_code)\\n\\nassert len(statuses) == 59\\nfor i, code in enumerate(statuses):\\n    assert code == 200, f'Request {i+1} returned {code}, expected 200'\\n\\nBase.metadata.drop_all(bind=engine)\\n\\ndef test_fifty_nine_requests_all_succeed_boundary_below():\\n    pass\\n\"\n    },\n    {\n      \"name\": \"test_sixty_one_requests_all_succeed_boundary_above\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database contains pre-loaded task rows (ids 1-20)\"\n      ],\n      \"actions\": [\n        \"Send exactly 61 GET /tasks/ requests sequentially using TestClient\",\n        \"Collect all"
+  }
+}

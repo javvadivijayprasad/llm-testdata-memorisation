@@ -1,0 +1,186 @@
+{
+  "req": {
+    "id": "R-FLASKR-008",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "authn",
+    "title": "Login sets session on success",
+    "statement": "The system shall set session['user_id'] and redirect to / when POST /auth/login receives a matching username and password.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "login sets session on success"
+    ],
+    "expected_outcomes": [
+      "302 redirect to /",
+      "session cookie set"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /auth/login"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-008",
+    "reasoning": "R-FLASKR-008 requires that POST /auth/login with valid credentials returns HTTP 302 redirecting to '/' and sets session['user_id']. Tests cover: (1) positive EP \u2014 valid username+password yields 302 to '/' with session cookie set; (2) negative NEG \u2014 wrong password yields no redirect and no session; (3) negative NEG \u2014 unknown username yields no redirect; (4) BVA/STC \u2014 session is cleared before setting user_id (state transition: logged-in user logs in again gets fresh session); (5) DT \u2014 all four combinations of username/password correctness. Assertions use exact status codes (302 not >=300), exact Location header value ('/' not any string), and session inspection via app.test_request_context to confirm user_id is set to the exact integer id from the preloaded fixture.",
+    "tests": [
+      {
+        "name": "test_login_valid_credentials_redirects_to_index_and_sets_session",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database initialised with preloaded rows",
+          "User 'Rahul' (id=1) exists with password 'stone'"
+        ],
+        "actions": [
+          "POST /auth/login with username='Rahul' and password='stone'"
+        ],
+        "expected": [
+          "HTTP 302 response",
+          "Location header equals '/'",
+          "Session cookie is present in response",
+          "Subsequent request with same client shows g.user loaded (session['user_id']==1)"
+        ],
+        "trace": [
+          "R-FLASKR-008: session['user_id'] set and redirect to / on success"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\nwith client:\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302, f'Expected 302, got {r.status_code}'\n    assert r.headers['Location'] == '/', f'Expected Location=\"/\", got {r.headers[\"Location\"]}'\n    with client.session_transaction() as sess:\n        assert 'user_id' in sess, 'session[\"user_id\"] not set after successful login'\n        assert sess['user_id'] == 1, f'Expected user_id=1, got {sess[\"user_id\"]}'\nos.unlink(path)"
+      },
+      {
+        "name": "test_login_wrong_password_no_redirect_no_session",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database initialised with preloaded rows",
+          "User 'Rahul' (id=1) exists with password 'stone'"
+        ],
+        "actions": [
+          "POST /auth/login with username='Rahul' and password='wrongpassword'"
+        ],
+        "expected": [
+          "HTTP 200 response (re-renders login form)",
+          "No redirect (not 302)",
+          "session['user_id'] is NOT set",
+          "Response body contains 'Incorrect password.'"
+        ],
+        "trace": [
+          "R-FLASKR-008: error pathway \u2014 wrong password must not set session or redirect"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\nwith client:\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'wrongpassword'})\n    assert r.status_code == 200, f'Expected 200, got {r.status_code}'\n    assert b'Incorrect password.' in r.data, 'Expected error message not found'\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess, 'session[\"user_id\"] must NOT be set on failed login'\nos.unlink(path)"
+      },
+      {
+        "name": "test_login_unknown_username_no_redirect_no_session",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database initialised with preloaded rows",
+          "Username 'NoSuchUser' does not exist in the database"
+        ],
+        "actions": [
+          "POST /auth/login with username='NoSuchUser' and password='stone'"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body contains 'Incorrect username.'",
+          "session['user_id'] is NOT set"
+        ],
+        "trace": [
+          "R-FLASKR-008: error pathway \u2014 unknown username must not set session or redirect"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\nwith client:\n    r = client.post('/auth/login', data={'username': 'NoSuchUser', 'password': 'stone'})\n    assert r.status_code == 200, f'Expected 200, got {r.status_code}'\n    assert b'Incorrect username.' in r.data, 'Expected \"Incorrect username.\" in response'\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess, 'session[\"user_id\"] must NOT be set for unknown user'\nos.unlink(path)"
+      },
+      {
+        "name": "test_login_clears_previous_session_and_sets_new_user_id",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database initialised with preloaded rows",
+          "Client already has a session with user_id=2 (Anjali)",
+          "User 'Rahul' (id=1) exists with password 'stone'"
+        ],
+        "actions": [
+          "Manually set session['user_id']=2 to simulate prior login",
+          "POST /auth/login with username='Rahul' and password='stone'"
+        ],
+        "expected": [
+          "HTTP 302 redirect to '/'",
+          "session['user_id'] == 1 (not 2 \u2014 old session cleared)",
+          "Exactly one key 'user_id' in session (session.clear() was called)"
+        ],
+        "trace": [
+          "R-FLASKR-008: session.clear() then session['user_id']=user['id'] \u2014 state transition from logged-in-as-other to logged-in-as-new"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\nwith client:\n    with client.session_transaction() as sess:\n        sess['user_id'] = 2\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302, f'Expected 302, got {r.status_code}'\n    assert r.headers['Location'] == '/', f'Expected Location=\"/\", got {r.headers[\"Location\"]}'\n    with client.session_transaction() as sess:\n        assert sess.get('user_id') == 1, f'Expected user_id=1 after re-login, got {sess.get(\"user_id\")}'\n        assert sess.get('user_id') != 2, 'Old session user_id=2 must be cleared'\nos.unlink(path)"
+      },
+      {
+        "name": "test_login_all_preloaded_users_valid_credentials",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database initialised with preloaded rows",
+          "All 5 users exist with known plain-text passwords"
+        ],
+        "actions": [
+          "POST /auth/login for each of the 5 preloaded users with correct credentials"
+        ],
+        "expected": [
+          "Each login returns HTTP 302",
+          "Each login sets Location to '/'",
+          "Each login sets session['user_id'] to the correct integer id"
+        ],
+        "trace": [
+          "R-FLASKR-008: decision table \u2014 all valid (username, password) pairs must succeed"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nusers = [(1,'Rahul','stone'),(2,'Anjali','cloud'),(3,'Ishaan','stone'),(4,'Diya','cloud'),(5,'James','river')]\nfor uid, uname, pwd in users:\n    client = app.test_client()\n    with client:\n        r = client.post('/auth/login', data={'username': uname, 'password': pwd})\n        assert r.status_code == 302, f'User {uname}: expected 302, got {r.status_code}'\n        assert r.headers['Location'] == '/', f'User {uname}: expected Location=\"/\", got {r.headers[\"Location\"]}'\n        with client.session_transaction() as sess:\n            assert sess.get('user_id') == uid, f'User {uname}: expected user_id={uid}, got {sess.get(\"user_id\")}'\nos.unlink(path)"
+      },
+      {
+        "name": "test_login_correct_username_wrong_password_boundary_check",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database initialised with preloaded rows",
+          "User 'James' (id=5) exists with password 'river'"
+        ],
+        "actions": [
+          "POST /auth/login with username='James' and password='river' (correct) \u2014 expect 302",
+          "POST /auth/login with username='James' and password='River' (wrong case) \u2014 expect 200 with error"
+        ],
+        "expected": [
+          "Correct password: 302 redirect to '/', session['user_id']==5",
+          "Wrong-case password: 200, 'Incorrect password.' in body, no session user_id"
+        ],
+        "trace": [
+          "R-FLASKR-008: BVA on password matching \u2014 one character difference (case) must not authenticate; catches == vs is / hash comparison mutations"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\nwith client:\n    r = client.post('/auth/login', data={'username': 'James', 'password': 'river'})\n    assert r.status_code == 302, f'Expected 302, got {r.status_code}'\n    assert r.headers['Location'] == '/'\n    with client.session_transaction() as sess:\n        assert sess.get('user_id') == 5\n\nclient2 = app.test_client()\nwith client2:\n    r2 = client2.post('/auth/login', data={'username': 'James', 'password': 'River'})\n    assert r2.status_code == 200, f'Expected 200 for wrong-case password, got {r2.status_code}'\n    assert b'Incorrect password.' in r2.data\n    with client2.session_transaction() as sess2:\n        assert 'user_id' not in sess2\nos.unlink(path)"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-008",
+  "domain": "blogging",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6339,
+    "output_tokens": 3367,
+    "latency_ms": 43389,
+    "wall_ms": 43389,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-008\",\n  \"reasoning\": \"R-FLASKR-008 requires that POST /auth/login with valid credentials returns HTTP 302 redirecting to '/' and sets session['user_id']. Tests cover: (1) positive EP \u2014 valid username+password yields 302 to '/' with session cookie set; (2) negative NEG \u2014 wrong password yields no redirect and no session; (3) negative NEG \u2014 unknown username yields no redirect; (4) BVA/STC \u2014 session is cleared before setting user_id (state transition: logged-in user logs in again gets fresh session); (5) DT \u2014 all four combinations of username/password correctness. Assertions use exact status codes (302 not >=300), exact Location header value ('/' not any string), and session inspection via app.test_request_context to confirm user_id is set to the exact integer id from the preloaded fixture.\",\n  \"tests\": [\n    {\n      \"name\": \"test_login_valid_credentials_redirects_to_index_and_sets_session\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database initialised with preloaded rows\",\n        \"User 'Rahul' (id=1) exists with password 'stone'\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='Rahul' and password='stone'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 response\",\n        \"Location header equals '/'\",\n        \"Session cookie is present in response\",\n        \"Subsequent request with same client shows g.user loaded (session['user_id']==1)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-008: session['user_id'] set and redirect to / on success\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\nwith client:\\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302, f'Expected 302, got {r.status_code}'\\n    assert r.headers['Location'] == '/', f'Expected Location=\\\"/\\\", got {r.headers[\\\"Location\\\"]}'\\n    with client.session_transaction() as sess:\\n        assert 'user_id' in sess, 'session[\\\"user_id\\\"] not set after successful login'\\n        assert sess['user_id'] == 1, f'Expected user_id=1, got {sess[\\\"user_id\\\"]}'\\nos.unlink(path)\"\n    },\n    {\n      \"name\": \"test_login_wrong_password_no_redirect_no_session\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database initialised with preloaded rows\",\n        \"User 'Rahul' (id=1) exists with password 'stone'\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='Rahul' and password='wrongpassword'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response (re-renders login form)\",\n        \"No redirect (not 302)\",\n        \"session['user_id'] is NOT set\",\n        \"Response body contains 'Incorrect password.'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-008: error pathway \u2014 wrong password must not set session or redirect\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\nwith client:\\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'wrongpassword'})\\n    assert r.status_code == 200, f'Expected 200, got {r.status_code}'\\n    assert b'Incorrect password.' in r.data, 'Expected error message not found'\\n    with client.session_transaction() as sess:\\n        assert 'user_id' not in sess, 'session[\\\"user_id\\\"] must NOT be set on failed login'\\nos.unlink(path)\"\n    },\n    {\n      \"name\": \"test_login_unknown_username_no_redirect_no_session\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database initialised with preloaded rows\",\n        \"Username 'NoSuchUser' d"
+  }
+}

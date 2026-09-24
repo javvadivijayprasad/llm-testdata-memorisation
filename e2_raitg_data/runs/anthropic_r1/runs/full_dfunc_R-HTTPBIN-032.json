@@ -1,0 +1,194 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-032",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Delete cookie via query string",
+    "statement": "The system shall expire cookies named in the query string of GET /cookies/delete and redirect to /cookies.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete cookie via query string"
+    ],
+    "expected_outcomes": [
+      "Set-Cookie with past expiration",
+      "302 redirect"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /cookies/delete?<name>"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-032",
+    "reasoning": "The delete_cookies handler at GET /cookies/delete reads cookie names from the query string, calls r.delete_cookie(key=key) for each, and returns a 302 redirect to /cookies. Tests must verify: (1) positive path \u2013 named cookie is expired via Set-Cookie with past expiration and a 302 redirect to /cookies is issued; (2) negative path \u2013 no query params yields a 302 with no Set-Cookie headers; (3) boundary \u2013 deleting multiple cookies at once; (4) state transition \u2013 cookie exists before delete, is absent after following redirect; (5) decision table \u2013 deleting a cookie that was never set still returns 302 with expired Set-Cookie header. Mutation resilience is achieved by asserting exact status codes (302 not 301/303), exact Location header value (/cookies), exact Set-Cookie expiration semantics (expires in the past), and exact cookie absence after deletion.",
+    "tests": [
+      {
+        "name": "test_delete_single_cookie_returns_302_and_expired_set_cookie",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "A cookie named 'session' exists in the request"
+        ],
+        "actions": [
+          "Set cookie 'session=abc' via /cookies/set/session/abc (follow redirect)",
+          "GET /cookies/delete?session= without following redirect"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly /cookies",
+          "Set-Cookie header for 'session' contains an expiration date in the past (expires=Thu, 01 Jan 1970)"
+        ],
+        "trace": [
+          "R-HTTPBIN-032: system shall expire cookies named in query string",
+          "R-HTTPBIN-032: system shall redirect to /cookies"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_delete_single_cookie_returns_302_and_expired_set_cookie():\n    # First set the cookie\n    r_set = client.get('/cookies/set/session/abc', follow_redirects=True)\n    assert r_set.status_code == 200\n\n    # Now delete it without following redirect\n    r = client.get('/cookies/delete?session=', follow_redirects=False)\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/cookies'\n\n    # Verify Set-Cookie header expires the cookie\n    set_cookie_headers = r.headers.getlist('Set-Cookie')\n    assert len(set_cookie_headers) >= 1\n    matched = any('session' in h and ('1970' in h or 'expires' in h.lower()) for h in set_cookie_headers)\n    assert matched, f'Expected expired Set-Cookie for session, got: {set_cookie_headers}'\n\ntest_delete_single_cookie_returns_302_and_expired_set_cookie()"
+      },
+      {
+        "name": "test_delete_cookie_no_query_params_returns_302_no_set_cookie",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "No query parameters are provided"
+        ],
+        "actions": [
+          "GET /cookies/delete with no query string, without following redirect"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly /cookies",
+          "No Set-Cookie headers are present in the response"
+        ],
+        "trace": [
+          "R-HTTPBIN-032: with no cookies named, no Set-Cookie headers should be emitted",
+          "R-HTTPBIN-032: redirect to /cookies still occurs"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_delete_cookie_no_query_params_returns_302_no_set_cookie():\n    r = client.get('/cookies/delete', follow_redirects=False)\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/cookies'\n    set_cookie_headers = r.headers.getlist('Set-Cookie')\n    assert set_cookie_headers == [], f'Expected no Set-Cookie headers, got: {set_cookie_headers}'\n\ntest_delete_cookie_no_query_params_returns_302_no_set_cookie()"
+      },
+      {
+        "name": "test_delete_multiple_cookies_all_expired_in_single_response",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Multiple cookies (alpha, beta, gamma) are set"
+        ],
+        "actions": [
+          "Set cookies alpha=1, beta=2, gamma=3 via /cookies/set",
+          "GET /cookies/delete?alpha=&beta=&gamma= without following redirect"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly /cookies",
+          "Three Set-Cookie headers present, one per cookie, each with past expiration",
+          "After following redirect to /cookies, none of the three cookies appear in JSON"
+        ],
+        "trace": [
+          "R-HTTPBIN-032: all cookies named in query string must be expired",
+          "BVA: boundary at N=3 cookies deleted simultaneously"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_delete_multiple_cookies_all_expired_in_single_response():\n    client.get('/cookies/set?alpha=1&beta=2&gamma=3', follow_redirects=True)\n\n    r = client.get('/cookies/delete?alpha=&beta=&gamma=', follow_redirects=False)\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/cookies'\n\n    set_cookie_headers = r.headers.getlist('Set-Cookie')\n    assert len(set_cookie_headers) == 3, f'Expected 3 Set-Cookie headers, got {len(set_cookie_headers)}'\n\n    names_expired = [h.split('=')[0].strip() for h in set_cookie_headers]\n    assert 'alpha' in names_expired\n    assert 'beta' in names_expired\n    assert 'gamma' in names_expired\n\n    r2 = client.get('/cookies', follow_redirects=False)\n    assert r2.status_code == 200\n    import json\n    data = json.loads(r2.data)\n    assert 'alpha' not in data.get('cookies', {})\n    assert 'beta' not in data.get('cookies', {})\n    assert 'gamma' not in data.get('cookies', {})\n\ntest_delete_multiple_cookies_all_expired_in_single_response()"
+      },
+      {
+        "name": "test_delete_nonexistent_cookie_still_returns_302_with_expired_header",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Cookie 'ghost' has never been set"
+        ],
+        "actions": [
+          "GET /cookies/delete?ghost= without following redirect"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly /cookies",
+          "Set-Cookie header for 'ghost' is present with past expiration (delete_cookie is called regardless)"
+        ],
+        "trace": [
+          "R-HTTPBIN-032: delete_cookie is called for all query-string names regardless of whether cookie exists",
+          "DT: decision table row where cookie-exists=false, name-in-query=true"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_delete_nonexistent_cookie_still_returns_302_with_expired_header():\n    r = client.get('/cookies/delete?ghost=', follow_redirects=False)\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/cookies'\n\n    set_cookie_headers = r.headers.getlist('Set-Cookie')\n    assert len(set_cookie_headers) >= 1\n    matched = any('ghost' in h for h in set_cookie_headers)\n    assert matched, f'Expected Set-Cookie for ghost, got: {set_cookie_headers}'\n\ntest_delete_nonexistent_cookie_still_returns_302_with_expired_header()"
+      },
+      {
+        "name": "test_delete_cookie_state_transition_cookie_absent_after_delete",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Cookie 'token' is set to value 'xyz'"
+        ],
+        "actions": [
+          "Set cookie token=xyz via /cookies/set/token/xyz following redirect",
+          "Verify cookie appears in /cookies response",
+          "GET /cookies/delete?token= following redirect to /cookies",
+          "Verify cookie is absent in /cookies response"
+        ],
+        "expected": [
+          "Before delete: /cookies JSON contains {\"cookies\": {\"token\": \"xyz\"}}",
+          "After delete: /cookies JSON contains {\"cookies\": {}} (token absent)",
+          "Delete response status code is exactly 200 after following redirect"
+        ],
+        "trace": [
+          "R-HTTPBIN-032: state transition from cookie-present to cookie-absent",
+          "STC: covers set->delete->verify-absent state path"
+        ],
+        "executable": "from httpbin.core import app\nimport json\nclient = app.test_client()\n\ndef test_delete_cookie_state_transition_cookie_absent_after_delete():\n    with client.session_transaction() as sess:\n        pass\n\n    r_set = client.get('/cookies/set/token/xyz', follow_redirects=True)\n    assert r_set.status_code == 200\n    data_before = json.loads(r_set.data)\n    assert data_before.get('cookies', {}).get('token') == 'xyz'\n\n    r_del = client.get('/cookies/delete?token=', follow_redirects=True)\n    assert r_del.status_code == 200\n    data_after = json.loads(r_del.data)\n    assert 'token' not in data_after.get('cookies', {}), \\\n        f'token should be absent after delete, got: {data_after}'\n\ntest_delete_cookie_state_transition_cookie_absent_after_delete()"
+      },
+      {
+        "name": "test_delete_cookie_redirect_location_is_exactly_cookies_not_other_path",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "GET /cookies/delete?x=1 without following redirect",
+          "Inspect Location header value character by character"
+        ],
+        "expected": [
+          "Location header value is exactly the string '/cookies'",
+          "Location header is NOT '/cookies/delete', NOT '/cookie', NOT '/cookies/'",
+          "Status code is exactly 302, not 301, not 303, not 200"
+        ],
+        "trace": [
+          "R-HTTPBIN-032: redirect target must be /cookies exactly",
+          "BVA: boundary between correct path /cookies and near-miss paths"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_delete_cookie_redirect_location_is_exactly_cookies_not_other_path():\n    r = client.get('/cookies/delete?x=1', follow_redirects=False)\n    assert r.status_code == 302, f'Expected 302, got {r.status_code}'\n    location = r.headers.get('Location', '')\n    assert location == '/cookies', f'Expected /cookies, got \"{location}\"'\n    assert location != '/cookies/', 'Location must not have trailing slash'\n    assert location != '/cookies/delete', 'Location must not be /cookies/delete'\n    assert location != '/cookie', 'Location must not be /cookie'\n\ntest_delete_cookie_redirect_location_is_exactly_cookies_not_other_path()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-032",
+  "domain": "http_utilities",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9475,
+    "output_tokens": 3229,
+    "latency_ms": 43015,
+    "wall_ms": 43015,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-032\",\n  \"reasoning\": \"The delete_cookies handler at GET /cookies/delete reads cookie names from the query string, calls r.delete_cookie(key=key) for each, and returns a 302 redirect to /cookies. Tests must verify: (1) positive path \u2013 named cookie is expired via Set-Cookie with past expiration and a 302 redirect to /cookies is issued; (2) negative path \u2013 no query params yields a 302 with no Set-Cookie headers; (3) boundary \u2013 deleting multiple cookies at once; (4) state transition \u2013 cookie exists before delete, is absent after following redirect; (5) decision table \u2013 deleting a cookie that was never set still returns 302 with expired Set-Cookie header. Mutation resilience is achieved by asserting exact status codes (302 not 301/303), exact Location header value (/cookies), exact Set-Cookie expiration semantics (expires in the past), and exact cookie absence after deletion.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_single_cookie_returns_302_and_expired_set_cookie\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"A cookie named 'session' exists in the request\"\n      ],\n      \"actions\": [\n        \"Set cookie 'session=abc' via /cookies/set/session/abc (follow redirect)\",\n        \"GET /cookies/delete?session= without following redirect\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header is exactly /cookies\",\n        \"Set-Cookie header for 'session' contains an expiration date in the past (expires=Thu, 01 Jan 1970)\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-032: system shall expire cookies named in query string\",\n        \"R-HTTPBIN-032: system shall redirect to /cookies\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_delete_single_cookie_returns_302_and_expired_set_cookie():\\n    # First set the cookie\\n    r_set = client.get('/cookies/set/session/abc', follow_redirects=True)\\n    assert r_set.status_code == 200\\n\\n    # Now delete it without following redirect\\n    r = client.get('/cookies/delete?session=', follow_redirects=False)\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/cookies'\\n\\n    # Verify Set-Cookie header expires the cookie\\n    set_cookie_headers = r.headers.getlist('Set-Cookie')\\n    assert len(set_cookie_headers) >= 1\\n    matched = any('session' in h and ('1970' in h or 'expires' in h.lower()) for h in set_cookie_headers)\\n    assert matched, f'Expected expired Set-Cookie for session, got: {set_cookie_headers}'\\n\\ntest_delete_single_cookie_returns_302_and_expired_set_cookie()\"\n    },\n    {\n      \"name\": \"test_delete_cookie_no_query_params_returns_302_no_set_cookie\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"No query parameters are provided\"\n      ],\n      \"actions\": [\n        \"GET /cookies/delete with no query string, without following redirect\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header is exactly /cookies\",\n        \"No Set-Cookie headers are present in the response\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-032: with no cookies named, no Set-Cookie headers should be emitted\",\n        \"R-HTTPBIN-032: redirect to /cookies still occurs\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_delete_cookie_no_query_params_returns_302_no_set_cookie():\\n    r = client.get('/cookies/delete', follow_redirects=False)\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/cookies'\\n    set_cookie_headers = r.headers.getlist('Set-Cookie')\\n    assert set_cookie_headers == [], f'Expected no Set-Cookie headers, got: {set_cookie_headers}'\\n\\ntest_delete_cookie_no_query_params_returns_302_no_set_cookie()\"\n    },\n    {\n      \"name\": \"test_delete_multip"
+  }
+}

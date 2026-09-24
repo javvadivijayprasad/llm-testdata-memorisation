@@ -1,0 +1,306 @@
+{
+  "req": {
+    "id": "R-TASK-004",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "List all tasks",
+    "statement": "The system shall respond to GET /tasks/ with a JSON array of all tasks, honouring optional skip and limit query parameters.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "list all tasks"
+    ],
+    "expected_outcomes": [
+      "HTTP 200",
+      "JSON array"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-004",
+    "reasoning": "The requirement covers GET /tasks/ returning a JSON array with optional skip/limit query parameters. I designed tests covering: (1) positive EP \u2014 empty DB returns empty array with HTTP 200; (2) positive EP \u2014 tasks present returns correct array with all schema fields; (3) BVA \u2014 skip=0 boundary (minimum allowed); (4) BVA \u2014 limit=1 boundary (minimum allowed ge=1); (5) BVA \u2014 limit=1000 boundary (maximum allowed le=1000); (6) NEG \u2014 limit=0 violates ge=1 constraint returns 422; (7) NEG \u2014 limit=1001 violates le=1000 returns 422; (8) NEG \u2014 skip=-1 violates ge=0 returns 422; (9) DT \u2014 skip and limit together paginate correctly; (10) EP \u2014 completed filter returns only matching tasks. Each test uses exact-value assertions to kill constant-mutation, comparison-flip, and off-by-one mutants.",
+    "tests": [
+      {
+        "name": "test_list_tasks_empty_db_returns_200_and_empty_array",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty (no tasks seeded)"
+        ],
+        "actions": [
+          "GET /tasks/ with no query parameters"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is JSON array []"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 nominal path, empty state"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_empty_db_returns_200_and_empty_array():\n    r = client.get(\"/tasks/\")\n    assert r.status_code == 200\n    body = r.json()\n    assert isinstance(body, list)\n    assert len(body) == 0\n    assert body == []\n\ntest_list_tasks_empty_db_returns_200_and_empty_array()"
+      },
+      {
+        "name": "test_list_tasks_with_tasks_returns_correct_schema_fields",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty; two tasks are created via POST"
+        ],
+        "actions": [
+          "POST /tasks/ twice to seed data",
+          "GET /tasks/"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Array length == 2",
+          "Each item has id, title, description, completed, created_at fields",
+          "completed field is boolean False by default"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 nominal path with data present, schema field validation"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_with_tasks_returns_correct_schema_fields():\n    client.post(\"/tasks/\", json={\"title\": \"Task A\", \"description\": \"desc A\", \"completed\": False})\n    client.post(\"/tasks/\", json={\"title\": \"Task B\", \"description\": \"desc B\", \"completed\": True})\n    r = client.get(\"/tasks/\")\n    assert r.status_code == 200\n    body = r.json()\n    assert isinstance(body, list)\n    assert len(body) == 2\n    titles = {t[\"title\"] for t in body}\n    assert titles == {\"Task A\", \"Task B\"}\n    for task in body:\n        assert \"id\" in task\n        assert \"title\" in task\n        assert \"completed\" in task\n        assert \"created_at\" in task\n    completed_vals = {t[\"title\"]: t[\"completed\"] for t in body}\n    assert completed_vals[\"Task A\"] == False\n    assert completed_vals[\"Task B\"] == True\n\ntest_list_tasks_with_tasks_returns_correct_schema_fields()"
+      },
+      {
+        "name": "test_list_tasks_skip_zero_boundary_returns_all",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty; three tasks seeded"
+        ],
+        "actions": [
+          "GET /tasks/?skip=0"
+        ],
+        "expected": [
+          "HTTP 200",
+          "All 3 tasks returned (skip=0 skips nothing)"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 BVA on skip parameter minimum boundary (ge=0)"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_skip_zero_boundary_returns_all():\n    for i in range(3):\n        client.post(\"/tasks/\", json={\"title\": f\"Task {i}\"})\n    r = client.get(\"/tasks/?skip=0\")\n    assert r.status_code == 200\n    body = r.json()\n    assert len(body) == 3\n\ntest_list_tasks_skip_zero_boundary_returns_all()"
+      },
+      {
+        "name": "test_list_tasks_limit_one_boundary_returns_exactly_one",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty; three tasks seeded"
+        ],
+        "actions": [
+          "GET /tasks/?limit=1"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Exactly 1 task returned"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 BVA on limit parameter minimum boundary (ge=1); catches limit constant mutation"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_limit_one_boundary_returns_exactly_one():\n    for i in range(3):\n        client.post(\"/tasks/\", json={\"title\": f\"Task {i}\"})\n    r = client.get(\"/tasks/?limit=1\")\n    assert r.status_code == 200\n    body = r.json()\n    assert len(body) == 1\n\ntest_list_tasks_limit_one_boundary_returns_exactly_one()"
+      },
+      {
+        "name": "test_list_tasks_limit_zero_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty"
+        ],
+        "actions": [
+          "GET /tasks/?limit=0 (violates ge=1 constraint)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 NEG path: limit below minimum boundary (ge=1); catches ge vs gt mutation"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_limit_zero_returns_422():\n    r = client.get(\"/tasks/?limit=0\")\n    assert r.status_code == 422\n\ntest_list_tasks_limit_zero_returns_422()"
+      },
+      {
+        "name": "test_list_tasks_limit_1001_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty"
+        ],
+        "actions": [
+          "GET /tasks/?limit=1001 (violates le=1000 constraint)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 NEG path: limit above maximum boundary (le=1000); catches le vs lt mutation and constant 1000->1001 mutation"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_limit_1001_returns_422():\n    r = client.get(\"/tasks/?limit=1001\")\n    assert r.status_code == 422\n\ntest_list_tasks_limit_1001_returns_422()"
+      },
+      {
+        "name": "test_list_tasks_limit_1000_boundary_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty"
+        ],
+        "actions": [
+          "GET /tasks/?limit=1000 (exactly at maximum boundary)"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Empty array returned (no tasks in DB)"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 BVA on limit maximum boundary (le=1000); catches le vs lt and constant 1000->999 mutations"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_limit_1000_boundary_accepted():\n    r = client.get(\"/tasks/?limit=1000\")\n    assert r.status_code == 200\n    body = r.json()\n    assert isinstance(body, list)\n    assert body == []\n\ntest_list_tasks_limit_1000_boundary_accepted()"
+      },
+      {
+        "name": "test_list_tasks_skip_negative_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty"
+        ],
+        "actions": [
+          "GET /tasks/?skip=-1 (violates ge=0 constraint)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 NEG path: skip below minimum boundary (ge=0); catches ge vs gt mutation"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_skip_negative_returns_422():\n    r = client.get(\"/tasks/?skip=-1\")\n    assert r.status_code == 422\n\ntest_list_tasks_skip_negative_returns_422()"
+      },
+      {
+        "name": "test_list_tasks_skip_and_limit_paginate_correctly",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty; 5 tasks seeded in order"
+        ],
+        "actions": [
+          "GET /tasks/?skip=2&limit=2"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Exactly 2 tasks returned",
+          "Tasks are the 3rd and 4th created (index 2 and 3)"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 DT: both skip and limit applied together; catches offset/limit swap mutations"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_skip_and_limit_paginate_correctly():\n    ids = []\n    for i in range(5):\n        resp = client.post(\"/tasks/\", json={\"title\": f\"Task {i}\"})\n        ids.append(resp.json()[\"id\"])\n    r = client.get(\"/tasks/?skip=2&limit=2\")\n    assert r.status_code == 200\n    body = r.json()\n    assert len(body) == 2\n    returned_ids = [t[\"id\"] for t in body]\n    assert returned_ids == [ids[2], ids[3]]\n\ntest_list_tasks_skip_and_limit_paginate_correctly()"
+      },
+      {
+        "name": "test_list_tasks_completed_filter_true_returns_only_completed",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty; 2 completed and 2 incomplete tasks seeded"
+        ],
+        "actions": [
+          "GET /tasks/?completed=true"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Exactly 2 tasks returned",
+          "All returned tasks have completed == true"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 DT: completed filter boolean true branch; catches filter negation mutation"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_completed_filter_true_returns_only_completed():\n    client.post(\"/tasks/\", json={\"title\": \"Done 1\", \"completed\": True})\n    client.post(\"/tasks/\", json={\"title\": \"Done 2\", \"completed\": True})\n    client.post(\"/tasks/\", json={\"title\": \"Pending 1\", \"completed\": False})\n    client.post(\"/tasks/\", json={\"title\": \"Pending 2\", \"completed\": False})\n    r = client.get(\"/tasks/?completed=true\")\n    assert r.status_code == 200\n    body = r.json()\n    assert len(body) == 2\n    for task in body:\n        assert task[\"completed\"] == True\n\ntest_list_tasks_completed_filter_true_returns_only_completed()"
+      },
+      {
+        "name": "test_list_tasks_completed_filter_false_returns_only_incomplete",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty; 2 completed and 3 incomplete tasks seeded"
+        ],
+        "actions": [
+          "GET /tasks/?completed=false"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Exactly 3 tasks returned",
+          "All returned tasks have completed == false"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 DT: completed filter boolean false branch; catches and->or and == True mutation"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_completed_filter_false_returns_only_incomplete():\n    client.post(\"/tasks/\", json={\"title\": \"Done 1\", \"completed\": True})\n    client.post(\"/tasks/\", json={\"title\": \"Done 2\", \"completed\": True})\n    client.post(\"/tasks/\", json={\"title\": \"Pending 1\", \"completed\": False})\n    client.post(\"/tasks/\", json={\"title\": \"Pending 2\", \"completed\": False})\n    client.post(\"/tasks/\", json={\"title\": \"Pending 3\", \"completed\": False})\n    r = client.get(\"/tasks/?completed=false\")\n    assert r.status_code == 200\n    body = r.json()\n    assert len(body) == 3\n    for task in body:\n        assert task[\"completed\"] == False\n\ntest_list_tasks_completed_filter_false_returns_only_incomplete()"
+      },
+      {
+        "name": "test_list_tasks_skip_equals_total_returns_empty",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty; exactly 3 tasks seeded"
+        ],
+        "actions": [
+          "GET /tasks/?skip=3 (skip equals total count)"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Empty array returned"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 BVA: skip == total count boundary; catches off-by-one in offset logic"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_skip_equals_total_returns_empty():\n    for i in range(3):\n        client.post(\"/tasks/\", json={\"title\": f\"Task {i}\"})\n    r = client.get(\"/tasks/?skip=3\")\n    assert r.status_code == 200\n    body = r.json()\n    assert isinstance(body, list)\n    assert len(body) == 0\n    assert body == []\n\ntest_list_tasks_skip_equals_total_returns_empty()"
+      },
+      {
+        "name": "test_list_tasks_response_content_type_is_json",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty"
+        ],
+        "actions": [
+          "GET /tasks/"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Content-Type header contains application/json"
+        ],
+        "trace": [
+          "R-TASK-004 \u2014 EP: response must be JSON array; catches content-type mutation"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_list_tasks_response_content_type_is_json():\n    r = client.get(\"/tasks/\")\n    assert r.status_code == 200\n    assert \"application/json\" in r.headers[\"content-type\"]\n    body = r.json()\n    assert isinstance(body, list)\n\ntest_list_tasks_response_content_type_is_json()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-004",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4859,
+    "output_tokens": 5071,
+    "latency_ms": 56918,
+    "wall_ms": 56918,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-004\",\n  \"reasoning\": \"The requirement covers GET /tasks/ returning a JSON array with optional skip/limit query parameters. I designed tests covering: (1) positive EP \u2014 empty DB returns empty array with HTTP 200; (2) positive EP \u2014 tasks present returns correct array with all schema fields; (3) BVA \u2014 skip=0 boundary (minimum allowed); (4) BVA \u2014 limit=1 boundary (minimum allowed ge=1); (5) BVA \u2014 limit=1000 boundary (maximum allowed le=1000); (6) NEG \u2014 limit=0 violates ge=1 constraint returns 422; (7) NEG \u2014 limit=1001 violates le=1000 returns 422; (8) NEG \u2014 skip=-1 violates ge=0 returns 422; (9) DT \u2014 skip and limit together paginate correctly; (10) EP \u2014 completed filter returns only matching tasks. Each test uses exact-value assertions to kill constant-mutation, comparison-flip, and off-by-one mutants.\",\n  \"tests\": [\n    {\n      \"name\": \"test_list_tasks_empty_db_returns_200_and_empty_array\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\"Database is empty (no tasks seeded)\"],\n      \"actions\": [\"GET /tasks/ with no query parameters\"],\n      \"expected\": [\"HTTP 200\", \"Response body is JSON array []\"],\n      \"trace\": [\"R-TASK-004 \u2014 nominal path, empty state\"],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\nfrom app.database import engine\\nfrom app import models\\n\\nmodels.Base.metadata.drop_all(bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\ndef test_list_tasks_empty_db_returns_200_and_empty_array():\\n    r = client.get(\\\"/tasks/\\\")\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert isinstance(body, list)\\n    assert len(body) == 0\\n    assert body == []\\n\\ntest_list_tasks_empty_db_returns_200_and_empty_array()\"\n    },\n    {\n      \"name\": \"test_list_tasks_with_tasks_returns_correct_schema_fields\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\"Database is empty; two tasks are created via POST\"],\n      \"actions\": [\"POST /tasks/ twice to seed data\", \"GET /tasks/\"],\n      \"expected\": [\"HTTP 200\", \"Array length == 2\", \"Each item has id, title, description, completed, created_at fields\", \"completed field is boolean False by default\"],\n      \"trace\": [\"R-TASK-004 \u2014 nominal path with data present, schema field validation\"],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\nfrom app.database import engine\\nfrom app import models\\n\\nmodels.Base.metadata.drop_all(bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\ndef test_list_tasks_with_tasks_returns_correct_schema_fields():\\n    client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Task A\\\", \\\"description\\\": \\\"desc A\\\", \\\"completed\\\": False})\\n    client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Task B\\\", \\\"description\\\": \\\"desc B\\\", \\\"completed\\\": True})\\n    r = client.get(\\\"/tasks/\\\")\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert isinstance(body, list)\\n    assert len(body) == 2\\n    titles = {t[\\\"title\\\"] for t in body}\\n    assert titles == {\\\"Task A\\\", \\\"Task B\\\"}\\n    for task in body:\\n        assert \\\"id\\\" in task\\n        assert \\\"title\\\" in task\\n        assert \\\"completed\\\" in task\\n        assert \\\"created_at\\\" in task\\n    completed_vals = {t[\\\"title\\\"]: t[\\\"completed\\\"] for t in body}\\n    assert completed_vals[\\\"Task A\\\"] == False\\n    assert completed_vals[\\\"Task B\\\"] == True\\n\\ntest_list_tasks_with_tasks_returns_correct_schema_fields()\"\n    },\n    {\n      \"name\": \"test_list_tasks_skip_zero_boundary_returns_all\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\"Database is empty; three tasks seeded\"],\n      \"actions\": [\"GET /tasks/?skip=0\"],\n      \"expected\": [\"HTTP 200\", \"All 3 tasks returned (skip=0 skips nothing)\"],\n      \"trace\": [\"R-TASK-004 \u2014 BVA on skip parameter minimum boundary (ge=0)\"],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import T"
+  }
+}

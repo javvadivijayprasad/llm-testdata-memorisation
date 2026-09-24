@@ -1,0 +1,151 @@
+{
+  "req": {
+    "id": "R-TASK-028",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "idempotency",
+    "title": "DELETE is idempotent",
+    "statement": "The system shall respond with HTTP 404 for subsequent DELETE calls on the same task_id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete is idempotent"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "DELETE /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-028",
+    "reasoning": "R-TASK-028 requires DELETE /tasks/{task_id} to be idempotent: the first call on an existing task returns HTTP 204, and every subsequent call on the same task_id returns HTTP 404. The test suite covers: (1) positive \u2013 first DELETE succeeds with 204, second DELETE returns 404 (STC: created\u2192deleted\u2192not-found); (2) negative \u2013 DELETE on a never-existing task_id returns 404 immediately (NEG); (3) boundary \u2013 DELETE exactly three times on the same id, verifying 204 then 404 then 404 (BVA: boundary between 'exists' and 'gone' states). Each test uses an in-process SQLite database via FastAPI TestClient with dependency override to guarantee isolation.",
+    "tests": [
+      {
+        "name": "test_delete_idempotent_first_204_second_404",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database is empty",
+          "A task is created via POST /tasks/ to obtain a valid task_id"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task and capture task_id",
+          "DELETE /tasks/{task_id} \u2014 first call",
+          "DELETE /tasks/{task_id} \u2014 second call on same task_id"
+        ],
+        "expected": [
+          "First DELETE returns HTTP 204 with empty body",
+          "Second DELETE returns HTTP 404",
+          "Second DELETE response body contains detail message referencing the task_id"
+        ],
+        "trace": [
+          "R-TASK-028: DELETE is idempotent",
+          "State transition: EXISTING -> DELETED (204) -> NOT_FOUND (404)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_t = create_engine(\"sqlite:///./test_r028_pos.db\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_t)\nBase.metadata.create_all(bind=engine_t)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_idempotent_first_204_second_404():\n    r_create = client.post(\"/tasks/\", json={\"title\": \"idempotent task\", \"completed\": False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()[\"id\"]\n\n    r1 = client.delete(f\"/tasks/{task_id}\")\n    assert r1.status_code == 204\n    assert r1.content == b\"\"\n\n    r2 = client.delete(f\"/tasks/{task_id}\")\n    assert r2.status_code == 404\n    detail = r2.json()[\"detail\"]\n    assert str(task_id) in detail\n\napp.dependency_overrides.clear()\nimport os\ntry:\n    os.remove(\"./test_r028_pos.db\")\nexcept OSError:\n    pass\n"
+      },
+      {
+        "name": "test_delete_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty",
+          "No task with id 99999 exists"
+        ],
+        "actions": [
+          "DELETE /tasks/99999 without prior creation"
+        ],
+        "expected": [
+          "Response status code is exactly 404",
+          "Response body contains 'detail' key with message referencing task id 99999"
+        ],
+        "trace": [
+          "R-TASK-028: subsequent DELETE on non-existent task_id must return 404",
+          "NEG: task never existed, so first call is already a 404 path"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_t = create_engine(\"sqlite:///./test_r028_neg.db\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_t)\nBase.metadata.create_all(bind=engine_t)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_nonexistent_task_returns_404():\n    r = client.delete(\"/tasks/99999\")\n    assert r.status_code == 404\n    body = r.json()\n    assert \"detail\" in body\n    assert \"99999\" in body[\"detail\"]\n\napp.dependency_overrides.clear()\nimport os\ntry:\n    os.remove(\"./test_r028_neg.db\")\nexcept OSError:\n    pass\n"
+      },
+      {
+        "name": "test_delete_three_times_boundary_204_then_404_then_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "A task is created via POST /tasks/"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task",
+          "DELETE /tasks/{task_id} \u2014 call 1 (boundary: task exists)",
+          "DELETE /tasks/{task_id} \u2014 call 2 (boundary: task just deleted)",
+          "DELETE /tasks/{task_id} \u2014 call 3 (boundary: repeated absent)"
+        ],
+        "expected": [
+          "Call 1 returns exactly HTTP 204 with empty body",
+          "Call 2 returns exactly HTTP 404",
+          "Call 3 returns exactly HTTP 404",
+          "Both 404 responses contain 'detail' referencing the task_id"
+        ],
+        "trace": [
+          "R-TASK-028: idempotency holds across N>2 repeated DELETE calls",
+          "BVA: boundary between last-existing call (204) and first-absent call (404) and subsequent-absent call (404)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_t = create_engine(\"sqlite:///./test_r028_bva.db\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_t)\nBase.metadata.create_all(bind=engine_t)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_three_times_boundary_204_then_404_then_404():\n    r_create = client.post(\"/tasks/\", json={\"title\": \"bva task\", \"completed\": False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()[\"id\"]\n\n    r1 = client.delete(f\"/tasks/{task_id}\")\n    assert r1.status_code == 204\n    assert r1.content == b\"\"\n\n    r2 = client.delete(f\"/tasks/{task_id}\")\n    assert r2.status_code == 404\n    assert str(task_id) in r2.json()[\"detail\"]\n\n    r3 = client.delete(f\"/tasks/{task_id}\")\n    assert r3.status_code == 404\n    assert str(task_id) in r3.json()[\"detail\"]\n\napp.dependency_overrides.clear()\nimport os\ntry:\n    os.remove(\"./test_r028_bva.db\")\nexcept OSError:\n    pass\n"
+      },
+      {
+        "name": "test_delete_does_not_affect_other_tasks",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty",
+          "Two tasks are created: task_a and task_b"
+        ],
+        "actions": [
+          "POST /tasks/ twice to create task_a and task_b",
+          "DELETE /tasks/{task_a_id} \u2014 first call",
+          "DELETE /tasks/{task_a_id} \u2014 second call (idempotency check)",
+          "GET /tasks/{task_b_id} to verify task_b is unaffected"
+        ],
+        "expected": [
+          "First DELETE on task_a returns 204",
+          "Second DELETE on task_a returns 404",
+          "GET on task_b returns 200 with correct id and title"
+        ],
+        "trace": [
+          "R-TASK-028: idempotent DELETE must not corrupt sibling resources",
+          "DT: decision table row \u2014 delete task_a twice, task_b untouched"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_t = create_engine(\"sqlite:///./test_r028_dt.db\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_t)\nBase.metadata.create_all(bind=engine_t)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_does_not_affect_other_tasks():\n    ra = client.post(\"/tasks/\", json={\"title\": \"task alpha\", \"completed\": False})\n    assert ra.status_code == 201\n    id_a = ra.json()[\"id\"]\n\n    rb = client.post(\"/tasks/\", json={\"title\": \"task beta\", \"completed\": False})\n    assert rb.status_code == 201\n    id_b = rb.json()[\"id\"]\n\n    r1 = client.delete(f\"/tasks/{id_a}\")\n    assert r1.status_code == 204\n\n    r2 = client.delete(f\"/tasks/{id_a}\")\n    assert r2.status_code == 404\n\n    r_get_b = client.get(f\"/tasks/{id_b}\")\n    assert r_get_b.status_code == 200\n    body_b = r_get_b.json()\n    assert body_b[\"id\"] == id_b\n    assert body_b[\"title\"] == \"task beta\"\n    assert body_b[\"completed\"] == False\n\napp.dependency_overrides.clear()\nimport os\ntry:\n    os.remove(\"./test_r028_dt.db\")\nexcept OSError:\n    pass\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-028",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4867,
+    "output_tokens": 3130,
+    "latency_ms": 37427,
+    "wall_ms": 37427,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-028\",\n  \"reasoning\": \"R-TASK-028 requires DELETE /tasks/{task_id} to be idempotent: the first call on an existing task returns HTTP 204, and every subsequent call on the same task_id returns HTTP 404. The test suite covers: (1) positive \u2013 first DELETE succeeds with 204, second DELETE returns 404 (STC: created\u2192deleted\u2192not-found); (2) negative \u2013 DELETE on a never-existing task_id returns 404 immediately (NEG); (3) boundary \u2013 DELETE exactly three times on the same id, verifying 204 then 404 then 404 (BVA: boundary between 'exists' and 'gone' states). Each test uses an in-process SQLite database via FastAPI TestClient with dependency override to guarantee isolation.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_idempotent_first_204_second_404\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"A task is created via POST /tasks/ to obtain a valid task_id\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a task and capture task_id\",\n        \"DELETE /tasks/{task_id} \u2014 first call\",\n        \"DELETE /tasks/{task_id} \u2014 second call on same task_id\"\n      ],\n      \"expected\": [\n        \"First DELETE returns HTTP 204 with empty body\",\n        \"Second DELETE returns HTTP 404\",\n        \"Second DELETE response body contains detail message referencing the task_id\"\n      ],\n      \"trace\": [\n        \"R-TASK-028: DELETE is idempotent\",\n        \"State transition: EXISTING -> DELETED (204) -> NOT_FOUND (404)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\n\\nengine_t = create_engine(\\\"sqlite:///./test_r028_pos.db\\\", connect_args={\\\"check_same_thread\\\": False})\\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_t)\\nBase.metadata.create_all(bind=engine_t)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_delete_idempotent_first_204_second_404():\\n    r_create = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"idempotent task\\\", \\\"completed\\\": False})\\n    assert r_create.status_code == 201\\n    task_id = r_create.json()[\\\"id\\\"]\\n\\n    r1 = client.delete(f\\\"/tasks/{task_id}\\\")\\n    assert r1.status_code == 204\\n    assert r1.content == b\\\"\\\"\\n\\n    r2 = client.delete(f\\\"/tasks/{task_id}\\\")\\n    assert r2.status_code == 404\\n    detail = r2.json()[\\\"detail\\\"]\\n    assert str(task_id) in detail\\n\\napp.dependency_overrides.clear()\\nimport os\\ntry:\\n    os.remove(\\\"./test_r028_pos.db\\\")\\nexcept OSError:\\n    pass\\n\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"No task with id 99999 exists\"\n      ],\n      \"actions\": [\n        \"DELETE /tasks/99999 without prior creation\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 404\",\n        \"Response body contains 'detail' key with message referencing task id 99999\"\n      ],\n      \"trace\": [\n        \"R-TASK-028: subsequent DELETE on non-existent task_id must return 404\",\n        \"NEG: task never existed, so first call is already a 404 path\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\n\\nengine_t = create_engine(\\\"sqlite:///./test_r028_neg.db\\\", connect_args={\\\"check_same_thread\\\": False})\\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine_t)\\nBase.metadata.create_all(bind=engine_t)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db."
+  }
+}

@@ -1,0 +1,175 @@
+{
+  "req": {
+    "id": "R-FLASKR-029",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "load_logged_in_user populates g.user",
+    "statement": "The system shall populate flask.g.user with the User row for the authenticated session on every request.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "load_logged_in_user populates g.user"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-029",
+    "reasoning": "The requirement states that load_logged_in_user must populate g.user with the User row for authenticated sessions on every request. We need to verify: (1) positive - authenticated session sets g.user to the correct user row; (2) negative - no session sets g.user to None; (3) boundary - session with a non-existent user_id sets g.user to None (the fetchone() returns None). We also add a state-transition test covering logout clearing g.user, and a decision-table test covering both branches of the if/else in load_logged_in_user. Tests inspect g.user inside an app context using the test client and app.test_request_context to verify the exact value, catching mutations on the session key name, the SQL query, and the None-assignment branch.",
+    "tests": [
+      {
+        "name": "test_load_logged_in_user_authenticated_session_populates_g_user",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is created with TESTING=True and a fresh temp database",
+          "Database is initialised with fixture data (user id=1, username='test')",
+          "Client has a valid session with user_id=1 set via /auth/login"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "GET / (any endpoint that triggers load_logged_in_user)",
+          "Inspect g.user inside a request context after login"
+        ],
+        "expected": [
+          "g.user is not None",
+          "g.user['id'] == 1",
+          "g.user['username'] == 'test'",
+          "Response status code is 200"
+        ],
+        "trace": [
+          "R-FLASKR-029"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\nfrom flask import g\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\n# Login to establish session\nr = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\nassert r.status_code == 302\n\n# Now make a request and inspect g.user inside the request context\nwith client:\n    r = client.get('/')\n    assert r.status_code == 200\n    assert g.user is not None\n    assert g.user['id'] == 1\n    assert g.user['username'] == 'test'\n"
+      },
+      {
+        "name": "test_load_logged_in_user_no_session_sets_g_user_none",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is created with TESTING=True and a fresh temp database",
+          "Database is initialised with fixture data",
+          "No login has been performed; session is empty"
+        ],
+        "actions": [
+          "GET / without any prior login (no session cookie)",
+          "Inspect g.user inside the request context"
+        ],
+        "expected": [
+          "g.user is exactly None (not a falsy non-None value)",
+          "Response status code is 200"
+        ],
+        "trace": [
+          "R-FLASKR-029"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\nfrom flask import g\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\n# No login \u2014 session is empty\nwith client:\n    r = client.get('/')\n    assert r.status_code == 200\n    # g.user must be exactly None, not just falsy\n    assert g.user is None\n    assert g.user == None  # catches mutation None -> 0 or None -> False\n"
+      },
+      {
+        "name": "test_load_logged_in_user_nonexistent_user_id_in_session_sets_g_user_none",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is created with TESTING=True and a fresh temp database",
+          "Database is initialised with fixture data (only user ids 1 and 2 exist)",
+          "Session is manually set to contain user_id=9999 (does not exist in DB)"
+        ],
+        "actions": [
+          "Manually inject user_id=9999 into the session using app.test_client() session_transaction",
+          "GET / to trigger load_logged_in_user",
+          "Inspect g.user inside the request context"
+        ],
+        "expected": [
+          "g.user is exactly None because fetchone() returns None for missing id",
+          "Response status code is 200"
+        ],
+        "trace": [
+          "R-FLASKR-029"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\nfrom flask import g\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\n# Inject a non-existent user_id into the session\nwith client.session_transaction() as sess:\n    sess['user_id'] = 9999\n\n# Trigger load_logged_in_user; fetchone() returns None for missing id\nwith client:\n    r = client.get('/')\n    assert r.status_code == 200\n    # g.user must be None \u2014 fetchone() on missing row returns None\n    assert g.user is None\n"
+      },
+      {
+        "name": "test_load_logged_in_user_after_logout_g_user_is_none",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "App is created with TESTING=True and a fresh temp database",
+          "Database is initialised with fixture data",
+          "User 'test' logs in successfully (session contains user_id=1)",
+          "User then logs out (session is cleared)"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "Verify g.user is populated after login",
+          "GET /auth/logout to clear session",
+          "GET / and inspect g.user \u2014 must be None after logout"
+        ],
+        "expected": [
+          "After login: g.user['id'] == 1 and g.user['username'] == 'test'",
+          "After logout: g.user is None",
+          "Logout response status 302"
+        ],
+        "trace": [
+          "R-FLASKR-029"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\nfrom flask import g\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\n# Step 1: login and verify g.user is populated\nclient.post('/auth/login', data={'username': 'test', 'password': 'test'})\nwith client:\n    r = client.get('/')\n    assert r.status_code == 200\n    assert g.user is not None\n    assert g.user['id'] == 1\n    assert g.user['username'] == 'test'\n\n# Step 2: logout\nr_logout = client.get('/auth/logout')\nassert r_logout.status_code == 302\n\n# Step 3: after logout g.user must be None\nwith client:\n    r = client.get('/')\n    assert r.status_code == 200\n    assert g.user is None\n"
+      },
+      {
+        "name": "test_load_logged_in_user_correct_user_row_fields_for_second_user",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App is created with TESTING=True and a fresh temp database",
+          "Database is initialised with fixture data (user id=2, username='other')",
+          "Client logs in as 'other' with password 'other'"
+        ],
+        "actions": [
+          "POST /auth/login with username='other', password='other'",
+          "GET / to trigger load_logged_in_user",
+          "Inspect g.user fields: id, username"
+        ],
+        "expected": [
+          "g.user['id'] == 2 (not 1, not None)",
+          "g.user['username'] == 'other' (exact string match)",
+          "Response status 200"
+        ],
+        "trace": [
+          "R-FLASKR-029"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\nfrom flask import g\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\n# Login as second fixture user\nr = client.post('/auth/login', data={'username': 'other', 'password': 'other'})\nassert r.status_code == 302\n\nwith client:\n    r = client.get('/')\n    assert r.status_code == 200\n    assert g.user is not None\n    # Exact id check \u2014 catches mutation user_id=1 vs user_id=2\n    assert g.user['id'] == 2\n    assert g.user['id'] != 1\n    assert g.user['username'] == 'other'\n    assert g.user['username'] != 'test'\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-029",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5471,
+    "output_tokens": 2706,
+    "latency_ms": 34847,
+    "wall_ms": 34847,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-029\",\n  \"reasoning\": \"The requirement states that load_logged_in_user must populate g.user with the User row for authenticated sessions on every request. We need to verify: (1) positive - authenticated session sets g.user to the correct user row; (2) negative - no session sets g.user to None; (3) boundary - session with a non-existent user_id sets g.user to None (the fetchone() returns None). We also add a state-transition test covering logout clearing g.user, and a decision-table test covering both branches of the if/else in load_logged_in_user. Tests inspect g.user inside an app context using the test client and app.test_request_context to verify the exact value, catching mutations on the session key name, the SQL query, and the None-assignment branch.\",\n  \"tests\": [\n    {\n      \"name\": \"test_load_logged_in_user_authenticated_session_populates_g_user\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App is created with TESTING=True and a fresh temp database\",\n        \"Database is initialised with fixture data (user id=1, username='test')\",\n        \"Client has a valid session with user_id=1 set via /auth/login\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='test', password='test'\",\n        \"GET / (any endpoint that triggers load_logged_in_user)\",\n        \"Inspect g.user inside a request context after login\"\n      ],\n      \"expected\": [\n        \"g.user is not None\",\n        \"g.user['id'] == 1\",\n        \"g.user['username'] == 'test'\",\n        \"Response status code is 200\"\n      ],\n      \"trace\": [\"R-FLASKR-029\"],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db, get_db\\nfrom flask import g\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\n\\n# Login to establish session\\nr = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\\nassert r.status_code == 302\\n\\n# Now make a request and inspect g.user inside the request context\\nwith client:\\n    r = client.get('/')\\n    assert r.status_code == 200\\n    assert g.user is not None\\n    assert g.user['id'] == 1\\n    assert g.user['username'] == 'test'\\n\"\n    },\n    {\n      \"name\": \"test_load_logged_in_user_no_session_sets_g_user_none\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is created with TESTING=True and a fresh temp database\",\n        \"Database is initialised with fixture data\",\n        \"No login has been performed; session is empty\"\n      ],\n      \"actions\": [\n        \"GET / without any prior login (no session cookie)\",\n        \"Inspect g.user inside the request context\"\n      ],\n      \"expected\": [\n        \"g.user is exactly None (not a falsy non-None value)\",\n        \"Response status code is 200\"\n      ],\n      \"trace\": [\"R-FLASKR-029\"],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\nfrom flask import g\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\n\\n# No login \u2014 session is empty\\nwith client:\\n    r = client.get('/')\\n    assert r.status_code == 200\\n    # g.user must be exactly None, not just falsy\\n    assert g.user is None\\n    assert g.user == None  # catches mutation None -> 0 or None -> False\\n\"\n    },\n    {\n      \"name\": \"test_load_logged_in_user_nonexistent_user_id_in_session_sets_g_user_none\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"App is created with TESTING=True and a fresh temp database\",\n        \"Database is initialised with fixture data (only user ids 1 and 2 exist)\",\n        \"Session is manually set to contain user_id=9999 (does not exist in DB)\"\n      ],\n      \"actions\": [\n        \"Manually inje"
+  }
+}

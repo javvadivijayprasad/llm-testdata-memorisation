@@ -1,0 +1,209 @@
+{
+  "req": {
+    "id": "R-TASK-038",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "validation",
+    "title": "Task update rejects id changes",
+    "statement": "The system shall ignore any id field in the PUT body and only mutate the task addressed by the URL.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task update rejects id changes"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-038",
+    "reasoning": "R-TASK-038 requires that when a PUT /tasks/{id} request includes an 'id' field in the body, the system ignores it and mutates only the task addressed by the URL path parameter. Tests must verify: (1) positive \u2014 a PUT with a mismatched id in the body still succeeds and the task at the URL id is updated, not a different task; (2) negative \u2014 the response id always equals the URL path id, never the body id; (3) boundary \u2014 sending id=0 or a very large id in the body does not corrupt the addressed task. The TaskUpdate schema has no 'id' field, so FastAPI/Pydantic will silently strip it; the crud.update_task loop only iterates over fields present in TaskUpdate. Tests assert exact HTTP status codes, exact response field values, and verify the original task's identity is preserved.",
+    "tests": [
+      {
+        "name": "test_put_body_id_ignored_task_updated_at_url_id",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty",
+          "A task is created via POST /tasks/ to obtain a known id"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task and capture its id (url_id)",
+          "PUT /tasks/{url_id} with JSON body containing 'id' set to url_id+99 and a new title",
+          "Assert response status is 200",
+          "Assert response body 'id' equals url_id, not url_id+99",
+          "Assert response body 'title' equals the new title sent in the body"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response 'id' == url_id (body id field ignored)",
+          "Response 'title' == updated title"
+        ],
+        "trace": [
+          "R-TASK-038: system shall ignore id field in PUT body",
+          "R-TASK-038: only mutate the task addressed by the URL"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_body_id_ignored_task_updated_at_url_id():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"original\", \"completed\": False})\n    assert create_resp.status_code == 201\n    url_id = create_resp.json()[\"id\"]\n    fake_id = url_id + 99\n    put_resp = client.put(\n        f\"/tasks/{url_id}\",\n        json={\"id\": fake_id, \"title\": \"updated title\"}\n    )\n    assert put_resp.status_code == 200\n    body = put_resp.json()\n    assert body[\"id\"] == url_id\n    assert body[\"id\"] != fake_id\n    assert body[\"title\"] == \"updated title\"\n\ntest_put_body_id_ignored_task_updated_at_url_id()"
+      },
+      {
+        "name": "test_put_body_id_does_not_corrupt_other_task",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty",
+          "Two tasks are created to obtain two distinct ids"
+        ],
+        "actions": [
+          "POST /tasks/ twice to create task_a and task_b",
+          "PUT /tasks/{task_a_id} with body containing 'id' set to task_b_id and a new title",
+          "Assert response status is 200",
+          "Assert response 'id' equals task_a_id",
+          "GET /tasks/{task_b_id} and assert task_b title is unchanged"
+        ],
+        "expected": [
+          "HTTP 200 from PUT",
+          "PUT response 'id' == task_a_id",
+          "task_b title remains 'task_b_title' (not mutated)"
+        ],
+        "trace": [
+          "R-TASK-038: system shall only mutate the task addressed by the URL",
+          "R-TASK-038: body id field must not redirect mutation to another task"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_body_id_does_not_corrupt_other_task():\n    client = TestClient(app)\n    resp_a = client.post(\"/tasks/\", json={\"title\": \"task_a_title\", \"completed\": False})\n    assert resp_a.status_code == 201\n    task_a_id = resp_a.json()[\"id\"]\n    resp_b = client.post(\"/tasks/\", json={\"title\": \"task_b_title\", \"completed\": False})\n    assert resp_b.status_code == 201\n    task_b_id = resp_b.json()[\"id\"]\n    put_resp = client.put(\n        f\"/tasks/{task_a_id}\",\n        json={\"id\": task_b_id, \"title\": \"hijacked title\"}\n    )\n    assert put_resp.status_code == 200\n    assert put_resp.json()[\"id\"] == task_a_id\n    get_b = client.get(f\"/tasks/{task_b_id}\")\n    assert get_b.status_code == 200\n    assert get_b.json()[\"title\"] == \"task_b_title\"\n    assert get_b.json()[\"id\"] == task_b_id\n\ntest_put_body_id_does_not_corrupt_other_task()"
+      },
+      {
+        "name": "test_put_body_id_zero_boundary_ignored",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "A task is created to obtain a valid id"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with known url_id",
+          "PUT /tasks/{url_id} with body containing 'id' set to 0 (boundary: smallest invalid id) and a new title",
+          "Assert response status is 200",
+          "Assert response 'id' equals url_id (not 0)",
+          "Assert response 'title' equals the new title"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response 'id' == url_id (body id=0 ignored)",
+          "Response 'title' == new title"
+        ],
+        "trace": [
+          "R-TASK-038: id field in body ignored regardless of value",
+          "BVA: id=0 is boundary value below any valid auto-increment id"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_body_id_zero_boundary_ignored():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"boundary task\", \"completed\": False})\n    assert create_resp.status_code == 201\n    url_id = create_resp.json()[\"id\"]\n    put_resp = client.put(\n        f\"/tasks/{url_id}\",\n        json={\"id\": 0, \"title\": \"boundary updated\"}\n    )\n    assert put_resp.status_code == 200\n    body = put_resp.json()\n    assert body[\"id\"] == url_id\n    assert body[\"id\"] != 0\n    assert body[\"title\"] == \"boundary updated\"\n\ntest_put_body_id_zero_boundary_ignored()"
+      },
+      {
+        "name": "test_put_body_id_large_value_boundary_ignored",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "A task is created to obtain a valid id"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with known url_id",
+          "PUT /tasks/{url_id} with body containing 'id' set to 2147483647 (INT_MAX boundary) and a new title",
+          "Assert response status is 200",
+          "Assert response 'id' equals url_id (not 2147483647)",
+          "Assert response 'title' equals the new title"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response 'id' == url_id (body id=INT_MAX ignored)",
+          "Response 'title' == new title"
+        ],
+        "trace": [
+          "R-TASK-038: id field in body ignored regardless of value",
+          "BVA: id=2147483647 is upper boundary for 32-bit integer ids"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_body_id_large_value_boundary_ignored():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"large id task\", \"completed\": False})\n    assert create_resp.status_code == 201\n    url_id = create_resp.json()[\"id\"]\n    put_resp = client.put(\n        f\"/tasks/{url_id}\",\n        json={\"id\": 2147483647, \"title\": \"large id updated\"}\n    )\n    assert put_resp.status_code == 200\n    body = put_resp.json()\n    assert body[\"id\"] == url_id\n    assert body[\"id\"] != 2147483647\n    assert body[\"title\"] == \"large id updated\"\n\ntest_put_body_id_large_value_boundary_ignored()"
+      },
+      {
+        "name": "test_put_nonexistent_url_id_returns_404_regardless_of_body_id",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty",
+          "No task with id 99999 exists"
+        ],
+        "actions": [
+          "PUT /tasks/99999 with body containing 'id' set to 1 and a title",
+          "Assert response status is 404",
+          "Assert response detail contains '99999'"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Error detail references the URL id 99999, not the body id"
+        ],
+        "trace": [
+          "R-TASK-038: system addresses task by URL id; if not found, 404",
+          "NEG: body id cannot substitute for a missing URL-addressed task"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_nonexistent_url_id_returns_404_regardless_of_body_id():\n    client = TestClient(app)\n    put_resp = client.put(\n        \"/tasks/99999\",\n        json={\"id\": 1, \"title\": \"should not matter\"}\n    )\n    assert put_resp.status_code == 404\n    detail = put_resp.json()[\"detail\"]\n    assert \"99999\" in detail\n\ntest_put_nonexistent_url_id_returns_404_regardless_of_body_id()"
+      },
+      {
+        "name": "test_put_body_id_same_as_url_id_succeeds_and_returns_correct_id",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty",
+          "A task is created to obtain a valid id"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with known url_id",
+          "PUT /tasks/{url_id} with body containing 'id' equal to url_id (same value) and a new title",
+          "Assert response status is 200",
+          "Assert response 'id' equals url_id",
+          "Assert response 'title' equals the new title",
+          "Assert response 'completed' equals False (unchanged)"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response 'id' == url_id",
+          "Response 'title' == new title",
+          "Response 'completed' == False"
+        ],
+        "trace": [
+          "R-TASK-038: even when body id matches URL id, system uses URL id",
+          "DT: decision table row where body_id == url_id (no conflict)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_body_id_same_as_url_id_succeeds_and_returns_correct_id():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"same id task\", \"completed\": False})\n    assert create_resp.status_code == 201\n    url_id = create_resp.json()[\"id\"]\n    put_resp = client.put(\n        f\"/tasks/{url_id}\",\n        json={\"id\": url_id, \"title\": \"same id updated\", \"completed\": False}\n    )\n    assert put_resp.status_code == 200\n    body = put_resp.json()\n    assert body[\"id\"] == url_id\n    assert body[\"title\"] == \"same id updated\"\n    assert body[\"completed\"] == False\n\ntest_put_body_id_same_as_url_id_succeeds_and_returns_correct_id()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-038",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4853,
+    "output_tokens": 3560,
+    "latency_ms": 41853,
+    "wall_ms": 41853,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-038\",\n  \"reasoning\": \"R-TASK-038 requires that when a PUT /tasks/{id} request includes an 'id' field in the body, the system ignores it and mutates only the task addressed by the URL path parameter. Tests must verify: (1) positive \u2014 a PUT with a mismatched id in the body still succeeds and the task at the URL id is updated, not a different task; (2) negative \u2014 the response id always equals the URL path id, never the body id; (3) boundary \u2014 sending id=0 or a very large id in the body does not corrupt the addressed task. The TaskUpdate schema has no 'id' field, so FastAPI/Pydantic will silently strip it; the crud.update_task loop only iterates over fields present in TaskUpdate. Tests assert exact HTTP status codes, exact response field values, and verify the original task's identity is preserved.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_body_id_ignored_task_updated_at_url_id\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"A task is created via POST /tasks/ to obtain a known id\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a task and capture its id (url_id)\",\n        \"PUT /tasks/{url_id} with JSON body containing 'id' set to url_id+99 and a new title\",\n        \"Assert response status is 200\",\n        \"Assert response body 'id' equals url_id, not url_id+99\",\n        \"Assert response body 'title' equals the new title sent in the body\"\n      ],\n      \"expected\": [\n        \"HTTP 200 OK\",\n        \"Response 'id' == url_id (body id field ignored)\",\n        \"Response 'title' == updated title\"\n      ],\n      \"trace\": [\n        \"R-TASK-038: system shall ignore id field in PUT body\",\n        \"R-TASK-038: only mutate the task addressed by the URL\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_put_body_id_ignored_task_updated_at_url_id():\\n    client = TestClient(app)\\n    create_resp = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"original\\\", \\\"completed\\\": False})\\n    assert create_resp.status_code == 201\\n    url_id = create_resp.json()[\\\"id\\\"]\\n    fake_id = url_id + 99\\n    put_resp = client.put(\\n        f\\\"/tasks/{url_id}\\\",\\n        json={\\\"id\\\": fake_id, \\\"title\\\": \\\"updated title\\\"}\\n    )\\n    assert put_resp.status_code == 200\\n    body = put_resp.json()\\n    assert body[\\\"id\\\"] == url_id\\n    assert body[\\\"id\\\"] != fake_id\\n    assert body[\\\"title\\\"] == \\\"updated title\\\"\\n\\ntest_put_body_id_ignored_task_updated_at_url_id()\"\n    },\n    {\n      \"name\": \"test_put_body_id_does_not_corrupt_other_task\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"Two tasks are created to obtain two distinct ids\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ twice to create task_a and task_b\",\n        \"PUT /tasks/{task_a_id} with body containing 'id' set to task_b_id and a new title\",\n        \"Assert response status is 200\",\n        \"Assert response 'id' equals task_a_id\",\n        \"GET /tasks/{task_b_id} and assert task_b title is unchanged\"\n      ],\n      \"expected\": [\n        \"HTTP 200 from PUT\",\n        \"PUT response 'id' == task_a_id\",\n        \"task_b title remains 'task_b_title' (not mutated)\"\n      ],\n      \"trace\": [\n        \"R-TASK-038: system shall only mutate the task addressed by the URL\",\n        \"R-TASK-038: body id field must not redirect mutation to another task\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_put_body_id_does_not_corrupt_other_task():\\n    client = TestClient(app)\\n    resp_a = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"task_a_title\\\", \\\"completed\\\": False})\\n    assert resp_a.status_code == 201\\n    task_a_id = resp_a.json()[\\\"id\\\"]\\n    resp_b = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"task_b_title\\\", \\\"completed\\\": False})\\n    assert resp_b.status_code == 201\\n    task_b_id = resp_b.json()[\\\"id"
+  }
+}

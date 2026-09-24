@@ -1,0 +1,225 @@
+{
+  "req": {
+    "id": "R-TASK-022",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Task update persists",
+    "statement": "The system shall persist PUT changes so subsequent GET requests reflect the update.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task update persists"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-022",
+    "reasoning": "The requirement mandates that PUT /tasks/{task_id} persists changes so a subsequent GET reflects them. I design: (1) a positive EP/STC test that updates all mutable fields on a known pre-loaded task and verifies the GET response matches exactly; (2) a negative NEG test that PUTs to a non-existent task_id and asserts HTTP 404 with the exact detail message; (3) a BVA boundary test that updates a task's title to exactly 1 character (min_length boundary) and to exactly 100 characters (max_length boundary), asserting persistence in both cases; (4) a DT test covering partial update (only `completed` toggled) to verify other fields are unchanged; (5) a STC test verifying the state transition completed=false -> true -> false is persisted across GETs.",
+    "tests": [
+      {
+        "name": "test_put_task_full_update_persists",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task id=7 exists with title='Fix login bug', completed=false",
+          "Database is pre-loaded with 20 rows"
+        ],
+        "actions": [
+          "PUT /tasks/7 with title='Updated title', description='New desc', completed=true",
+          "Assert PUT response status == 200",
+          "Assert PUT response body fields match submitted values",
+          "GET /tasks/7",
+          "Assert GET response status == 200",
+          "Assert GET response body reflects all updated fields"
+        ],
+        "expected": [
+          "PUT returns HTTP 200",
+          "PUT body: id=7, title='Updated title', description='New desc', completed=true",
+          "GET returns HTTP 200",
+          "GET body: id=7, title='Updated title', description='New desc', completed=true"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_task_full_update_persists():\n    put_r = client.put(\n        \"/tasks/7\",\n        json={\"title\": \"Updated title\", \"description\": \"New desc\", \"completed\": True}\n    )\n    assert put_r.status_code == 200\n    body = put_r.json()\n    assert body[\"id\"] == 7\n    assert body[\"title\"] == \"Updated title\"\n    assert body[\"description\"] == \"New desc\"\n    assert body[\"completed\"] is True\n\n    get_r = client.get(\"/tasks/7\")\n    assert get_r.status_code == 200\n    g = get_r.json()\n    assert g[\"id\"] == 7\n    assert g[\"title\"] == \"Updated title\"\n    assert g[\"description\"] == \"New desc\"\n    assert g[\"completed\"] is True\n"
+      },
+      {
+        "name": "test_put_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task id=9999 does not exist",
+          "Database is pre-loaded with 20 rows (ids 1-20 only)"
+        ],
+        "actions": [
+          "PUT /tasks/9999 with valid payload",
+          "Assert response status == 404",
+          "Assert response body detail contains task id"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response JSON detail mentions id 9999"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_nonexistent_task_returns_404():\n    r = client.put(\n        \"/tasks/9999\",\n        json={\"title\": \"Ghost task\", \"completed\": False}\n    )\n    assert r.status_code == 404\n    detail = r.json()[\"detail\"]\n    assert \"9999\" in detail\n"
+      },
+      {
+        "name": "test_put_task_title_boundary_lengths_persist",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task id=10 exists with title='Organize desk', completed=false",
+          "Task id=11 exists with title='Water the plants', completed=false"
+        ],
+        "actions": [
+          "PUT /tasks/10 with title of exactly 1 character (min boundary)",
+          "Assert PUT status == 200 and title persisted via GET",
+          "PUT /tasks/11 with title of exactly 100 characters (max boundary)",
+          "Assert PUT status == 200 and title persisted via GET",
+          "PUT /tasks/10 with title of 0 characters (below min boundary)",
+          "Assert PUT status == 422",
+          "PUT /tasks/11 with title of 101 characters (above max boundary)",
+          "Assert PUT status == 422"
+        ],
+        "expected": [
+          "1-char title: PUT 200, GET reflects 1-char title",
+          "100-char title: PUT 200, GET reflects 100-char title",
+          "0-char title: PUT 422",
+          "101-char title: PUT 422"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_task_title_boundary_lengths_persist():\n    min_title = \"X\"\n    r1 = client.put(\"/tasks/10\", json={\"title\": min_title})\n    assert r1.status_code == 200\n    assert r1.json()[\"title\"] == min_title\n    g1 = client.get(\"/tasks/10\")\n    assert g1.status_code == 200\n    assert g1.json()[\"title\"] == min_title\n\n    max_title = \"A\" * 100\n    r2 = client.put(\"/tasks/11\", json={\"title\": max_title})\n    assert r2.status_code == 200\n    assert r2.json()[\"title\"] == max_title\n    g2 = client.get(\"/tasks/11\")\n    assert g2.status_code == 200\n    assert g2.json()[\"title\"] == max_title\n\n    r3 = client.put(\"/tasks/10\", json={\"title\": \"\"})\n    assert r3.status_code == 422\n\n    r4 = client.put(\"/tasks/11\", json={\"title\": \"B\" * 101})\n    assert r4.status_code == 422\n"
+      },
+      {
+        "name": "test_put_task_partial_update_preserves_other_fields",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task id=4 exists: title='Prepare meeting agenda', description='Harbor matrix prism summit beacon ember matrix.', completed=false"
+        ],
+        "actions": [
+          "PUT /tasks/4 with only completed=true (partial update)",
+          "Assert PUT status == 200",
+          "Assert title and description are unchanged in PUT response",
+          "GET /tasks/4 and assert title and description still match original"
+        ],
+        "expected": [
+          "PUT returns HTTP 200",
+          "completed is now true",
+          "title remains 'Prepare meeting agenda'",
+          "description remains 'Harbor matrix prism summit beacon ember matrix.'"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_task_partial_update_preserves_other_fields():\n    r = client.put(\"/tasks/4\", json={\"completed\": True})\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"id\"] == 4\n    assert body[\"completed\"] is True\n    assert body[\"title\"] == \"Prepare meeting agenda\"\n    assert body[\"description\"] == \"Harbor matrix prism summit beacon ember matrix.\"\n\n    g = client.get(\"/tasks/4\")\n    assert g.status_code == 200\n    gb = g.json()\n    assert gb[\"completed\"] is True\n    assert gb[\"title\"] == \"Prepare meeting agenda\"\n    assert gb[\"description\"] == \"Harbor matrix prism summit beacon ember matrix.\"\n"
+      },
+      {
+        "name": "test_put_task_state_transition_completed_toggle_persists",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task id=1 exists with completed=true",
+          "Database is pre-loaded with 20 rows"
+        ],
+        "actions": [
+          "GET /tasks/1 to confirm initial completed=true",
+          "PUT /tasks/1 with completed=false",
+          "GET /tasks/1 to confirm completed=false persisted",
+          "PUT /tasks/1 with completed=true",
+          "GET /tasks/1 to confirm completed=true persisted"
+        ],
+        "expected": [
+          "Initial GET: completed=true",
+          "After first PUT: GET returns completed=false",
+          "After second PUT: GET returns completed=true",
+          "All responses HTTP 200"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_task_state_transition_completed_toggle_persists():\n    g0 = client.get(\"/tasks/1\")\n    assert g0.status_code == 200\n    assert g0.json()[\"completed\"] is True\n\n    r1 = client.put(\"/tasks/1\", json={\"completed\": False})\n    assert r1.status_code == 200\n    assert r1.json()[\"completed\"] is False\n\n    g1 = client.get(\"/tasks/1\")\n    assert g1.status_code == 200\n    assert g1.json()[\"completed\"] is False\n\n    r2 = client.put(\"/tasks/1\", json={\"completed\": True})\n    assert r2.status_code == 200\n    assert r2.json()[\"completed\"] is True\n\n    g2 = client.get(\"/tasks/1\")\n    assert g2.status_code == 200\n    assert g2.json()[\"completed\"] is True\n"
+      },
+      {
+        "name": "test_put_task_zero_id_returns_error",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task id=0 does not exist (ids start at 1)"
+        ],
+        "actions": [
+          "PUT /tasks/0 with valid payload",
+          "Assert response status is 404"
+        ],
+        "expected": [
+          "HTTP 404 because id=0 is not a valid existing task"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_task_zero_id_returns_error():\n    r = client.put(\"/tasks/0\", json={\"title\": \"Zero id task\", \"completed\": False})\n    assert r.status_code == 404\n    detail = r.json()[\"detail\"]\n    assert \"0\" in detail\n"
+      },
+      {
+        "name": "test_put_task_description_cleared_to_none_persists",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task id=2 exists with description='Delta willow vertex flux alpha orbit.'"
+        ],
+        "actions": [
+          "PUT /tasks/2 with description=null to clear it",
+          "Assert PUT status == 200",
+          "Assert PUT response description is null",
+          "GET /tasks/2 and assert description is null"
+        ],
+        "expected": [
+          "PUT returns HTTP 200",
+          "description field is null in PUT response",
+          "GET confirms description is null"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_task_description_cleared_to_none_persists():\n    r = client.put(\"/tasks/2\", json={\"description\": None})\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"id\"] == 2\n    assert body[\"description\"] is None\n\n    g = client.get(\"/tasks/2\")\n    assert g.status_code == 200\n    assert g.json()[\"description\"] is None\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-022",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5913,
+    "output_tokens": 3447,
+    "latency_ms": 41898,
+    "wall_ms": 41898,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-022\",\n  \"reasoning\": \"The requirement mandates that PUT /tasks/{task_id} persists changes so a subsequent GET reflects them. I design: (1) a positive EP/STC test that updates all mutable fields on a known pre-loaded task and verifies the GET response matches exactly; (2) a negative NEG test that PUTs to a non-existent task_id and asserts HTTP 404 with the exact detail message; (3) a BVA boundary test that updates a task's title to exactly 1 character (min_length boundary) and to exactly 100 characters (max_length boundary), asserting persistence in both cases; (4) a DT test covering partial update (only `completed` toggled) to verify other fields are unchanged; (5) a STC test verifying the state transition completed=false -> true -> false is persisted across GETs.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_task_full_update_persists\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Task id=7 exists with title='Fix login bug', completed=false\",\n        \"Database is pre-loaded with 20 rows\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/7 with title='Updated title', description='New desc', completed=true\",\n        \"Assert PUT response status == 200\",\n        \"Assert PUT response body fields match submitted values\",\n        \"GET /tasks/7\",\n        \"Assert GET response status == 200\",\n        \"Assert GET response body reflects all updated fields\"\n      ],\n      \"expected\": [\n        \"PUT returns HTTP 200\",\n        \"PUT body: id=7, title='Updated title', description='New desc', completed=true\",\n        \"GET returns HTTP 200\",\n        \"GET body: id=7, title='Updated title', description='New desc', completed=true\"\n      ],\n      \"trace\": [\"R-TASK-022\"],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\nclient = TestClient(app)\\n\\ndef test_put_task_full_update_persists():\\n    put_r = client.put(\\n        \\\"/tasks/7\\\",\\n        json={\\\"title\\\": \\\"Updated title\\\", \\\"description\\\": \\\"New desc\\\", \\\"completed\\\": True}\\n    )\\n    assert put_r.status_code == 200\\n    body = put_r.json()\\n    assert body[\\\"id\\\"] == 7\\n    assert body[\\\"title\\\"] == \\\"Updated title\\\"\\n    assert body[\\\"description\\\"] == \\\"New desc\\\"\\n    assert body[\\\"completed\\\"] is True\\n\\n    get_r = client.get(\\\"/tasks/7\\\")\\n    assert get_r.status_code == 200\\n    g = get_r.json()\\n    assert g[\\\"id\\\"] == 7\\n    assert g[\\\"title\\\"] == \\\"Updated title\\\"\\n    assert g[\\\"description\\\"] == \\\"New desc\\\"\\n    assert g[\\\"completed\\\"] is True\\n\"\n    },\n    {\n      \"name\": \"test_put_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Task id=9999 does not exist\",\n        \"Database is pre-loaded with 20 rows (ids 1-20 only)\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/9999 with valid payload\",\n        \"Assert response status == 404\",\n        \"Assert response body detail contains task id\"\n      ],\n      \"expected\": [\n        \"HTTP 404 Not Found\",\n        \"Response JSON detail mentions id 9999\"\n      ],\n      \"trace\": [\"R-TASK-022\"],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\nclient = TestClient(app)\\n\\ndef test_put_nonexistent_task_returns_404():\\n    r = client.put(\\n        \\\"/tasks/9999\\\",\\n        json={\\\"title\\\": \\\"Ghost task\\\", \\\"completed\\\": False}\\n    )\\n    assert r.status_code == 404\\n    detail = r.json()[\\\"detail\\\"]\\n    assert \\\"9999\\\" in detail\\n\"\n    },\n    {\n      \"name\": \"test_put_task_title_boundary_lengths_persist\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Task id=10 exists with title='Organize desk', completed=false\",\n        \"Task id=11 exists with title='Water the plants', completed=false\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/10 with title of exactly 1 character (min boundary)\",\n        \"Assert PUT status == 200 and title persisted via GET\",\n        \"PUT /tasks/11 with title "
+  }
+}

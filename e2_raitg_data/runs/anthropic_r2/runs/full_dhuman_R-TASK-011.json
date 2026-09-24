@@ -1,0 +1,191 @@
+{
+  "req": {
+    "id": "R-TASK-011",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "error_pathway",
+    "title": "Update unknown returns 404",
+    "statement": "The system shall respond with HTTP 404 when PUT targets a non-existent task id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "update unknown returns 404"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 404"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-011",
+    "reasoning": "R-TASK-011 requires that PUT /tasks/{task_id} returns HTTP 404 when the task_id does not exist. To achieve high mutation kill rate we need: (1) a positive case confirming a real task CAN be updated (200 path), (2) a negative case confirming a non-existent id returns exactly 404 with the correct detail string, (3) a boundary case at task_id=0 (invalid/non-existent boundary), and additional cases testing id=1 after deletion (state transition) and a very large id. We assert exact status codes and exact JSON fields to catch operator-flip and constant-bump mutations.",
+    "tests": [
+      {
+        "name": "test_put_existing_task_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty before test",
+          "A task is created via POST /tasks/ to obtain a valid task_id"
+        ],
+        "actions": [
+          "POST /tasks/ with title='Existing Task' to create a task",
+          "Record the returned task id",
+          "PUT /tasks/{task_id} with title='Updated Task'"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON contains id matching the created task",
+          "Response JSON title equals 'Updated Task'"
+        ],
+        "trace": [
+          "R-TASK-011: verifies the 2xx success path exists so 404 path is distinguishable",
+          "EP: valid task_id partition"
+        ],
+        "executable": "import os, sys\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r011_pos.db')\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.database import Base\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite:///./test_r011_pos.db', connect_args={'check_same_thread': False})\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_put_existing_task_returns_200():\n    r_create = client.post('/tasks/', json={'title': 'Existing Task', 'description': None, 'completed': False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()['id']\n    r_update = client.put(f'/tasks/{task_id}', json={'title': 'Updated Task'})\n    assert r_update.status_code == 200\n    body = r_update.json()\n    assert body['id'] == task_id\n    assert body['title'] == 'Updated Task'\n    assert body['completed'] == False\n"
+      },
+      {
+        "name": "test_put_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty before test",
+          "No task with id=9999 exists"
+        ],
+        "actions": [
+          "PUT /tasks/9999 with title='Ghost Task'"
+        ],
+        "expected": [
+          "HTTP 404 response (not 200, not 400, not 500)",
+          "Response JSON detail contains 'not found'"
+        ],
+        "trace": [
+          "R-TASK-011: primary error pathway \u2014 non-existent task_id must yield 404",
+          "NEG: non-existent id partition; catches status-code constant mutations (404->200, 404->400)"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r011_neg.db')\nfrom sqlalchemy import create_engine\nfrom app.database import Base\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite:///./test_r011_neg.db', connect_args={'check_same_thread': False})\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_put_nonexistent_task_returns_404():\n    r = client.put('/tasks/9999', json={'title': 'Ghost Task'})\n    assert r.status_code == 404\n    body = r.json()\n    assert 'detail' in body\n    detail = body['detail']\n    assert 'not found' in detail.lower()\n    assert '9999' in detail\n"
+      },
+      {
+        "name": "test_put_task_id_zero_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty before test",
+          "No task with id=0 exists (auto-increment starts at 1)"
+        ],
+        "actions": [
+          "PUT /tasks/0 with title='Zero Task'"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response JSON detail references id 0 and 'not found'"
+        ],
+        "trace": [
+          "R-TASK-011: boundary at id=0 (below minimum valid auto-increment id)",
+          "BVA: boundary-mutation \u2014 catches off-by-one on id comparison, catches > vs >= mutations"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r011_bva0.db')\nfrom sqlalchemy import create_engine\nfrom app.database import Base\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite:///./test_r011_bva0.db', connect_args={'check_same_thread': False})\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_put_task_id_zero_returns_404():\n    r = client.put('/tasks/0', json={'title': 'Zero Task'})\n    assert r.status_code == 404\n    body = r.json()\n    assert 'detail' in body\n    assert 'not found' in body['detail'].lower()\n"
+      },
+      {
+        "name": "test_put_deleted_task_returns_404",
+        "kind": "negative",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database is empty before test",
+          "A task is created then deleted, leaving no tasks"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task and record its id",
+          "DELETE /tasks/{task_id} to remove it",
+          "PUT /tasks/{task_id} with title='Revived Task'"
+        ],
+        "expected": [
+          "DELETE returns HTTP 204",
+          "Subsequent PUT returns HTTP 404",
+          "Response JSON detail contains the task id and 'not found'"
+        ],
+        "trace": [
+          "R-TASK-011: state transition \u2014 task moves from existing to deleted; PUT on deleted id must yield 404",
+          "STC: covers created->deleted state; catches mutations that skip the None-check after crud.update_task"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r011_stc.db')\nfrom sqlalchemy import create_engine\nfrom app.database import Base\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite:///./test_r011_stc.db', connect_args={'check_same_thread': False})\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_put_deleted_task_returns_404():\n    r_create = client.post('/tasks/', json={'title': 'To Delete', 'completed': False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()['id']\n    r_delete = client.delete(f'/tasks/{task_id}')\n    assert r_delete.status_code == 204\n    r_update = client.put(f'/tasks/{task_id}', json={'title': 'Revived Task'})\n    assert r_update.status_code == 404\n    body = r_update.json()\n    assert 'detail' in body\n    assert str(task_id) in body['detail']\n    assert 'not found' in body['detail'].lower()\n"
+      },
+      {
+        "name": "test_put_id_one_more_than_last_created_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty before test",
+          "One task is created so its id is known"
+        ],
+        "actions": [
+          "POST /tasks/ to create one task and record its id",
+          "PUT /tasks/{task_id + 1} with title='Off By One Task'"
+        ],
+        "expected": [
+          "HTTP 404 response for id = max_existing_id + 1",
+          "Response JSON detail contains the attempted id and 'not found'"
+        ],
+        "trace": [
+          "R-TASK-011: boundary at max_id+1 \u2014 one beyond the highest existing id",
+          "BVA: off-by-one boundary mutation; catches mutations that use >= instead of == in id lookup"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r011_bva1.db')\nfrom sqlalchemy import create_engine\nfrom app.database import Base\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite:///./test_r011_bva1.db', connect_args={'check_same_thread': False})\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_put_id_one_more_than_last_created_returns_404():\n    r_create = client.post('/tasks/', json={'title': 'Boundary Task', 'completed': False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()['id']\n    nonexistent_id = task_id + 1\n    r = client.put(f'/tasks/{nonexistent_id}', json={'title': 'Off By One Task'})\n    assert r.status_code == 404\n    body = r.json()\n    assert 'detail' in body\n    assert str(nonexistent_id) in body['detail']\n    assert 'not found' in body['detail'].lower()\n"
+      },
+      {
+        "name": "test_put_nonexistent_does_not_return_200_or_201",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty before test",
+          "No task with id=42 exists"
+        ],
+        "actions": [
+          "PUT /tasks/42 with all optional fields set: title, description, completed"
+        ],
+        "expected": [
+          "HTTP status code is exactly 404",
+          "HTTP status code is NOT 200",
+          "HTTP status code is NOT 201",
+          "Response body is JSON with key 'detail'"
+        ],
+        "trace": [
+          "R-TASK-011: decision table \u2014 non-existent id with full payload must still yield 404",
+          "DT: covers the decision branch where crud.update_task returns None regardless of payload content; catches mutations that return 200 or skip the None check"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r011_dt.db')\nfrom sqlalchemy import create_engine\nfrom app.database import Base\nfrom app.main import app\nfrom fastapi.testclient import TestClient\n\nengine = create_engine('sqlite:///./test_r011_dt.db', connect_args={'check_same_thread': False})\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ndef test_put_nonexistent_does_not_return_200_or_201():\n    payload = {'title': 'Full Payload', 'description': 'desc', 'completed': True}\n    r = client.put('/tasks/42', json=payload)\n    assert r.status_code == 404\n    assert r.status_code != 200\n    assert r.status_code != 201\n    body = r.json()\n    assert isinstance(body, dict)\n    assert 'detail' in body\n    assert body['detail'] != ''\n    assert '42' in body['detail']\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-011",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 0,
+  "verify_violations": [
+    "[logical] test[3] negative kind but heuristic=STC"
+  ],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4852,
+    "output_tokens": 3408,
+    "latency_ms": 43095,
+    "wall_ms": 43095,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-011\",\n  \"reasoning\": \"R-TASK-011 requires that PUT /tasks/{task_id} returns HTTP 404 when the task_id does not exist. To achieve high mutation kill rate we need: (1) a positive case confirming a real task CAN be updated (200 path), (2) a negative case confirming a non-existent id returns exactly 404 with the correct detail string, (3) a boundary case at task_id=0 (invalid/non-existent boundary), and additional cases testing id=1 after deletion (state transition) and a very large id. We assert exact status codes and exact JSON fields to catch operator-flip and constant-bump mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_existing_task_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty before test\",\n        \"A task is created via POST /tasks/ to obtain a valid task_id\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title='Existing Task' to create a task\",\n        \"Record the returned task id\",\n        \"PUT /tasks/{task_id} with title='Updated Task'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response JSON contains id matching the created task\",\n        \"Response JSON title equals 'Updated Task'\"\n      ],\n      \"trace\": [\n        \"R-TASK-011: verifies the 2xx success path exists so 404 path is distinguishable\",\n        \"EP: valid task_id partition\"\n      ],\n      \"executable\": \"import os, sys\\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r011_pos.db')\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.database import Base\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\n\\nengine = create_engine('sqlite:///./test_r011_pos.db', connect_args={'check_same_thread': False})\\nBase.metadata.drop_all(bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\ndef test_put_existing_task_returns_200():\\n    r_create = client.post('/tasks/', json={'title': 'Existing Task', 'description': None, 'completed': False})\\n    assert r_create.status_code == 201\\n    task_id = r_create.json()['id']\\n    r_update = client.put(f'/tasks/{task_id}', json={'title': 'Updated Task'})\\n    assert r_update.status_code == 200\\n    body = r_update.json()\\n    assert body['id'] == task_id\\n    assert body['title'] == 'Updated Task'\\n    assert body['completed'] == False\\n\"\n    },\n    {\n      \"name\": \"test_put_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty before test\",\n        \"No task with id=9999 exists\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/9999 with title='Ghost Task'\"\n      ],\n      \"expected\": [\n        \"HTTP 404 response (not 200, not 400, not 500)\",\n        \"Response JSON detail contains 'not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-011: primary error pathway \u2014 non-existent task_id must yield 404\",\n        \"NEG: non-existent id partition; catches status-code constant mutations (404->200, 404->400)\"\n      ],\n      \"executable\": \"import os\\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r011_neg.db')\\nfrom sqlalchemy import create_engine\\nfrom app.database import Base\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\n\\nengine = create_engine('sqlite:///./test_r011_neg.db', connect_args={'check_same_thread': False})\\nBase.metadata.drop_all(bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\ndef test_put_nonexistent_task_returns_404():\\n    r = client.put('/tasks/9999', json={'title': 'Ghost Task'})\\n    assert r.status_code == 404\\n    body = r.json()\\n    assert 'detail' in body\\n    detail = body['detail']\\n    assert 'not found' in detail.lower()\\n    assert '9999' in detail\\n\"\n    },\n    {\n      \"name\": \"test_put_task_id_zero_returns_404\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is empty before test\",\n "
+  }
+}

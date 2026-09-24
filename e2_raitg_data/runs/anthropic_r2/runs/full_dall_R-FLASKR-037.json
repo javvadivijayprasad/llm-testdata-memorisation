@@ -1,0 +1,161 @@
+{
+  "req": {
+    "id": "R-FLASKR-037",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Index renders even with zero posts",
+    "statement": "The system shall render the index page with 'No posts' or empty state when the post table is empty.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "index renders even with zero posts"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-037",
+    "reasoning": "R-FLASKR-037 requires that GET / returns HTTP 2xx even when the post table is empty. Three tests are designed: (1) positive \u2014 empty DB, verify 200 and empty posts list renders without error; (2) negative \u2014 verify that with posts present the page still returns 200 but contains post content (confirming the empty-state path is distinct from the populated path); (3) boundary \u2014 exactly zero posts (BVA at the boundary of 0 vs 1 post), confirming the transition from empty to non-empty state. Each test uses an isolated temp DB, initialises schema, and drives the Flask test client in-process. Assertions are exact-value to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_index_empty_db_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is initialised with schema but zero rows in post table",
+          "No user is logged in"
+        ],
+        "actions": [
+          "Send GET / with an empty post table"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body does not contain any post title from the seed data"
+        ],
+        "trace": [
+          "R-FLASKR-037: index renders even with zero posts -> HTTP 2xx"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    # Delete all posts to guarantee empty state\n    from flaskr.db import get_db\n    db = get_db()\n    db.execute('DELETE FROM post')\n    db.commit()\n\nclient = app.test_client()\n\ndef test_index_empty_db_returns_200():\n    r = client.get('/')\n    assert r.status_code == 200\n    # No post titles from seed data should appear\n    assert b'Pulse ember signal' not in r.data\n    assert b'Pillow delta willow' not in r.data\n\ntest_index_empty_db_returns_200()\nos.unlink(path)\n"
+      },
+      {
+        "name": "test_index_with_posts_returns_200_and_content",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is initialised with 20 posts from seed data",
+          "No user is logged in"
+        ],
+        "actions": [
+          "Send GET / with a populated post table"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body contains at least one known post title from seed data",
+          "Response body is non-empty (len > 0)"
+        ],
+        "trace": [
+          "R-FLASKR-037: contrasts populated state against empty state; confirms empty-state path is distinct"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    from flaskr.db import get_db\n    db = get_db()\n    db.execute(\"INSERT INTO user (id,username,password) VALUES (5,'James','pbkdf2:sha256:260000$x$x')\")\n    db.execute(\"INSERT INTO post (id,author_id,created,title,body) VALUES (1,5,'2025-03-16 00:01:36','Pulse ember signal','Alpha delta willow vertex flux')\")\n    db.commit()\n\nclient = app.test_client()\n\ndef test_index_with_posts_returns_200_and_content():\n    r = client.get('/')\n    assert r.status_code == 200\n    assert b'Pulse ember signal' in r.data\n    assert len(r.data) > 0\n\ntest_index_with_posts_returns_200_and_content()\nos.unlink(path)\n"
+      },
+      {
+        "name": "test_index_boundary_zero_to_one_post",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database schema initialised",
+          "Post table starts with zero rows (boundary at 0)"
+        ],
+        "actions": [
+          "Send GET / with zero posts \u2014 record status and body",
+          "Insert exactly one post",
+          "Send GET / again \u2014 record status and body"
+        ],
+        "expected": [
+          "Both requests return HTTP 200 exactly",
+          "With zero posts: response does not contain the inserted post title",
+          "With one post: response contains the inserted post title"
+        ],
+        "trace": [
+          "R-FLASKR-037: BVA at boundary 0 posts (must render) and 1 post (must also render with content)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    from flaskr.db import get_db\n    db = get_db()\n    db.execute('DELETE FROM post')\n    db.execute('DELETE FROM user')\n    db.commit()\n\nclient = app.test_client()\n\ndef test_index_boundary_zero_to_one_post():\n    # Boundary: 0 posts\n    r0 = client.get('/')\n    assert r0.status_code == 200\n    assert b'Boundary Post Title' not in r0.data\n\n    # Transition: insert exactly 1 post\n    with app.app_context():\n        from flaskr.db import get_db\n        db = get_db()\n        db.execute(\"INSERT INTO user (id,username,password) VALUES (1,'Rahul','x')\")\n        db.execute(\"INSERT INTO post (id,author_id,created,title,body) VALUES (1,1,'2025-01-01 00:00:00','Boundary Post Title','Body text')\")\n        db.commit()\n\n    # Boundary: 1 post\n    r1 = client.get('/')\n    assert r1.status_code == 200\n    assert b'Boundary Post Title' in r1.data\n\ntest_index_boundary_zero_to_one_post()\nos.unlink(path)\n"
+      },
+      {
+        "name": "test_index_empty_db_response_is_html",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database initialised with schema, post table empty",
+          "No user logged in"
+        ],
+        "actions": [
+          "Send GET / with empty post table",
+          "Inspect Content-Type header and response body"
+        ],
+        "expected": [
+          "HTTP 200 exactly",
+          "Content-Type contains 'text/html'",
+          "Response body length greater than zero (page skeleton rendered)"
+        ],
+        "trace": [
+          "R-FLASKR-037: system shall render the index page \u2014 confirms HTML is returned, not an error page or empty body"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    from flaskr.db import get_db\n    db = get_db()\n    db.execute('DELETE FROM post')\n    db.commit()\n\nclient = app.test_client()\n\ndef test_index_empty_db_response_is_html():\n    r = client.get('/')\n    assert r.status_code == 200\n    ct = r.headers.get('Content-Type', '')\n    assert 'text/html' in ct\n    assert len(r.data) > 0\n    # Must not be a 4xx or 5xx error page\n    assert b'500' not in r.data[:200]\n    assert b'404' not in r.data[:200]\n\ntest_index_empty_db_response_is_html()\nos.unlink(path)\n"
+      },
+      {
+        "name": "test_index_empty_db_no_4xx_on_client_request",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database initialised with schema, post table empty",
+          "Client sends a well-formed GET / request"
+        ],
+        "actions": [
+          "Send GET / with empty post table",
+          "Assert status code is NOT in 4xx range"
+        ],
+        "expected": [
+          "HTTP status code is 200, not 400, 403, 404, or 405",
+          "Error pathway (HTTP 4xx) does NOT occur for a valid client request"
+        ],
+        "trace": [
+          "R-FLASKR-037: Error pathways: HTTP 4xx on client error \u2014 a valid GET / must not produce 4xx"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    from flaskr.db import get_db\n    db = get_db()\n    db.execute('DELETE FROM post')\n    db.commit()\n\nclient = app.test_client()\n\ndef test_index_empty_db_no_4xx_on_client_request():\n    r = client.get('/')\n    # Exact assertion: must be 200, not any 4xx\n    assert r.status_code == 200\n    assert r.status_code != 400\n    assert r.status_code != 403\n    assert r.status_code != 404\n    assert r.status_code != 405\n    assert r.status_code != 500\n\ntest_index_empty_db_no_4xx_on_client_request()\nos.unlink(path)\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-037",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8443,
+    "output_tokens": 2862,
+    "latency_ms": 38466,
+    "wall_ms": 38466,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-037\",\n  \"reasoning\": \"R-FLASKR-037 requires that GET / returns HTTP 2xx even when the post table is empty. Three tests are designed: (1) positive \u2014 empty DB, verify 200 and empty posts list renders without error; (2) negative \u2014 verify that with posts present the page still returns 200 but contains post content (confirming the empty-state path is distinct from the populated path); (3) boundary \u2014 exactly zero posts (BVA at the boundary of 0 vs 1 post), confirming the transition from empty to non-empty state. Each test uses an isolated temp DB, initialises schema, and drives the Flask test client in-process. Assertions are exact-value to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_index_empty_db_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is initialised with schema but zero rows in post table\",\n        \"No user is logged in\"\n      ],\n      \"actions\": [\n        \"Send GET / with an empty post table\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body does not contain any post title from the seed data\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-037: index renders even with zero posts -> HTTP 2xx\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n    # Delete all posts to guarantee empty state\\n    from flaskr.db import get_db\\n    db = get_db()\\n    db.execute('DELETE FROM post')\\n    db.commit()\\n\\nclient = app.test_client()\\n\\ndef test_index_empty_db_returns_200():\\n    r = client.get('/')\\n    assert r.status_code == 200\\n    # No post titles from seed data should appear\\n    assert b'Pulse ember signal' not in r.data\\n    assert b'Pillow delta willow' not in r.data\\n\\ntest_index_empty_db_returns_200()\\nos.unlink(path)\\n\"\n    },\n    {\n      \"name\": \"test_index_with_posts_returns_200_and_content\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is initialised with 20 posts from seed data\",\n        \"No user is logged in\"\n      ],\n      \"actions\": [\n        \"Send GET / with a populated post table\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body contains at least one known post title from seed data\",\n        \"Response body is non-empty (len > 0)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-037: contrasts populated state against empty state; confirms empty-state path is distinct\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n    from flaskr.db import get_db\\n    db = get_db()\\n    db.execute(\\\"INSERT INTO user (id,username,password) VALUES (5,'James','pbkdf2:sha256:260000$x$x')\\\")\\n    db.execute(\\\"INSERT INTO post (id,author_id,created,title,body) VALUES (1,5,'2025-03-16 00:01:36','Pulse ember signal','Alpha delta willow vertex flux')\\\")\\n    db.commit()\\n\\nclient = app.test_client()\\n\\ndef test_index_with_posts_returns_200_and_content():\\n    r = client.get('/')\\n    assert r.status_code == 200\\n    assert b'Pulse ember signal' in r.data\\n    assert len(r.data) > 0\\n\\ntest_index_with_posts_returns_200_and_content()\\nos.unlink(path)\\n\"\n    },\n    {\n      \"name\": \"test_index_boundary_zero_to_one_post\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database schema initialised\",\n        \"Post table starts with zero rows (boundary at 0)\"\n      ],\n      \"actions\": [\n        \"Send GET / with zero posts \u2014 record status and body\",\n        \"Insert exactly one post\",\n        \"Send GET / again \u2014 record status and body\"\n      ],\n    "
+  }
+}

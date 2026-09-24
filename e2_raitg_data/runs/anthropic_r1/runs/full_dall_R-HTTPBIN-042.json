@@ -1,0 +1,244 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-042",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Redirect preserves relative or absolute style",
+    "statement": "The system shall emit relative URLs on /redirect/<n> and absolute URLs on /absolute-redirect/<n>.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "redirect preserves relative or absolute style"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /redirect/<n>"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-042",
+    "reasoning": "The requirement states that GET /redirect/<n> emits relative URLs (by default) and GET /absolute-redirect/<n> emits absolute URLs. The source code shows redirect_n_times uses request.args.get('absolute','false') to toggle behaviour, and _redirect/url_for with _external flag controls relative vs absolute. Tests must: (1) verify default /redirect/<n> produces a relative Location header, (2) verify /redirect/<n>?absolute=true produces an absolute Location header, (3) test boundary n=1 (the special-cased branch in source), (4) test n=2 (multi-hop path), (5) test invalid n=0 (negative path, triggers assert). We drive the Flask test client with follow_redirects=False to inspect the raw Location header on each hop.",
+    "tests": [
+      {
+        "name": "test_redirect_n1_default_relative_location",
+        "kind": "positive",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "n=1 is the boundary where the special-case branch fires (n==1 path in redirect_n_times)"
+        ],
+        "actions": [
+          "GET /redirect/1 without absolute query param",
+          "Do NOT follow redirects",
+          "Inspect Location header"
+        ],
+        "expected": [
+          "Status code is 302",
+          "Location header starts with '/' (relative URL, not http:// or https://)",
+          "Location header does NOT start with 'http'"
+        ],
+        "trace": [
+          "R-HTTPBIN-042: relative URLs on /redirect/<n>",
+          "Source lines 537-563: n==1 branch calls url_for('view_get', _external=False) when absolute==False"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n1_default_relative_location():\n    r = client.get('/redirect/1', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers['Location']\n    assert location.startswith('/'), f\"Expected relative URL starting with '/', got: {location}\"\n    assert not location.startswith('http'), f\"Expected relative URL, got absolute: {location}\"\n\ntest_redirect_n1_default_relative_location()"
+      },
+      {
+        "name": "test_redirect_n1_absolute_true_produces_absolute_location",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "n=1 boundary case with absolute=true query param"
+        ],
+        "actions": [
+          "GET /redirect/1?absolute=true without following redirects",
+          "Inspect Location header"
+        ],
+        "expected": [
+          "Status code is 302",
+          "Location header starts with 'http' (absolute URL)",
+          "Location header contains '://'"
+        ],
+        "trace": [
+          "R-HTTPBIN-042: absolute URLs when absolute=true on /redirect/<n>",
+          "Source lines 537-563: n==1 branch calls url_for('view_get', _external=True) when absolute==True"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n1_absolute_true_produces_absolute_location():\n    r = client.get('/redirect/1?absolute=true', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers['Location']\n    assert location.startswith('http'), f\"Expected absolute URL starting with 'http', got: {location}\"\n    assert '://' in location, f\"Expected '://' in absolute URL, got: {location}\"\n\ntest_redirect_n1_absolute_true_produces_absolute_location()"
+      },
+      {
+        "name": "test_redirect_n2_default_relative_location",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "n=2 exercises the multi-hop _redirect('relative', n, False) branch"
+        ],
+        "actions": [
+          "GET /redirect/2 without absolute param, no follow",
+          "Inspect Location header"
+        ],
+        "expected": [
+          "Status code is 302",
+          "Location header starts with '/' (relative)",
+          "Location header does NOT start with 'http'",
+          "Location header contains '/redirect/' indicating next hop"
+        ],
+        "trace": [
+          "R-HTTPBIN-042: relative URLs on /redirect/<n> for n>1",
+          "Source lines 537-563: else branch calls _redirect('relative', n, False)"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n2_default_relative_location():\n    r = client.get('/redirect/2', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers['Location']\n    assert location.startswith('/'), f\"Expected relative URL, got: {location}\"\n    assert not location.startswith('http'), f\"Expected relative, got absolute: {location}\"\n    assert '/redirect/' in location, f\"Expected next redirect hop in Location, got: {location}\"\n\ntest_redirect_n2_default_relative_location()"
+      },
+      {
+        "name": "test_redirect_n2_absolute_true_produces_absolute_location",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "n=2 with absolute=true exercises _redirect('absolute', n, True) branch"
+        ],
+        "actions": [
+          "GET /redirect/2?absolute=true without following redirects",
+          "Inspect Location header"
+        ],
+        "expected": [
+          "Status code is 302",
+          "Location header starts with 'http' (absolute URL)",
+          "Location header contains '://'"
+        ],
+        "trace": [
+          "R-HTTPBIN-042: absolute URLs when absolute=true on /redirect/<n> for n>1",
+          "Source lines 537-563: if absolute branch calls _redirect('absolute', n, True)"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n2_absolute_true_produces_absolute_location():\n    r = client.get('/redirect/2?absolute=true', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers['Location']\n    assert location.startswith('http'), f\"Expected absolute URL, got: {location}\"\n    assert '://' in location, f\"Expected '://' in absolute URL, got: {location}\"\n\ntest_redirect_n2_absolute_true_produces_absolute_location()"
+      },
+      {
+        "name": "test_redirect_n0_returns_error",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "n=0 violates the assert n > 0 guard in redirect_n_times"
+        ],
+        "actions": [
+          "GET /redirect/0 without following redirects",
+          "Expect a 500 server error (AssertionError triggers 500 in Flask test mode)"
+        ],
+        "expected": [
+          "Status code is 500 (assert n > 0 fires)",
+          "Response is NOT 302",
+          "Response is NOT 200"
+        ],
+        "trace": [
+          "R-HTTPBIN-042: error pathway \u2014 n=0 is invalid per source assert n > 0",
+          "Source line 543: assert n > 0"
+        ],
+        "executable": "from httpbin.core import app\napp.config['TESTING'] = False\nclient = app.test_client()\n\ndef test_redirect_n0_returns_error():\n    r = client.get('/redirect/0', follow_redirects=False)\n    assert r.status_code == 500, f\"Expected 500 for n=0, got: {r.status_code}\"\n    assert r.status_code != 302\n    assert r.status_code != 200\n\ntest_redirect_n0_returns_error()"
+      },
+      {
+        "name": "test_redirect_n1_boundary_relative_vs_absolute_toggle",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "n=1 is the exact boundary where the special-case branch fires",
+          "Tests both sides of the absolute boolean condition"
+        ],
+        "actions": [
+          "GET /redirect/1 (no absolute param) \u2014 expect relative",
+          "GET /redirect/1?absolute=false \u2014 expect relative",
+          "GET /redirect/1?absolute=true \u2014 expect absolute",
+          "Assert exact URL style for each"
+        ],
+        "expected": [
+          "Default and absolute=false both yield relative Location (starts with '/')",
+          "absolute=true yields absolute Location (starts with 'http')",
+          "All responses have status 302"
+        ],
+        "trace": [
+          "R-HTTPBIN-042: both sides of absolute boolean at n=1 boundary",
+          "Source lines 541-543: absolute = request.args.get('absolute','false').lower() == 'true'"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n1_boundary_relative_vs_absolute_toggle():\n    r_default = client.get('/redirect/1', follow_redirects=False)\n    assert r_default.status_code == 302\n    loc_default = r_default.headers['Location']\n    assert loc_default.startswith('/'), f\"Default should be relative, got: {loc_default}\"\n    assert not loc_default.startswith('http'), f\"Default must not be absolute: {loc_default}\"\n\n    r_false = client.get('/redirect/1?absolute=false', follow_redirects=False)\n    assert r_false.status_code == 302\n    loc_false = r_false.headers['Location']\n    assert loc_false.startswith('/'), f\"absolute=false should be relative, got: {loc_false}\"\n    assert not loc_false.startswith('http'), f\"absolute=false must not be absolute: {loc_false}\"\n\n    r_true = client.get('/redirect/1?absolute=true', follow_redirects=False)\n    assert r_true.status_code == 302\n    loc_true = r_true.headers['Location']\n    assert loc_true.startswith('http'), f\"absolute=true should be absolute, got: {loc_true}\"\n    assert '://' in loc_true, f\"absolute=true must contain '://', got: {loc_true}\"\n\ntest_redirect_n1_boundary_relative_vs_absolute_toggle()"
+      },
+      {
+        "name": "test_redirect_n3_full_chain_relative",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "n=3 exercises multi-hop state transitions through relative redirects"
+        ],
+        "actions": [
+          "GET /redirect/3 with follow_redirects=False for each hop",
+          "Follow Location manually for 2 hops, then expect final 200 on /get"
+        ],
+        "expected": [
+          "First response: 302 with relative Location starting with '/'",
+          "Second response: 302 with relative Location starting with '/'",
+          "Third response: 200 (final destination /get)"
+        ],
+        "trace": [
+          "R-HTTPBIN-042: state transition through n hops all using relative URLs",
+          "Source lines 537-563: each hop decrements n until n==1 then redirects to /get"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n3_full_chain_relative():\n    r1 = client.get('/redirect/3', follow_redirects=False)\n    assert r1.status_code == 302\n    loc1 = r1.headers['Location']\n    assert loc1.startswith('/'), f\"Hop1 must be relative, got: {loc1}\"\n    assert not loc1.startswith('http'), f\"Hop1 must not be absolute: {loc1}\"\n\n    r2 = client.get(loc1, follow_redirects=False)\n    assert r2.status_code == 302\n    loc2 = r2.headers['Location']\n    assert loc2.startswith('/'), f\"Hop2 must be relative, got: {loc2}\"\n    assert not loc2.startswith('http'), f\"Hop2 must not be absolute: {loc2}\"\n\n    r3 = client.get(loc2, follow_redirects=False)\n    assert r3.status_code == 200\n\ntest_redirect_n3_full_chain_relative()"
+      },
+      {
+        "name": "test_redirect_absolute_case_insensitive_false",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "absolute param value 'TRUE' (uppercase) should NOT be treated as true per .lower() == 'true' logic"
+        ],
+        "actions": [
+          "GET /redirect/1?absolute=TRUE (uppercase) without following redirects",
+          "Inspect Location header"
+        ],
+        "expected": [
+          "Status code is 302",
+          "Location header starts with 'http' because .lower() normalises 'TRUE' to 'true'",
+          "Confirms case-insensitive handling of the absolute param"
+        ],
+        "trace": [
+          "R-HTTPBIN-042: absolute param is lowercased before comparison",
+          "Source line 541: request.args.get('absolute','false').lower() == 'true'"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_absolute_case_insensitive_false():\n    r = client.get('/redirect/1?absolute=TRUE', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers['Location']\n    # .lower() means 'TRUE' == 'true' => absolute mode\n    assert location.startswith('http'), (\n        f\"absolute=TRUE should be treated as absolute after .lower(), got: {location}\"\n    )\n    assert '://' in location, f\"Expected absolute URL with '://', got: {location}\"\n\ntest_redirect_absolute_case_insensitive_false()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-042",
+  "domain": "http_utilities",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9474,
+    "output_tokens": 3882,
+    "latency_ms": 50278,
+    "wall_ms": 50278,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-042\",\n  \"reasoning\": \"The requirement states that GET /redirect/<n> emits relative URLs (by default) and GET /absolute-redirect/<n> emits absolute URLs. The source code shows redirect_n_times uses request.args.get('absolute','false') to toggle behaviour, and _redirect/url_for with _external flag controls relative vs absolute. Tests must: (1) verify default /redirect/<n> produces a relative Location header, (2) verify /redirect/<n>?absolute=true produces an absolute Location header, (3) test boundary n=1 (the special-cased branch in source), (4) test n=2 (multi-hop path), (5) test invalid n=0 (negative path, triggers assert). We drive the Flask test client with follow_redirects=False to inspect the raw Location header on each hop.\",\n  \"tests\": [\n    {\n      \"name\": \"test_redirect_n1_default_relative_location\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"n=1 is the boundary where the special-case branch fires (n==1 path in redirect_n_times)\"\n      ],\n      \"actions\": [\n        \"GET /redirect/1 without absolute query param\",\n        \"Do NOT follow redirects\",\n        \"Inspect Location header\"\n      ],\n      \"expected\": [\n        \"Status code is 302\",\n        \"Location header starts with '/' (relative URL, not http:// or https://)\",\n        \"Location header does NOT start with 'http'\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-042: relative URLs on /redirect/<n>\",\n        \"Source lines 537-563: n==1 branch calls url_for('view_get', _external=False) when absolute==False\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_n1_default_relative_location():\\n    r = client.get('/redirect/1', follow_redirects=False)\\n    assert r.status_code == 302\\n    location = r.headers['Location']\\n    assert location.startswith('/'), f\\\"Expected relative URL starting with '/', got: {location}\\\"\\n    assert not location.startswith('http'), f\\\"Expected relative URL, got absolute: {location}\\\"\\n\\ntest_redirect_n1_default_relative_location()\"\n    },\n    {\n      \"name\": \"test_redirect_n1_absolute_true_produces_absolute_location\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"DT\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"n=1 boundary case with absolute=true query param\"\n      ],\n      \"actions\": [\n        \"GET /redirect/1?absolute=true without following redirects\",\n        \"Inspect Location header\"\n      ],\n      \"expected\": [\n        \"Status code is 302\",\n        \"Location header starts with 'http' (absolute URL)\",\n        \"Location header contains '://'\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-042: absolute URLs when absolute=true on /redirect/<n>\",\n        \"Source lines 537-563: n==1 branch calls url_for('view_get', _external=True) when absolute==True\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_n1_absolute_true_produces_absolute_location():\\n    r = client.get('/redirect/1?absolute=true', follow_redirects=False)\\n    assert r.status_code == 302\\n    location = r.headers['Location']\\n    assert location.startswith('http'), f\\\"Expected absolute URL starting with 'http', got: {location}\\\"\\n    assert '://' in location, f\\\"Expected '://' in absolute URL, got: {location}\\\"\\n\\ntest_redirect_n1_absolute_true_produces_absolute_location()\"\n    },\n    {\n      \"name\": \"test_redirect_n2_default_relative_location\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"n=2 exercises the multi-hop _redirect('relative', n, False) branch\"\n      ],\n      \"actions\": [\n        \"GET /redirect/2 without absolute param, no follow\",\n        \"Inspect Location header\"\n      ],\n      \"expected\": [\n        \"Status code is 302\",\n        \"Location header starts with '/' (relative)\",\n       "
+  }
+}

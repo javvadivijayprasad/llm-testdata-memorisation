@@ -1,0 +1,223 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-020",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "authn",
+    "title": "Basic-auth rejects missing header",
+    "statement": "The system shall respond with HTTP 401 when the Authorization header is entirely absent from a request to /basic-auth/<user>/<passwd>.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "basic-auth rejects missing header"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 401 without Auth header"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /basic-auth/<user>/<passwd>"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-020",
+    "reasoning": "The requirement states that GET /basic-auth/<user>/<passwd> must return HTTP 401 when the Authorization header is entirely absent. To achieve high mutation kill rate we need: (1) a negative test confirming 401 on missing header with exact status code assertion, (2) a positive test confirming 200 with correct credentials to verify the comparison logic in check_basic_auth is not trivially broken, (3) a boundary test confirming the WWW-Authenticate header is present in the 401 response (the status_code helper sets it for 401), (4) a decision-table test covering the case where Authorization header is present but wrong credentials (still 401, different branch), and (5) a state-transition test verifying the authenticated/user payload on success. This covers both sides of the boolean in check_basic_auth (auth and auth.username==user and auth.password==passwd), the exact 401 constant, and the exact 200 constant.",
+    "tests": [
+      {
+        "name": "test_basic_auth_missing_header_returns_401",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "No Authorization header is sent with the request"
+        ],
+        "actions": [
+          "Import httpbin.core app",
+          "Create test client",
+          "GET /basic-auth/user/passwd with no Authorization header"
+        ],
+        "expected": [
+          "HTTP status code is exactly 401",
+          "Response does not contain authenticated=true"
+        ],
+        "trace": [
+          "R-HTTPBIN-020",
+          "check_basic_auth returns falsy when request.authorization is None",
+          "basic_auth route calls status_code(401)"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_basic_auth_missing_header_returns_401():\n    client = app.test_client()\n    r = client.get('/basic-auth/user/passwd')\n    assert r.status_code == 401\n    data = r.get_data(as_text=True)\n    assert 'authenticated' not in data.lower() or 'true' not in data.lower()\n\ntest_basic_auth_missing_header_returns_401()"
+      },
+      {
+        "name": "test_basic_auth_valid_credentials_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Authorization header carries correct Basic credentials for user/passwd"
+        ],
+        "actions": [
+          "Import httpbin.core app",
+          "Create test client",
+          "GET /basic-auth/myuser/mypass with correct Basic auth header"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "JSON body contains authenticated=true and user=myuser"
+        ],
+        "trace": [
+          "R-HTTPBIN-020",
+          "check_basic_auth returns True when credentials match",
+          "basic_auth route returns jsonify(authenticated=True, user=user)"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\ndef test_basic_auth_valid_credentials_returns_200():\n    client = app.test_client()\n    creds = base64.b64encode(b'myuser:mypass').decode('ascii')\n    r = client.get(\n        '/basic-auth/myuser/mypass',\n        headers={'Authorization': 'Basic ' + creds}\n    )\n    assert r.status_code == 200\n    body = r.get_json()\n    assert body['authenticated'] == True\n    assert body['user'] == 'myuser'\n\ntest_basic_auth_valid_credentials_returns_200()"
+      },
+      {
+        "name": "test_basic_auth_missing_header_has_www_authenticate",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "No Authorization header is sent"
+        ],
+        "actions": [
+          "Import httpbin.core app",
+          "Create test client",
+          "GET /basic-auth/user/passwd with no Authorization header",
+          "Inspect WWW-Authenticate response header"
+        ],
+        "expected": [
+          "HTTP status code is exactly 401",
+          "WWW-Authenticate header is present in the response",
+          "WWW-Authenticate header value contains 'Basic'"
+        ],
+        "trace": [
+          "R-HTTPBIN-020",
+          "status_code(401) in helpers.py sets WWW-Authenticate: Basic realm=\"Fake Realm\"",
+          "Boundary: the 401 code_map entry must be triggered, not a generic 4xx"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_basic_auth_missing_header_has_www_authenticate():\n    client = app.test_client()\n    r = client.get('/basic-auth/user/passwd')\n    assert r.status_code == 401\n    www_auth = r.headers.get('WWW-Authenticate', '')\n    assert www_auth != ''\n    assert 'Basic' in www_auth\n\ntest_basic_auth_missing_header_has_www_authenticate()"
+      },
+      {
+        "name": "test_basic_auth_wrong_password_returns_401",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Authorization header is present but password is incorrect"
+        ],
+        "actions": [
+          "Import httpbin.core app",
+          "Create test client",
+          "GET /basic-auth/user/correctpass with Basic auth header using wrong password"
+        ],
+        "expected": [
+          "HTTP status code is exactly 401",
+          "Response body does not contain authenticated=true"
+        ],
+        "trace": [
+          "R-HTTPBIN-020",
+          "check_basic_auth: auth.password != passwd causes falsy return",
+          "DT: header present but password mismatch \u2014 different branch from missing header"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\ndef test_basic_auth_wrong_password_returns_401():\n    client = app.test_client()\n    creds = base64.b64encode(b'user:wrongpass').decode('ascii')\n    r = client.get(\n        '/basic-auth/user/correctpass',\n        headers={'Authorization': 'Basic ' + creds}\n    )\n    assert r.status_code == 401\n    body = r.get_data(as_text=True)\n    assert 'true' not in body.lower()\n\ntest_basic_auth_wrong_password_returns_401()"
+      },
+      {
+        "name": "test_basic_auth_wrong_username_returns_401",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Authorization header is present but username is incorrect"
+        ],
+        "actions": [
+          "Import httpbin.core app",
+          "Create test client",
+          "GET /basic-auth/correctuser/pass with Basic auth header using wrong username"
+        ],
+        "expected": [
+          "HTTP status code is exactly 401"
+        ],
+        "trace": [
+          "R-HTTPBIN-020",
+          "check_basic_auth: auth.username != user causes falsy return",
+          "DT: tests the username comparison branch independently from password branch"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\ndef test_basic_auth_wrong_username_returns_401():\n    client = app.test_client()\n    creds = base64.b64encode(b'wronguser:pass').decode('ascii')\n    r = client.get(\n        '/basic-auth/correctuser/pass',\n        headers={'Authorization': 'Basic ' + creds}\n    )\n    assert r.status_code == 401\n\ntest_basic_auth_wrong_username_returns_401()"
+      },
+      {
+        "name": "test_basic_auth_missing_header_not_200",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "No Authorization header is sent"
+        ],
+        "actions": [
+          "Import httpbin.core app",
+          "Create test client",
+          "GET /basic-auth/a/b with no Authorization header",
+          "Assert status is not 200 and not 403"
+        ],
+        "expected": [
+          "HTTP status code is exactly 401 (not 200, not 403, not 400)"
+        ],
+        "trace": [
+          "R-HTTPBIN-020",
+          "BVA: 401 is the exact boundary \u2014 catches mutations to 400, 403, 200"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_basic_auth_missing_header_not_200():\n    client = app.test_client()\n    r = client.get('/basic-auth/a/b')\n    assert r.status_code == 401\n    assert r.status_code != 200\n    assert r.status_code != 403\n    assert r.status_code != 400\n\ntest_basic_auth_missing_header_not_200()"
+      },
+      {
+        "name": "test_basic_auth_success_payload_exact_fields",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Correct credentials for testuser/testpass are provided"
+        ],
+        "actions": [
+          "Import httpbin.core app",
+          "Create test client",
+          "GET /basic-auth/testuser/testpass with correct Basic auth",
+          "Assert exact JSON payload fields and values"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "JSON body is exactly {\"authenticated\": true, \"user\": \"testuser\"}"
+        ],
+        "trace": [
+          "R-HTTPBIN-020",
+          "EP: valid partition \u2014 both authenticated and user fields must match exactly",
+          "Catches mutations to the jsonify call or the user variable"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\ndef test_basic_auth_success_payload_exact_fields():\n    client = app.test_client()\n    creds = base64.b64encode(b'testuser:testpass').decode('ascii')\n    r = client.get(\n        '/basic-auth/testuser/testpass',\n        headers={'Authorization': 'Basic ' + creds}\n    )\n    assert r.status_code == 200\n    body = r.get_json()\n    assert set(body.keys()) == {'authenticated', 'user'}\n    assert body['authenticated'] is True\n    assert body['user'] == 'testuser'\n\ntest_basic_auth_success_payload_exact_fields()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-020",
+  "domain": "http_utilities",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 1.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9478,
+    "output_tokens": 2907,
+    "latency_ms": 38385,
+    "wall_ms": 38385,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-020\",\n  \"reasoning\": \"The requirement states that GET /basic-auth/<user>/<passwd> must return HTTP 401 when the Authorization header is entirely absent. To achieve high mutation kill rate we need: (1) a negative test confirming 401 on missing header with exact status code assertion, (2) a positive test confirming 200 with correct credentials to verify the comparison logic in check_basic_auth is not trivially broken, (3) a boundary test confirming the WWW-Authenticate header is present in the 401 response (the status_code helper sets it for 401), (4) a decision-table test covering the case where Authorization header is present but wrong credentials (still 401, different branch), and (5) a state-transition test verifying the authenticated/user payload on success. This covers both sides of the boolean in check_basic_auth (auth and auth.username==user and auth.password==passwd), the exact 401 constant, and the exact 200 constant.\",\n  \"tests\": [\n    {\n      \"name\": \"test_basic_auth_missing_header_returns_401\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"No Authorization header is sent with the request\"\n      ],\n      \"actions\": [\n        \"Import httpbin.core app\",\n        \"Create test client\",\n        \"GET /basic-auth/user/passwd with no Authorization header\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 401\",\n        \"Response does not contain authenticated=true\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-020\",\n        \"check_basic_auth returns falsy when request.authorization is None\",\n        \"basic_auth route calls status_code(401)\"\n      ],\n      \"executable\": \"from httpbin.core import app\\n\\ndef test_basic_auth_missing_header_returns_401():\\n    client = app.test_client()\\n    r = client.get('/basic-auth/user/passwd')\\n    assert r.status_code == 401\\n    data = r.get_data(as_text=True)\\n    assert 'authenticated' not in data.lower() or 'true' not in data.lower()\\n\\ntest_basic_auth_missing_header_returns_401()\"\n    },\n    {\n      \"name\": \"test_basic_auth_valid_credentials_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"Authorization header carries correct Basic credentials for user/passwd\"\n      ],\n      \"actions\": [\n        \"Import httpbin.core app\",\n        \"Create test client\",\n        \"GET /basic-auth/myuser/mypass with correct Basic auth header\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"JSON body contains authenticated=true and user=myuser\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-020\",\n        \"check_basic_auth returns True when credentials match\",\n        \"basic_auth route returns jsonify(authenticated=True, user=user)\"\n      ],\n      \"executable\": \"import base64\\nfrom httpbin.core import app\\n\\ndef test_basic_auth_valid_credentials_returns_200():\\n    client = app.test_client()\\n    creds = base64.b64encode(b'myuser:mypass').decode('ascii')\\n    r = client.get(\\n        '/basic-auth/myuser/mypass',\\n        headers={'Authorization': 'Basic ' + creds}\\n    )\\n    assert r.status_code == 200\\n    body = r.get_json()\\n    assert body['authenticated'] == True\\n    assert body['user'] == 'myuser'\\n\\ntest_basic_auth_valid_credentials_returns_200()\"\n    },\n    {\n      \"name\": \"test_basic_auth_missing_header_has_www_authenticate\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"No Authorization header is sent\"\n      ],\n      \"actions\": [\n        \"Import httpbin.core app\",\n        \"Create test client\",\n        \"GET /basic-auth/user/passwd with no Authorization header\",\n        \"Inspect WWW-Authenticate response header\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 401\",\n        \"WWW-Authenticate header is present in"
+  }
+}

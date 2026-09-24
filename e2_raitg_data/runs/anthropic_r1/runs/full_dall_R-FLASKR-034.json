@@ -1,0 +1,191 @@
+{
+  "req": {
+    "id": "R-FLASKR-034",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "security",
+    "title": "Sessions use secret key",
+    "statement": "The system shall sign session cookies with the SECRET_KEY loaded from application config.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "sessions use secret key"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-034",
+    "reasoning": "R-FLASKR-034 requires that session cookies are signed with the SECRET_KEY from application config. Tests must verify: (1) a valid SECRET_KEY produces a signed session cookie that allows authenticated access (positive/EP), (2) a tampered/forged session cookie is rejected (negative/NEG), and (3) changing the SECRET_KEY invalidates previously issued session cookies (boundary/STC). We also verify the exact cookie name 'session' is present and that the SECRET_KEY value is actually used for signing by cross-checking with itsdangerous directly.",
+    "tests": [
+      {
+        "name": "test_secret_key_signs_session_cookie_on_login",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App created with TESTING=True and a known SECRET_KEY",
+          "User 'Rahul' with password 'stone' exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with valid credentials",
+          "Inspect response cookies for 'session' cookie",
+          "Verify the session cookie is a valid itsdangerous signed token using the known SECRET_KEY"
+        ],
+        "expected": [
+          "HTTP 302 redirect on successful login",
+          "A 'session' cookie is present in the response",
+          "The session cookie can be decoded with the correct SECRET_KEY",
+          "The decoded session contains 'user_id' == 1 (Rahul's id)"
+        ],
+        "trace": [
+          "R-FLASKR-034: sessions use secret key"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom itsdangerous import URLSafeTimedSerializer\n\nfd, path = tempfile.mkstemp(); os.close(fd)\nSECRET = 'test-secret-key-034'\napp = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': SECRET})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302, f'Expected 302, got {r.status_code}'\n\ncookies = {c.name: c for c in client.cookie_jar}\nassert 'session' in cookies, 'session cookie must be present'\n\nsession_cookie_value = cookies['session'].value\ns = URLSafeTimedSerializer(SECRET, salt='cookie-session')\ntry:\n    data = s.loads(session_cookie_value)\nexcept Exception:\n    from flask.sessions import SecureCookieSessionInterface\n    iface = SecureCookieSessionInterface()\n    signer = iface.get_signing_serializer(app)\n    data = signer.loads(session_cookie_value)\nassert 'user_id' in data, 'session must contain user_id'\nassert data['user_id'] == 1, f'Expected user_id=1, got {data[\"user_id\"]}'\nos.unlink(path)\nprint('PASS: test_secret_key_signs_session_cookie_on_login')"
+      },
+      {
+        "name": "test_tampered_session_cookie_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App created with TESTING=True and a known SECRET_KEY",
+          "A forged session cookie signed with a DIFFERENT key is crafted"
+        ],
+        "actions": [
+          "Craft a session cookie signed with a wrong key claiming user_id=1",
+          "Send GET /create with the forged cookie",
+          "Verify the server does not honour the forged session"
+        ],
+        "expected": [
+          "GET /create returns 302 redirect to /auth/login (not 200)",
+          "The forged session is not accepted \u2014 user is treated as anonymous"
+        ],
+        "trace": [
+          "R-FLASKR-034: sessions use secret key \u2014 wrong key must be rejected"
+        ],
+        "executable": "import tempfile, os, json, base64, hashlib, hmac\nfrom flaskr import create_app\nfrom flask.sessions import SecureCookieSessionInterface\n\nfd, path = tempfile.mkstemp(); os.close(fd)\nREAL_SECRET = 'real-secret-key'\nWRONG_SECRET = 'wrong-secret-key'\napp = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': REAL_SECRET})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nforged_app = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': WRONG_SECRET})\niface = SecureCookieSessionInterface()\nsigner = iface.get_signing_serializer(forged_app)\nforged_cookie = signer.dumps({'user_id': 1})\n\nclient = app.test_client()\nclient.set_cookie('session', forged_cookie, domain='localhost')\nr = client.get('/create')\nassert r.status_code == 302, f'Expected 302 redirect, got {r.status_code}'\nlocation = r.headers.get('Location', '')\nassert 'login' in location, f'Expected redirect to login, got {location}'\nos.unlink(path)\nprint('PASS: test_tampered_session_cookie_rejected')"
+      },
+      {
+        "name": "test_session_invalidated_when_secret_key_changes",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "App instance A created with SECRET_KEY='key-version-1'",
+          "User logs in and obtains a valid session cookie from instance A",
+          "App instance B created with SECRET_KEY='key-version-2' (different key)"
+        ],
+        "actions": [
+          "Login with Rahul on app-A to get a valid session cookie",
+          "Present that cookie to app-B (different SECRET_KEY)",
+          "Attempt to access /create on app-B with the old cookie"
+        ],
+        "expected": [
+          "Login on app-A returns HTTP 302",
+          "Session cookie is present after login on app-A",
+          "GET /create on app-B with app-A's cookie returns 302 to /auth/login",
+          "The old session is NOT honoured by app-B"
+        ],
+        "trace": [
+          "R-FLASKR-034: SECRET_KEY rotation invalidates old sessions \u2014 state transition"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flask.sessions import SecureCookieSessionInterface\n\nfd1, path1 = tempfile.mkstemp(); os.close(fd1)\nfd2, path2 = tempfile.mkstemp(); os.close(fd2)\n\napp_a = create_app({'TESTING': True, 'DATABASE': path1, 'SECRET_KEY': 'key-version-1'})\nwith app_a.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient_a = app_a.test_client()\nr = client_a.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302, f'Login on app-A expected 302, got {r.status_code}'\n\ncookies_a = {c.name: c for c in client_a.cookie_jar}\nassert 'session' in cookies_a, 'session cookie must exist after login on app-A'\nold_cookie_value = cookies_a['session'].value\n\napp_b = create_app({'TESTING': True, 'DATABASE': path2, 'SECRET_KEY': 'key-version-2'})\nwith app_b.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient_b = app_b.test_client()\nclient_b.set_cookie('session', old_cookie_value, domain='localhost')\nr2 = client_b.get('/create')\nassert r2.status_code == 302, f'Expected 302 on app-B, got {r2.status_code}'\nloc = r2.headers.get('Location', '')\nassert 'login' in loc, f'Expected redirect to login on app-B, got {loc}'\nos.unlink(path1); os.unlink(path2)\nprint('PASS: test_session_invalidated_when_secret_key_changes')"
+      },
+      {
+        "name": "test_correct_secret_key_loaded_from_config",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App created with explicit SECRET_KEY in test_config",
+          "App config must reflect the exact SECRET_KEY passed"
+        ],
+        "actions": [
+          "Create app with SECRET_KEY='my-explicit-secret'",
+          "Read app.config['SECRET_KEY']",
+          "Verify it equals exactly 'my-explicit-secret' (not the default 'dev')"
+        ],
+        "expected": [
+          "app.config['SECRET_KEY'] == 'my-explicit-secret'",
+          "app.config['SECRET_KEY'] != 'dev' (default is overridden)"
+        ],
+        "trace": [
+          "R-FLASKR-034: SECRET_KEY loaded from application config"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\nEXPECTED_KEY = 'my-explicit-secret'\napp = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': EXPECTED_KEY})\n\nassert app.config['SECRET_KEY'] == EXPECTED_KEY, (\n    f\"Expected SECRET_KEY='{EXPECTED_KEY}', got '{app.config['SECRET_KEY']}'\"\n)\nassert app.config['SECRET_KEY'] != 'dev', (\n    \"SECRET_KEY must not be the default 'dev' when overridden via config\"\n)\nassert len(app.config['SECRET_KEY']) == len(EXPECTED_KEY), (\n    f\"SECRET_KEY length mismatch: {len(app.config['SECRET_KEY'])} != {len(EXPECTED_KEY)}\"\n)\nos.unlink(path)\nprint('PASS: test_correct_secret_key_loaded_from_config')"
+      },
+      {
+        "name": "test_default_secret_key_is_dev_without_config_override",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App created with TESTING=True but NO explicit SECRET_KEY in test_config"
+        ],
+        "actions": [
+          "Create app without SECRET_KEY in test_config",
+          "Read app.config['SECRET_KEY']",
+          "Verify it equals the default 'dev'"
+        ],
+        "expected": [
+          "app.config['SECRET_KEY'] == 'dev' (the hardcoded default from create_app)"
+        ],
+        "trace": [
+          "R-FLASKR-034: default SECRET_KEY is 'dev' per source; boundary between default and overridden"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nassert app.config['SECRET_KEY'] == 'dev', (\n    f\"Expected default SECRET_KEY='dev', got '{app.config['SECRET_KEY']}'\"\n)\nassert app.config['SECRET_KEY'] != '', 'SECRET_KEY must not be empty string'\nassert app.config['SECRET_KEY'] != None, 'SECRET_KEY must not be None'\nos.unlink(path)\nprint('PASS: test_default_secret_key_is_dev_without_config_override')"
+      },
+      {
+        "name": "test_session_cookie_present_and_signed_after_login",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App created with TESTING=True and SECRET_KEY='session-sign-test'",
+          "User 'Anjali' with password 'cloud' exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with Anjali's credentials",
+          "Check that a 'session' cookie is set in the response",
+          "Verify the cookie value is a non-empty signed string (contains '.')",
+          "Verify subsequent GET / returns 200 (session is valid)"
+        ],
+        "expected": [
+          "POST /auth/login returns 302",
+          "session cookie is non-empty and contains signature separator '.'",
+          "GET / with the session cookie returns 200"
+        ],
+        "trace": [
+          "R-FLASKR-034: signed session cookie must be present after login"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'session-sign-test'})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nr = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\nassert r.status_code == 302, f'Expected 302, got {r.status_code}'\n\ncookies = {c.name: c for c in client.cookie_jar}\nassert 'session' in cookies, 'session cookie must be set after login'\ncookie_val = cookies['session'].value\nassert len(cookie_val) > 0, 'session cookie value must not be empty'\nassert '.' in cookie_val, 'signed cookie must contain \".\" separator'\n\nr2 = client.get('/')\nassert r2.status_code == 200, f'Expected 200 on index, got {r2.status_code}'\nos.unlink(path)\nprint('PASS: test_session_cookie_present_and_signed_after_login')"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-034",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8431,
+    "output_tokens": 3764,
+    "latency_ms": 50435,
+    "wall_ms": 50435,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-034\",\n  \"reasoning\": \"R-FLASKR-034 requires that session cookies are signed with the SECRET_KEY from application config. Tests must verify: (1) a valid SECRET_KEY produces a signed session cookie that allows authenticated access (positive/EP), (2) a tampered/forged session cookie is rejected (negative/NEG), and (3) changing the SECRET_KEY invalidates previously issued session cookies (boundary/STC). We also verify the exact cookie name 'session' is present and that the SECRET_KEY value is actually used for signing by cross-checking with itsdangerous directly.\",\n  \"tests\": [\n    {\n      \"name\": \"test_secret_key_signs_session_cookie_on_login\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App created with TESTING=True and a known SECRET_KEY\",\n        \"User 'Rahul' with password 'stone' exists in the database\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with valid credentials\",\n        \"Inspect response cookies for 'session' cookie\",\n        \"Verify the session cookie is a valid itsdangerous signed token using the known SECRET_KEY\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect on successful login\",\n        \"A 'session' cookie is present in the response\",\n        \"The session cookie can be decoded with the correct SECRET_KEY\",\n        \"The decoded session contains 'user_id' == 1 (Rahul's id)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-034: sessions use secret key\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom itsdangerous import URLSafeTimedSerializer\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\nSECRET = 'test-secret-key-034'\\napp = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': SECRET})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\nassert r.status_code == 302, f'Expected 302, got {r.status_code}'\\n\\ncookies = {c.name: c for c in client.cookie_jar}\\nassert 'session' in cookies, 'session cookie must be present'\\n\\nsession_cookie_value = cookies['session'].value\\ns = URLSafeTimedSerializer(SECRET, salt='cookie-session')\\ntry:\\n    data = s.loads(session_cookie_value)\\nexcept Exception:\\n    from flask.sessions import SecureCookieSessionInterface\\n    iface = SecureCookieSessionInterface()\\n    signer = iface.get_signing_serializer(app)\\n    data = signer.loads(session_cookie_value)\\nassert 'user_id' in data, 'session must contain user_id'\\nassert data['user_id'] == 1, f'Expected user_id=1, got {data[\\\"user_id\\\"]}'\\nos.unlink(path)\\nprint('PASS: test_secret_key_signs_session_cookie_on_login')\"\n    },\n    {\n      \"name\": \"test_tampered_session_cookie_rejected\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App created with TESTING=True and a known SECRET_KEY\",\n        \"A forged session cookie signed with a DIFFERENT key is crafted\"\n      ],\n      \"actions\": [\n        \"Craft a session cookie signed with a wrong key claiming user_id=1\",\n        \"Send GET /create with the forged cookie\",\n        \"Verify the server does not honour the forged session\"\n      ],\n      \"expected\": [\n        \"GET /create returns 302 redirect to /auth/login (not 200)\",\n        \"The forged session is not accepted \u2014 user is treated as anonymous\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-034: sessions use secret key \u2014 wrong key must be rejected\"\n      ],\n      \"executable\": \"import tempfile, os, json, base64, hashlib, hmac\\nfrom flaskr import create_app\\nfrom flask.sessions import SecureCookieSessionInterface\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\nREAL_SECRET = 'real-secret-key'\\nWRONG_SECRET = 'wrong-secret-key'\\napp = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': REAL_SECRET})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nforged_app = create_app({'TESTING': True, 'DATABASE"
+  }
+}

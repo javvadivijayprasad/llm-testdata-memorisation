@@ -1,0 +1,216 @@
+{
+  "req": {
+    "id": "R-FLASKR-029",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "load_logged_in_user populates g.user",
+    "statement": "The system shall populate flask.g.user with the User row for the authenticated session on every request.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "load_logged_in_user populates g.user"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-029",
+    "reasoning": "The requirement states that load_logged_in_user must populate g.user with the User row for authenticated sessions on every request. We need to verify: (1) positive - authenticated session sets g.user to the correct user row, (2) negative - no session sets g.user to None, (3) boundary - session with a non-existent user_id sets g.user to None (the fetchone() returns None). We also add a state-transition test covering logout clearing g.user, and a decision-table test covering multiple users. We inspect g.user by using app.test_request_context and the before_app_request hook, or by observing behavior through endpoints that depend on g.user (like /create which uses login_required redirecting when g.user is None). We use a custom route injected via app_context to directly read g.user value.",
+    "tests": [
+      {
+        "name": "test_load_logged_in_user_authenticated_sets_g_user",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App initialized with test database containing user id=1 (Rahul/stone)",
+          "Client has a valid session with user_id=1"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "GET / (index) to trigger load_logged_in_user",
+          "Inspect g.user via a test-only route that returns username"
+        ],
+        "expected": [
+          "g.user is not None",
+          "g.user['username'] == 'Rahul'",
+          "g.user['id'] == 1",
+          "HTTP 200 from the probe route"
+        ],
+        "trace": [
+          "R-FLASKR-029: authenticated session populates g.user with correct User row"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\n@app.route('/probe_user')\ndef probe_user():\n    if g.user is None:\n        return 'NONE', 200\n    return f\"{g.user['id']}:{g.user['username']}\", 200\n\nclient = app.test_client()\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302\nr2 = client.get('/probe_user')\nassert r2.status_code == 200\nbody = r2.data.decode()\nassert body == '1:Rahul'\n\ndef test_load_logged_in_user_authenticated_sets_g_user():\n    fd2, path2 = tempfile.mkstemp()\n    os.close(fd2)\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\n    with app2.app_context():\n        init_db()\n    @app2.route('/probe_user2')\n    def probe_user2():\n        if g.user is None:\n            return 'NONE', 200\n        return f\"{g.user['id']}:{g.user['username']}\", 200\n    c = app2.test_client()\n    r = c.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r2 = c.get('/probe_user2')\n    assert r2.status_code == 200\n    assert r2.data.decode() == '1:Rahul'"
+      },
+      {
+        "name": "test_load_logged_in_user_no_session_sets_g_user_none",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App initialized with test database",
+          "Client has no session (anonymous request)"
+        ],
+        "actions": [
+          "GET / without any prior login to trigger load_logged_in_user",
+          "Inspect g.user via probe route"
+        ],
+        "expected": [
+          "g.user is None",
+          "Probe route returns 'NONE'",
+          "HTTP 200 from probe route"
+        ],
+        "trace": [
+          "R-FLASKR-029: unauthenticated session sets g.user to None"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_load_logged_in_user_no_session_sets_g_user_none():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    @app.route('/probe_anon')\n    def probe_anon():\n        if g.user is None:\n            return 'NONE', 200\n        return f\"{g.user['id']}:{g.user['username']}\", 200\n    c = app.test_client()\n    r = c.get('/probe_anon')\n    assert r.status_code == 200\n    assert r.data.decode() == 'NONE'"
+      },
+      {
+        "name": "test_load_logged_in_user_invalid_user_id_in_session_sets_g_user_none",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App initialized with test database (users 1-5 exist)",
+          "Session manually set with user_id=9999 (does not exist in DB)"
+        ],
+        "actions": [
+          "Manually inject session with user_id=9999",
+          "GET probe route to trigger load_logged_in_user",
+          "Observe g.user value"
+        ],
+        "expected": [
+          "g.user is None because fetchone() returns None for missing id",
+          "Probe route returns 'NONE'",
+          "HTTP 200 from probe route"
+        ],
+        "trace": [
+          "R-FLASKR-029: session with non-existent user_id results in g.user=None (fetchone boundary)"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_load_logged_in_user_invalid_user_id_in_session_sets_g_user_none():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    @app.route('/probe_bad_id')\n    def probe_bad_id():\n        if g.user is None:\n            return 'NONE', 200\n        return f\"{g.user['id']}:{g.user['username']}\", 200\n    c = app.test_client()\n    with c.session_transaction() as sess:\n        sess['user_id'] = 9999\n    r = c.get('/probe_bad_id')\n    assert r.status_code == 200\n    assert r.data.decode() == 'NONE'"
+      },
+      {
+        "name": "test_load_logged_in_user_after_logout_sets_g_user_none",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "App initialized with test database",
+          "User Anjali (id=2) logs in successfully",
+          "User then logs out"
+        ],
+        "actions": [
+          "POST /auth/login with username=Anjali, password=cloud",
+          "Verify g.user is set via probe route",
+          "GET /auth/logout to clear session",
+          "GET probe route again to verify g.user is None"
+        ],
+        "expected": [
+          "After login: probe returns '2:Anjali'",
+          "After logout: probe returns 'NONE'",
+          "State transition from authenticated to anonymous clears g.user"
+        ],
+        "trace": [
+          "R-FLASKR-029: state transition login->logout resets g.user to None on subsequent request"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_load_logged_in_user_after_logout_sets_g_user_none():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    @app.route('/probe_stc')\n    def probe_stc():\n        if g.user is None:\n            return 'NONE', 200\n        return f\"{g.user['id']}:{g.user['username']}\", 200\n    c = app.test_client()\n    r = c.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\n    assert r.status_code == 302\n    r2 = c.get('/probe_stc')\n    assert r2.status_code == 200\n    assert r2.data.decode() == '2:Anjali'\n    r3 = c.get('/auth/logout')\n    assert r3.status_code == 302\n    r4 = c.get('/probe_stc')\n    assert r4.status_code == 200\n    assert r4.data.decode() == 'NONE'"
+      },
+      {
+        "name": "test_load_logged_in_user_correct_user_row_fields",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App initialized with test database",
+          "Multiple users exist: Rahul(1), Anjali(2), Ishaan(3), Diya(4), James(5)"
+        ],
+        "actions": [
+          "Login as James (id=5, password=river)",
+          "GET probe route to read g.user fields",
+          "Assert id and username match exactly"
+        ],
+        "expected": [
+          "g.user['id'] == 5",
+          "g.user['username'] == 'James'",
+          "Probe returns '5:James'"
+        ],
+        "trace": [
+          "R-FLASKR-029: g.user populated with correct User row for user id=5 (James)"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_load_logged_in_user_correct_user_row_fields():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    @app.route('/probe_james')\n    def probe_james():\n        if g.user is None:\n            return 'NONE', 200\n        return f\"{g.user['id']}:{g.user['username']}\", 200\n    c = app.test_client()\n    r = c.post('/auth/login', data={'username': 'James', 'password': 'river'})\n    assert r.status_code == 302\n    r2 = c.get('/probe_james')\n    assert r2.status_code == 200\n    assert r2.data.decode() == '5:James'"
+      },
+      {
+        "name": "test_load_logged_in_user_login_required_redirect_when_g_user_none",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App initialized with test database",
+          "Client is anonymous (no session)"
+        ],
+        "actions": [
+          "GET /create without logging in",
+          "Expect redirect to /auth/login because g.user is None"
+        ],
+        "expected": [
+          "HTTP 302 redirect",
+          "Location header == '/auth/login'",
+          "login_required decorator uses g.user is None check"
+        ],
+        "trace": [
+          "R-FLASKR-029: g.user=None causes login_required to redirect, confirming load_logged_in_user set g.user=None for anonymous"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_load_logged_in_user_login_required_redirect_when_g_user_none():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    c = app.test_client()\n    r = c.get('/create')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'"
+      },
+      {
+        "name": "test_load_logged_in_user_every_request_repopulates_g_user",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App initialized with test database",
+          "User Ishaan (id=3) logs in"
+        ],
+        "actions": [
+          "Login as Ishaan",
+          "Make three consecutive GET requests to probe route",
+          "Assert g.user is correctly set on each request"
+        ],
+        "expected": [
+          "All three requests return '3:Ishaan'",
+          "g.user is populated on every request, not just the first"
+        ],
+        "trace": [
+          "R-FLASKR-029: g.user populated on EVERY request (before_app_request fires each time)"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_load_logged_in_user_every_request_repopulates_g_user():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    @app.route('/probe_repeat')\n    def probe_repeat():\n        if g.user is None:\n            return 'NONE', 200\n        return f\"{g.user['id']}:{g.user['username']}\", 200\n    c = app.test_client()\n    r = c.post('/auth/login', data={'username': 'Ishaan', 'password': 'stone'})\n    assert r.status_code == 302\n    for _ in range(3):\n        r2 = c.get('/probe_repeat')\n        assert r2.status_code == 200\n        assert r2.data.decode() == '3:Ishaan'"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-029",
+  "domain": "blogging",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6340,
+    "output_tokens": 4049,
+    "latency_ms": 48550,
+    "wall_ms": 48550,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-029\",\n  \"reasoning\": \"The requirement states that load_logged_in_user must populate g.user with the User row for authenticated sessions on every request. We need to verify: (1) positive - authenticated session sets g.user to the correct user row, (2) negative - no session sets g.user to None, (3) boundary - session with a non-existent user_id sets g.user to None (the fetchone() returns None). We also add a state-transition test covering logout clearing g.user, and a decision-table test covering multiple users. We inspect g.user by using app.test_request_context and the before_app_request hook, or by observing behavior through endpoints that depend on g.user (like /create which uses login_required redirecting when g.user is None). We use a custom route injected via app_context to directly read g.user value.\",\n  \"tests\": [\n    {\n      \"name\": \"test_load_logged_in_user_authenticated_sets_g_user\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App initialized with test database containing user id=1 (Rahul/stone)\",\n        \"Client has a valid session with user_id=1\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul, password=stone\",\n        \"GET / (index) to trigger load_logged_in_user\",\n        \"Inspect g.user via a test-only route that returns username\"\n      ],\n      \"expected\": [\n        \"g.user is not None\",\n        \"g.user['username'] == 'Rahul'\",\n        \"g.user['id'] == 1\",\n        \"HTTP 200 from the probe route\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-029: authenticated session populates g.user with correct User row\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flask import g\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\n@app.route('/probe_user')\\ndef probe_user():\\n    if g.user is None:\\n        return 'NONE', 200\\n    return f\\\"{g.user['id']}:{g.user['username']}\\\", 200\\n\\nclient = app.test_client()\\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\nassert r.status_code == 302\\nr2 = client.get('/probe_user')\\nassert r2.status_code == 200\\nbody = r2.data.decode()\\nassert body == '1:Rahul'\\n\\ndef test_load_logged_in_user_authenticated_sets_g_user():\\n    fd2, path2 = tempfile.mkstemp()\\n    os.close(fd2)\\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\\n    with app2.app_context():\\n        init_db()\\n    @app2.route('/probe_user2')\\n    def probe_user2():\\n        if g.user is None:\\n            return 'NONE', 200\\n        return f\\\"{g.user['id']}:{g.user['username']}\\\", 200\\n    c = app2.test_client()\\n    r = c.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302\\n    r2 = c.get('/probe_user2')\\n    assert r2.status_code == 200\\n    assert r2.data.decode() == '1:Rahul'\"\n    },\n    {\n      \"name\": \"test_load_logged_in_user_no_session_sets_g_user_none\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App initialized with test database\",\n        \"Client has no session (anonymous request)\"\n      ],\n      \"actions\": [\n        \"GET / without any prior login to trigger load_logged_in_user\",\n        \"Inspect g.user via probe route\"\n      ],\n      \"expected\": [\n        \"g.user is None\",\n        \"Probe route returns 'NONE'\",\n        \"HTTP 200 from probe route\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-029: unauthenticated session sets g.user to None\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flask import g\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\ndef test_load_logged_in_user_no_session_sets_g_user_none():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        init_db()\\n    @app.route('/probe_ano"
+  }
+}

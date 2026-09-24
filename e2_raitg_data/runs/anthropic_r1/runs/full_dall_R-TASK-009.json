@@ -1,0 +1,194 @@
+{
+  "req": {
+    "id": "R-TASK-009",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "error_pathway",
+    "title": "404 on unknown task id",
+    "statement": "The system shall respond with HTTP 404 and detail 'Task not found' when the id does not exist.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "404 on unknown task id"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 404"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-009",
+    "reasoning": "R-TASK-009 requires HTTP 404 with a specific detail message when GET /tasks/{task_id} is called with a non-existent ID. To achieve high mutation kill rate we need: (1) a positive case confirming a known ID returns 200 (catches status-code mutations and wrong-branch mutations), (2) a negative case confirming a clearly non-existent ID returns exactly 404 with the exact detail string (catches status-code constant mutations, string mutations, and wrong-branch mutations), (3) a boundary case at task_id=21 (one above the highest seeded row=20) to catch off-by-one mutations in any range check, (4) a boundary case at task_id=0 or negative to probe the lower boundary, and (5) a case asserting the exact detail message format including the task_id interpolation to catch string-mutation operators. The pre-loaded database has IDs 1-20; IDs 21+ do not exist.",
+    "tests": [
+      {
+        "name": "test_get_existing_task_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is pre-loaded with 20 tasks (IDs 1-20)",
+          "Task with id=1 exists with title='Read chapter 5'"
+        ],
+        "actions": [
+          "Send GET /tasks/1 via TestClient"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response JSON contains id=1 and title='Read chapter 5'"
+        ],
+        "trace": [
+          "R-TASK-009: positive path \u2014 known ID must NOT trigger 404; catches mutations that always return 404 or flip the None-check branch"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_pos.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nmodels.Base.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\nsession = Session()\nsession.add(models.Task(id=1, title='Read chapter 5', description='Signal pulse ember', completed=True))\nsession.commit()\nsession.close()\n\ndef override_get_db():\n    db = Session()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_existing_task_returns_200():\n    r = client.get('/tasks/1')\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 1\n    assert body['title'] == 'Read chapter 5'\n    assert body['completed'] is True\n\ntest_get_existing_task_returns_200()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_nonexistent_task_returns_404_with_exact_detail",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is pre-loaded with tasks IDs 1-20",
+          "Task with id=9999 does not exist"
+        ],
+        "actions": [
+          "Send GET /tasks/9999 via TestClient"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response JSON detail contains 'Task with id 9999 not found'"
+        ],
+        "trace": [
+          "R-TASK-009: primary error pathway \u2014 non-existent ID must yield exactly 404; catches status-code constant mutations (e.g. 404->400, 404->422) and detail-string mutations"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_neg.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nmodels.Base.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\n\ndef override_get_db():\n    db = Session()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_nonexistent_task_returns_404_with_exact_detail():\n    r = client.get('/tasks/9999')\n    assert r.status_code == 404\n    body = r.json()\n    assert 'detail' in body\n    assert body['detail'] == 'Task with id 9999 not found'\n\ntest_get_nonexistent_task_returns_404_with_exact_detail()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_id_one_above_max_seeded_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with tasks IDs 1-20",
+          "Task with id=21 does not exist (one above highest seeded ID)"
+        ],
+        "actions": [
+          "Send GET /tasks/21 via TestClient"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response JSON detail equals 'Task with id 21 not found'"
+        ],
+        "trace": [
+          "R-TASK-009: BVA boundary at max_id+1=21; catches off-by-one mutations in any range/existence check and status-code constant mutations"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_bva_above.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nmodels.Base.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\nsession = Session()\nfor i in range(1, 21):\n    session.add(models.Task(id=i, title=f'Task {i}', completed=False))\nsession.commit()\nsession.close()\n\ndef override_get_db():\n    db = Session()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_id_one_above_max_seeded_returns_404():\n    r = client.get('/tasks/21')\n    assert r.status_code == 404\n    body = r.json()\n    assert body['detail'] == 'Task with id 21 not found'\n\ntest_get_task_id_one_above_max_seeded_returns_404()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_at_max_seeded_id_returns_200",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with tasks IDs 1-20",
+          "Task with id=20 exists (highest seeded ID)"
+        ],
+        "actions": [
+          "Send GET /tasks/20 via TestClient"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response JSON id equals 20"
+        ],
+        "trace": [
+          "R-TASK-009: BVA boundary at max_id=20; paired with id=21 test to catch off-by-one mutations \u2014 id=20 must NOT return 404"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_bva_max.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nmodels.Base.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\nsession = Session()\nfor i in range(1, 21):\n    session.add(models.Task(id=i, title=f'Task {i}', completed=False))\nsession.commit()\nsession.close()\n\ndef override_get_db():\n    db = Session()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_at_max_seeded_id_returns_200():\n    r = client.get('/tasks/20')\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 20\n    assert body['completed'] is False\n\ntest_get_task_at_max_seeded_id_returns_200()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_detail_string_contains_task_id_interpolation",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Empty database (no tasks)",
+          "Task with id=42 does not exist"
+        ],
+        "actions": [
+          "Send GET /tasks/42 via TestClient"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response JSON detail is exactly 'Task with id 42 not found' (ID interpolated correctly)"
+        ],
+        "trace": [
+          "R-TASK-009: verifies the f-string interpolation in the HTTPException detail; catches mutations that change the detail string constant or remove the id interpolation"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_detail_str.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nmodels.Base.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\n\ndef override_get_db():\n    db = Session()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_detail_string_contains_task_id_interpolation():\n    r = client.get('/tasks/42')\n    assert r.status_code == 404\n    body = r.json()\n    assert body['detail'] == 'Task with id 42 not found'\n    assert '42' in body['detail']\n    assert body['detail'] != 'Task with id 9999 not found'\n\ntest_get_task_detail_string_contains_task_id_interpolation()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_id_zero_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with tasks IDs 1-20",
+          "Task with id=0 does not exist (below minimum seeded ID)"
+        ],
+        "actions": [
+          "Send GET /tasks/0 via TestClient"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response JSON detail equals 'Task with id 0 not found'"
+        ],
+        "trace": [
+          "R-TASK-009: BVA lower boundary at id=0 (below min seeded id=1); catches mutations that treat 0 as valid or flip the None-check"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_bva_zero.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nmodels.Base.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\nsession = Session()\nfor i in range(1, 21):\n    session.add(models.Task(id=i, title=f'Task {i}', completed=False))\nsession.commit()\nsession.close()\n\ndef override_get_db():\n    db = Session()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_id_zero_returns_404():\n    r = client.get('/tasks/0')\n    assert r.status_code == 404\n    body = r.json()\n    assert body['detail'] == 'Task with id 0 not found'\n\ntest_get_task_id_zero_returns_404()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_response_does_not_return_404_for_existing_id",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database contains task with id=9 (completed=True, title='Pay electricity bill')"
+        ],
+        "actions": [
+          "Send GET /tasks/9 via TestClient"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response JSON id=9, completed=True, title='Pay electricity bill'",
+          "Status code is NOT 404"
+        ],
+        "trace": [
+          "R-TASK-009: DT \u2014 decision table row: task exists => 200, not 404; tests both sides of the db_task is None condition; catches mutations that negate the None-check or always raise HTTPException"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_dt_exists.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nmodels.Base.metadata.create_all(bind=engine)\nSession = sessionmaker(bind=engine)\nsession = Session()\nsession.add(models.Task(id=9, title='Pay electricity bill', description='Meridian beacon', completed=True))\nsession.commit()\nsession.close()\n\ndef override_get_db():\n    db = Session()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_response_does_not_return_404_for_existing_id():\n    r = client.get('/tasks/9')\n    assert r.status_code == 200\n    assert r.status_code != 404\n    body = r.json()\n    assert body['id'] == 9\n    assert body['title'] == 'Pay electricity bill'\n    assert body['completed'] is True\n\ntest_get_task_response_does_not_return_404_for_existing_id()\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-009",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7573,
+    "output_tokens": 4488,
+    "latency_ms": 51832,
+    "wall_ms": 51832,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-009\",\n  \"reasoning\": \"R-TASK-009 requires HTTP 404 with a specific detail message when GET /tasks/{task_id} is called with a non-existent ID. To achieve high mutation kill rate we need: (1) a positive case confirming a known ID returns 200 (catches status-code mutations and wrong-branch mutations), (2) a negative case confirming a clearly non-existent ID returns exactly 404 with the exact detail string (catches status-code constant mutations, string mutations, and wrong-branch mutations), (3) a boundary case at task_id=21 (one above the highest seeded row=20) to catch off-by-one mutations in any range check, (4) a boundary case at task_id=0 or negative to probe the lower boundary, and (5) a case asserting the exact detail message format including the task_id interpolation to catch string-mutation operators. The pre-loaded database has IDs 1-20; IDs 21+ do not exist.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_existing_task_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 20 tasks (IDs 1-20)\",\n        \"Task with id=1 exists with title='Read chapter 5'\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/1 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 200 OK\",\n        \"Response JSON contains id=1 and title='Read chapter 5'\"\n      ],\n      \"trace\": [\n        \"R-TASK-009: positive path \u2014 known ID must NOT trigger 404; catches mutations that always return 404 or flip the None-check branch\"\n      ],\n      \"executable\": \"import os, tempfile\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom app.database import get_db\\nfrom fastapi.testclient import TestClient\\n\\ntmp = tempfile.mkdtemp()\\ndb_path = os.path.join(tmp, 'test_pos.db')\\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\\nmodels.Base.metadata.create_all(bind=engine)\\nSession = sessionmaker(bind=engine)\\nsession = Session()\\nsession.add(models.Task(id=1, title='Read chapter 5', description='Signal pulse ember', completed=True))\\nsession.commit()\\nsession.close()\\n\\ndef override_get_db():\\n    db = Session()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_get_existing_task_returns_200():\\n    r = client.get('/tasks/1')\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body['id'] == 1\\n    assert body['title'] == 'Read chapter 5'\\n    assert body['completed'] is True\\n\\ntest_get_existing_task_returns_200()\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_get_nonexistent_task_returns_404_with_exact_detail\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is pre-loaded with tasks IDs 1-20\",\n        \"Task with id=9999 does not exist\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/9999 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 404 Not Found\",\n        \"Response JSON detail contains 'Task with id 9999 not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-009: primary error pathway \u2014 non-existent ID must yield exactly 404; catches status-code constant mutations (e.g. 404->400, 404->422) and detail-string mutations\"\n      ],\n      \"executable\": \"import os, tempfile\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom app.database import get_db\\nfrom fastapi.testclient import TestClient\\n\\ntmp = tempfile.mkdtemp()\\ndb_path = os.path.join(tmp, 'test_neg.db')\\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\\nmodels.Base.metadata.create_all(bind=engine)\\nSession = sessionmaker(bind=engine)\\n\\ndef override_get_db():\\n    db = Session()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependen"
+  }
+}

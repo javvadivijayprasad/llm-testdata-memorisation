@@ -1,0 +1,182 @@
+{
+  "req": {
+    "id": "R-PLAYER-030",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "idempotency",
+    "title": "DELETE is idempotent",
+    "statement": "The system shall respond with HTTP 404 on second and subsequent DELETE calls for the same playerId.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete is idempotent"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "DELETE /players/{playerId}"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-030",
+    "reasoning": "R-PLAYER-030 requires DELETE /players/squadnumber/{squad_number} to be idempotent: the first call returns HTTP 204, and every subsequent call for the same squad number returns HTTP 404. The test suite covers: (1) positive/STC \u2014 the full state transition from 'player exists' \u2192 first DELETE (204) \u2192 second DELETE (404); (2) negative/NEG \u2014 DELETE on a squad number that never existed returns 404 immediately; (3) boundary/BVA \u2014 the exact transition point between the first and second call, asserting the status codes are exactly 204 and 404 (not 200, not 400, not 500), catching operator-flip and constant-bump mutations; (4) DT \u2014 a third consecutive DELETE still returns 404, confirming idempotency holds beyond the second call; (5) EP \u2014 verifying a different existing player can still be deleted independently, confirming the idempotency is scoped per squad number. All tests use the pre-loaded fixture data and the in-process FastAPI TestClient.",
+    "tests": [
+      {
+        "name": "test_delete_idempotent_first_204_second_404",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Player with squadNumber=10 (Messi) exists in the database",
+          "FastAPI app is loaded in-process via TestClient"
+        ],
+        "actions": [
+          "Send DELETE /players/squadnumber/10 (first call)",
+          "Assert response status is exactly 204",
+          "Send DELETE /players/squadnumber/10 (second call)",
+          "Assert response status is exactly 404"
+        ],
+        "expected": [
+          "First DELETE returns HTTP 204 No Content",
+          "Second DELETE returns HTTP 404 Not Found",
+          "State transition: exists -> deleted -> not-found is correct"
+        ],
+        "trace": [
+          "R-PLAYER-030: DELETE is idempotent",
+          "STC: state transition exists->deleted->not-found",
+          "Catches mutations: 204->200, 204->200, 404->400, 404->200"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_idempotent_first_204_second_404():\n    r1 = client.delete('/players/squadnumber/10')\n    assert r1.status_code == 204\n    r2 = client.delete('/players/squadnumber/10')\n    assert r2.status_code == 404\n"
+      },
+      {
+        "name": "test_delete_nonexistent_player_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No player with squadNumber=999 exists in the database",
+          "FastAPI app is loaded in-process via TestClient"
+        ],
+        "actions": [
+          "Send DELETE /players/squadnumber/999 (player never existed)",
+          "Assert response status is exactly 404"
+        ],
+        "expected": [
+          "DELETE on a never-existing squad number returns HTTP 404 immediately",
+          "No 204 or 500 is returned"
+        ],
+        "trace": [
+          "R-PLAYER-030: error pathway \u2014 HTTP 4xx on client error",
+          "NEG: negative path for non-existent resource",
+          "Catches mutations: 404->200, 404->204, missing not-found guard"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_nonexistent_player_returns_404():\n    r = client.delete('/players/squadnumber/999')\n    assert r.status_code == 404\n"
+      },
+      {
+        "name": "test_delete_boundary_exact_transition_204_then_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Player with squadNumber=1 (Armani) exists in the database",
+          "FastAPI app is loaded in-process via TestClient"
+        ],
+        "actions": [
+          "Confirm player exists via GET /players/squadnumber/1 (assert 200)",
+          "Send DELETE /players/squadnumber/1 \u2014 assert exactly 204 (not 200, not 404)",
+          "Confirm player gone via GET /players/squadnumber/1 (assert 404)",
+          "Send DELETE /players/squadnumber/1 again \u2014 assert exactly 404 (not 204, not 500)"
+        ],
+        "expected": [
+          "GET before delete returns 200",
+          "First DELETE returns exactly 204",
+          "GET after delete returns 404",
+          "Second DELETE returns exactly 404"
+        ],
+        "trace": [
+          "R-PLAYER-030: boundary at the exact call-count transition point",
+          "BVA: boundary between call-1 (204) and call-2 (404)",
+          "Catches off-by-one mutations on status constants and condition flips"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_boundary_exact_transition_204_then_404():\n    get_before = client.get('/players/squadnumber/1')\n    assert get_before.status_code == 200\n    r1 = client.delete('/players/squadnumber/1')\n    assert r1.status_code == 204\n    assert r1.status_code != 200\n    assert r1.status_code != 404\n    get_after = client.get('/players/squadnumber/1')\n    assert get_after.status_code == 404\n    r2 = client.delete('/players/squadnumber/1')\n    assert r2.status_code == 404\n    assert r2.status_code != 204\n    assert r2.status_code != 500\n"
+      },
+      {
+        "name": "test_delete_idempotent_third_call_still_404",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Player with squadNumber=23 (D. Martinez) exists in the database",
+          "FastAPI app is loaded in-process via TestClient"
+        ],
+        "actions": [
+          "Send DELETE /players/squadnumber/23 (first call) \u2014 assert 204",
+          "Send DELETE /players/squadnumber/23 (second call) \u2014 assert 404",
+          "Send DELETE /players/squadnumber/23 (third call) \u2014 assert 404"
+        ],
+        "expected": [
+          "First DELETE returns 204",
+          "Second DELETE returns 404",
+          "Third DELETE also returns 404 \u2014 idempotency holds beyond second call"
+        ],
+        "trace": [
+          "R-PLAYER-030: idempotency on second AND subsequent calls",
+          "DT: decision table row \u2014 call-count > 1 always yields 404",
+          "Catches mutations that only handle exactly two calls"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_idempotent_third_call_still_404():\n    r1 = client.delete('/players/squadnumber/23')\n    assert r1.status_code == 204\n    r2 = client.delete('/players/squadnumber/23')\n    assert r2.status_code == 404\n    r3 = client.delete('/players/squadnumber/23')\n    assert r3.status_code == 404\n"
+      },
+      {
+        "name": "test_delete_idempotent_scoped_per_squad_number",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Players with squadNumber=7 (de Paul) and squadNumber=11 (Di Maria) exist",
+          "FastAPI app is loaded in-process via TestClient"
+        ],
+        "actions": [
+          "Delete squadNumber=7 \u2014 assert 204",
+          "Delete squadNumber=7 again \u2014 assert 404",
+          "Delete squadNumber=11 \u2014 assert 204 (independent resource, unaffected)",
+          "Delete squadNumber=11 again \u2014 assert 404"
+        ],
+        "expected": [
+          "Idempotency is scoped per squad number, not global",
+          "Deleting squad 7 twice yields 204 then 404",
+          "Deleting squad 11 twice independently yields 204 then 404"
+        ],
+        "trace": [
+          "R-PLAYER-030: idempotency applies per playerId independently",
+          "EP: equivalence partition \u2014 each squad number is an independent resource",
+          "Catches mutations that share state across resources or use wrong key"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_idempotent_scoped_per_squad_number():\n    r7a = client.delete('/players/squadnumber/7')\n    assert r7a.status_code == 204\n    r7b = client.delete('/players/squadnumber/7')\n    assert r7b.status_code == 404\n    r11a = client.delete('/players/squadnumber/11')\n    assert r11a.status_code == 204\n    r11b = client.delete('/players/squadnumber/11')\n    assert r11b.status_code == 404\n"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-030",
+  "domain": "sports_players",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11307,
+    "output_tokens": 2502,
+    "latency_ms": 34967,
+    "wall_ms": 34967,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-030\",\n  \"reasoning\": \"R-PLAYER-030 requires DELETE /players/squadnumber/{squad_number} to be idempotent: the first call returns HTTP 204, and every subsequent call for the same squad number returns HTTP 404. The test suite covers: (1) positive/STC \u2014 the full state transition from 'player exists' \u2192 first DELETE (204) \u2192 second DELETE (404); (2) negative/NEG \u2014 DELETE on a squad number that never existed returns 404 immediately; (3) boundary/BVA \u2014 the exact transition point between the first and second call, asserting the status codes are exactly 204 and 404 (not 200, not 400, not 500), catching operator-flip and constant-bump mutations; (4) DT \u2014 a third consecutive DELETE still returns 404, confirming idempotency holds beyond the second call; (5) EP \u2014 verifying a different existing player can still be deleted independently, confirming the idempotency is scoped per squad number. All tests use the pre-loaded fixture data and the in-process FastAPI TestClient.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_idempotent_first_204_second_404\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Player with squadNumber=10 (Messi) exists in the database\",\n        \"FastAPI app is loaded in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"Send DELETE /players/squadnumber/10 (first call)\",\n        \"Assert response status is exactly 204\",\n        \"Send DELETE /players/squadnumber/10 (second call)\",\n        \"Assert response status is exactly 404\"\n      ],\n      \"expected\": [\n        \"First DELETE returns HTTP 204 No Content\",\n        \"Second DELETE returns HTTP 404 Not Found\",\n        \"State transition: exists -> deleted -> not-found is correct\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-030: DELETE is idempotent\",\n        \"STC: state transition exists->deleted->not-found\",\n        \"Catches mutations: 204->200, 204->200, 404->400, 404->200\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\nclient = TestClient(app)\\n\\ndef test_delete_idempotent_first_204_second_404():\\n    r1 = client.delete('/players/squadnumber/10')\\n    assert r1.status_code == 204\\n    r2 = client.delete('/players/squadnumber/10')\\n    assert r2.status_code == 404\\n\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_player_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"No player with squadNumber=999 exists in the database\",\n        \"FastAPI app is loaded in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"Send DELETE /players/squadnumber/999 (player never existed)\",\n        \"Assert response status is exactly 404\"\n      ],\n      \"expected\": [\n        \"DELETE on a never-existing squad number returns HTTP 404 immediately\",\n        \"No 204 or 500 is returned\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-030: error pathway \u2014 HTTP 4xx on client error\",\n        \"NEG: negative path for non-existent resource\",\n        \"Catches mutations: 404->200, 404->204, missing not-found guard\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\nclient = TestClient(app)\\n\\ndef test_delete_nonexistent_player_returns_404():\\n    r = client.delete('/players/squadnumber/999')\\n    assert r.status_code == 404\\n\"\n    },\n    {\n      \"name\": \"test_delete_boundary_exact_transition_204_then_404\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Player with squadNumber=1 (Armani) exists in the database\",\n        \"FastAPI app is loaded in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"Confirm player exists via GET /players/squadnumber/1 (assert 200)\",\n        \"Send DELETE /players/squadnumber/1 \u2014 assert exactly 204 (not 200, not 404)\",\n        \"Confirm player gone via GET /players/squadnumber/1 (assert 404)\",\n        \"Send DELETE /players/squadnumber/1 again \u2014 assert exactly 404 (not 204, not 500)\"\n      ],\n      \"e"
+  }
+}

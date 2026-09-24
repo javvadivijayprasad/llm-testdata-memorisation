@@ -1,0 +1,196 @@
+{
+  "req": {
+    "id": "R-TASK-023",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Task deletion persists",
+    "statement": "The system shall remove deleted rows so subsequent GET returns 404 for that id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task deletion persists"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "DELETE /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-023",
+    "reasoning": "The requirement states that deleting a task must persist the removal so that a subsequent GET returns 404. We need: (1) a positive test confirming DELETE returns 204 and GET then returns 404 (STC: exists\u2192deleted state transition); (2) a negative test confirming DELETE on a non-existent id returns 404 (NEG); (3) a boundary test using the lowest valid pre-loaded id (id=1) and the id just beyond the highest (id=21) to probe boundary conditions (BVA). Additional tests cover idempotency (second DELETE returns 404) and exact status-code constants to kill comparison-operator mutations.",
+    "tests": [
+      {
+        "name": "test_delete_existing_task_returns_204_and_subsequent_get_returns_404",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task with id=7 exists in the pre-loaded database (title='Fix login bug')",
+          "In-process FastAPI app is initialised with a fresh SQLite database seeded with 20 rows"
+        ],
+        "actions": [
+          "POST /tasks/ to create a fresh task so the test is self-contained",
+          "DELETE /tasks/{task_id} on the newly created task",
+          "GET /tasks/{task_id} on the same id"
+        ],
+        "expected": [
+          "DELETE returns HTTP 204 with no body",
+          "Subsequent GET returns HTTP 404",
+          "GET response JSON contains 'detail' key"
+        ],
+        "trace": [
+          "R-TASK-023: system shall remove deleted rows",
+          "R-TASK-023: subsequent GET returns 404 for that id"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_delete_existing_task_returns_204_and_subsequent_get_returns_404():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"Temp task STC\", \"description\": \"desc\", \"completed\": False})\n    assert create_resp.status_code == 201\n    task_id = create_resp.json()[\"id\"]\n\n    del_resp = client.delete(f\"/tasks/{task_id}\")\n    assert del_resp.status_code == 204\n    assert del_resp.content == b\"\"\n\n    get_resp = client.get(f\"/tasks/{task_id}\")\n    assert get_resp.status_code == 404\n    body = get_resp.json()\n    assert \"detail\" in body\n\ntest_delete_existing_task_returns_204_and_subsequent_get_returns_404()"
+      },
+      {
+        "name": "test_delete_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No task with id=99999 exists in the pre-loaded database"
+        ],
+        "actions": [
+          "DELETE /tasks/99999"
+        ],
+        "expected": [
+          "Response status code is exactly 404",
+          "Response JSON contains 'detail' key describing the missing task"
+        ],
+        "trace": [
+          "R-TASK-023: HTTP 4xx on client error",
+          "R-TASK-023: delete_task returns False when task not found, triggering 404"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_delete_nonexistent_task_returns_404():\n    client = TestClient(app)\n    resp = client.delete(\"/tasks/99999\")\n    assert resp.status_code == 404\n    body = resp.json()\n    assert \"detail\" in body\n    assert \"99999\" in body[\"detail\"]\n\ntest_delete_nonexistent_task_returns_404()"
+      },
+      {
+        "name": "test_delete_lowest_boundary_id_persists",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task with id=1 exists in the pre-loaded database (lowest valid id)"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task and capture its id",
+          "DELETE /tasks/{id} on that task",
+          "GET /tasks/{id} to confirm 404",
+          "Also DELETE /tasks/0 (id below minimum) to confirm 404"
+        ],
+        "expected": [
+          "DELETE on valid lowest-boundary id returns 204",
+          "GET after delete returns 404",
+          "DELETE on id=0 returns 404 (no such task)"
+        ],
+        "trace": [
+          "R-TASK-023: boundary at minimum valid task id",
+          "BVA: test id=0 (below boundary) and id=1 (at boundary)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_delete_lowest_boundary_id_persists():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"BVA boundary task\", \"completed\": False})\n    assert create_resp.status_code == 201\n    task_id = create_resp.json()[\"id\"]\n\n    del_resp = client.delete(f\"/tasks/{task_id}\")\n    assert del_resp.status_code == 204\n\n    get_resp = client.get(f\"/tasks/{task_id}\")\n    assert get_resp.status_code == 404\n\n    zero_resp = client.delete(\"/tasks/0\")\n    assert zero_resp.status_code == 404\n\ntest_delete_lowest_boundary_id_persists()"
+      },
+      {
+        "name": "test_delete_is_idempotent_second_call_returns_404",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "A task is created fresh for this test",
+          "First DELETE succeeds with 204"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task",
+          "DELETE /tasks/{id} \u2014 first call",
+          "DELETE /tasks/{id} \u2014 second call on same id"
+        ],
+        "expected": [
+          "First DELETE returns exactly 204",
+          "Second DELETE returns exactly 404 (row no longer exists)",
+          "Second DELETE response JSON contains 'detail'"
+        ],
+        "trace": [
+          "R-TASK-023: deleted rows are removed; re-deletion must fail with 404",
+          "DT: decision table row \u2014 task absent \u2192 delete returns False \u2192 404"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_delete_is_idempotent_second_call_returns_404():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"Idempotent delete test\", \"completed\": False})\n    assert create_resp.status_code == 201\n    task_id = create_resp.json()[\"id\"]\n\n    first_del = client.delete(f\"/tasks/{task_id}\")\n    assert first_del.status_code == 204\n\n    second_del = client.delete(f\"/tasks/{task_id}\")\n    assert second_del.status_code == 404\n    body = second_del.json()\n    assert \"detail\" in body\n\ntest_delete_is_idempotent_second_call_returns_404()"
+      },
+      {
+        "name": "test_delete_preloaded_task_id_7_persists_and_list_excludes_it",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task with id=7 ('Fix login bug') exists in the pre-loaded database",
+          "completed=false for id=7"
+        ],
+        "actions": [
+          "GET /tasks/7 to confirm existence before deletion",
+          "DELETE /tasks/7",
+          "GET /tasks/7 to confirm 404",
+          "GET /tasks/?limit=100 and verify id=7 is absent from the list"
+        ],
+        "expected": [
+          "Initial GET /tasks/7 returns 200 with id=7",
+          "DELETE /tasks/7 returns exactly 204",
+          "GET /tasks/7 after delete returns exactly 404",
+          "Task list does not contain any entry with id=7"
+        ],
+        "trace": [
+          "R-TASK-023: remove deleted rows so subsequent GET returns 404",
+          "EP: representative mid-range existing task id"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_delete_preloaded_task_id_7_persists_and_list_excludes_it():\n    client = TestClient(app)\n    pre = client.get(\"/tasks/7\")\n    assert pre.status_code == 200\n    assert pre.json()[\"id\"] == 7\n    assert pre.json()[\"title\"] == \"Fix login bug\"\n\n    del_resp = client.delete(\"/tasks/7\")\n    assert del_resp.status_code == 204\n    assert del_resp.content == b\"\"\n\n    get_resp = client.get(\"/tasks/7\")\n    assert get_resp.status_code == 404\n\n    list_resp = client.get(\"/tasks/?limit=100\")\n    assert list_resp.status_code == 200\n    ids = [t[\"id\"] for t in list_resp.json()]\n    assert 7 not in ids\n\ntest_delete_preloaded_task_id_7_persists_and_list_excludes_it()"
+      },
+      {
+        "name": "test_delete_boundary_just_above_max_preloaded_id_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Pre-loaded data has 20 rows; id=20 is the maximum pre-loaded id",
+          "id=21 does not exist in the pre-loaded database"
+        ],
+        "actions": [
+          "DELETE /tasks/21 (one above the maximum pre-loaded id)",
+          "DELETE /tasks/20 (the maximum pre-loaded id, which exists)"
+        ],
+        "expected": [
+          "DELETE /tasks/21 returns exactly 404 (no such row)",
+          "DELETE /tasks/20 returns exactly 204 (row exists and is removed)",
+          "GET /tasks/20 after deletion returns exactly 404"
+        ],
+        "trace": [
+          "R-TASK-023: boundary at max pre-loaded id \u00b11",
+          "BVA: id=20 (at boundary, exists), id=21 (above boundary, absent)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_delete_boundary_just_above_max_preloaded_id_returns_404():\n    client = TestClient(app)\n    above_max = client.delete(\"/tasks/21\")\n    assert above_max.status_code == 404\n    assert \"detail\" in above_max.json()\n\n    at_max = client.delete(\"/tasks/20\")\n    assert at_max.status_code == 204\n    assert at_max.content == b\"\"\n\n    get_after = client.get(\"/tasks/20\")\n    assert get_after.status_code == 404\n\ntest_delete_boundary_just_above_max_preloaded_id_returns_404()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-023",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5663,
+    "output_tokens": 3074,
+    "latency_ms": 40222,
+    "wall_ms": 40222,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-023\",\n  \"reasoning\": \"The requirement states that deleting a task must persist the removal so that a subsequent GET returns 404. We need: (1) a positive test confirming DELETE returns 204 and GET then returns 404 (STC: exists\u2192deleted state transition); (2) a negative test confirming DELETE on a non-existent id returns 404 (NEG); (3) a boundary test using the lowest valid pre-loaded id (id=1) and the id just beyond the highest (id=21) to probe boundary conditions (BVA). Additional tests cover idempotency (second DELETE returns 404) and exact status-code constants to kill comparison-operator mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_existing_task_returns_204_and_subsequent_get_returns_404\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Task with id=7 exists in the pre-loaded database (title='Fix login bug')\",\n        \"In-process FastAPI app is initialised with a fresh SQLite database seeded with 20 rows\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a fresh task so the test is self-contained\",\n        \"DELETE /tasks/{task_id} on the newly created task\",\n        \"GET /tasks/{task_id} on the same id\"\n      ],\n      \"expected\": [\n        \"DELETE returns HTTP 204 with no body\",\n        \"Subsequent GET returns HTTP 404\",\n        \"GET response JSON contains 'detail' key\"\n      ],\n      \"trace\": [\n        \"R-TASK-023: system shall remove deleted rows\",\n        \"R-TASK-023: subsequent GET returns 404 for that id\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_delete_existing_task_returns_204_and_subsequent_get_returns_404():\\n    client = TestClient(app)\\n    create_resp = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Temp task STC\\\", \\\"description\\\": \\\"desc\\\", \\\"completed\\\": False})\\n    assert create_resp.status_code == 201\\n    task_id = create_resp.json()[\\\"id\\\"]\\n\\n    del_resp = client.delete(f\\\"/tasks/{task_id}\\\")\\n    assert del_resp.status_code == 204\\n    assert del_resp.content == b\\\"\\\"\\n\\n    get_resp = client.get(f\\\"/tasks/{task_id}\\\")\\n    assert get_resp.status_code == 404\\n    body = get_resp.json()\\n    assert \\\"detail\\\" in body\\n\\ntest_delete_existing_task_returns_204_and_subsequent_get_returns_404()\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"No task with id=99999 exists in the pre-loaded database\"\n      ],\n      \"actions\": [\n        \"DELETE /tasks/99999\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 404\",\n        \"Response JSON contains 'detail' key describing the missing task\"\n      ],\n      \"trace\": [\n        \"R-TASK-023: HTTP 4xx on client error\",\n        \"R-TASK-023: delete_task returns False when task not found, triggering 404\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_delete_nonexistent_task_returns_404():\\n    client = TestClient(app)\\n    resp = client.delete(\\\"/tasks/99999\\\")\\n    assert resp.status_code == 404\\n    body = resp.json()\\n    assert \\\"detail\\\" in body\\n    assert \\\"99999\\\" in body[\\\"detail\\\"]\\n\\ntest_delete_nonexistent_task_returns_404()\"\n    },\n    {\n      \"name\": \"test_delete_lowest_boundary_id_persists\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Task with id=1 exists in the pre-loaded database (lowest valid id)\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a task and capture its id\",\n        \"DELETE /tasks/{id} on that task\",\n        \"GET /tasks/{id} to confirm 404\",\n        \"Also DELETE /tasks/0 (id below minimum) to confirm 404\"\n      ],\n      \"expected\": [\n        \"DELETE on valid lowest-boundary id returns 204\",\n        \"GET after delete returns 404\",\n        \"DELETE on id=0 returns 404 (no such task)\"\n      ],\n      \"trace\": [\n        \"R-TASK-023: boundary at "
+  }
+}

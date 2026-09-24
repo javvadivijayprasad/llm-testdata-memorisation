@@ -1,0 +1,174 @@
+{
+  "req": {
+    "id": "R-TASK-039",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "performance",
+    "title": "Rate limit not enforced",
+    "statement": "The system shall not throttle single-client request rates below 60/min.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "rate limit not enforced"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-039",
+    "reasoning": "R-TASK-039 states the system shall NOT throttle single-client request rates below 60/min, meaning all 60 requests within a minute window must succeed with HTTP 2xx. Tests cover: (1) positive \u2014 60 rapid sequential requests all return 2xx (EP: normal burst within allowed rate); (2) negative \u2014 a single malformed request returns 4xx, confirming error-path handling is distinct from rate-limiting (NEG); (3) boundary \u2014 exactly 60 requests succeed and none are rejected with 429 (BVA at the threshold). Each test uses FastAPI TestClient in-process, issues real HTTP calls, and asserts exact status codes to catch mutations on comparison operators and constants.",
+    "tests": [
+      {
+        "name": "test_60_requests_all_succeed_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "No rate-limiting middleware is active that would block < 60 req/min",
+          "GET /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "Send 60 consecutive GET /tasks/ requests using TestClient",
+          "Collect all response status codes"
+        ],
+        "expected": [
+          "All 60 responses have status code 200",
+          "No response has status code 429 or any 4xx/5xx"
+        ],
+        "trace": [
+          "R-TASK-039: system shall not throttle single-client request rates below 60/min",
+          "EP: 60 requests is within the allowed partition; all must succeed"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_60_requests_all_succeed_positive():\n    client = TestClient(app)\n    responses = [client.get(\"/tasks/\") for _ in range(60)]\n    status_codes = [r.status_code for r in responses]\n    assert len(status_codes) == 60\n    for i, code in enumerate(status_codes):\n        assert code == 200, f\"Request {i+1} returned {code}, expected 200\"\n    assert all(c == 200 for c in status_codes)\n    assert 429 not in status_codes\n\ntest_60_requests_all_succeed_positive()"
+      },
+      {
+        "name": "test_malformed_request_returns_4xx_not_rate_limited",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "POST /tasks/ endpoint validates request body"
+        ],
+        "actions": [
+          "Send a POST /tasks/ request with an empty body (missing required 'title' field)",
+          "Inspect the response status code and body"
+        ],
+        "expected": [
+          "Response status code is 422 (Unprocessable Entity) \u2014 a client error, not a rate-limit error",
+          "Response is NOT 429 (Too Many Requests)",
+          "Response is NOT 200 or 201"
+        ],
+        "trace": [
+          "R-TASK-039: error pathway is HTTP 4xx on client error",
+          "NEG: a bad request must return 4xx for client-error reasons, not be confused with rate-limiting"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_malformed_request_returns_4xx_not_rate_limited():\n    client = TestClient(app)\n    r = client.post(\"/tasks/\", json={})\n    assert r.status_code == 422\n    assert r.status_code != 429\n    assert r.status_code != 200\n    assert r.status_code != 201\n    body = r.json()\n    assert \"detail\" in body\n\ntest_malformed_request_returns_4xx_not_rate_limited()"
+      },
+      {
+        "name": "test_exactly_60_requests_boundary_all_2xx",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "The rate limit threshold per requirement is 60 requests per minute",
+          "GET /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "Send exactly 59 GET /tasks/ requests and verify all succeed",
+          "Send the 60th GET /tasks/ request and verify it also succeeds",
+          "Confirm no request in the set of 60 was rejected"
+        ],
+        "expected": [
+          "Requests 1 through 59 all return 200",
+          "Request 60 (the boundary value) returns 200",
+          "No response in the 60-request batch returns 429 or any non-2xx code"
+        ],
+        "trace": [
+          "R-TASK-039: system shall not throttle below 60/min \u2014 boundary is exactly 60",
+          "BVA: test at threshold-1 (59), threshold (60); both must succeed; catches off-by-one mutations on the constant 60"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_exactly_60_requests_boundary_all_2xx():\n    client = TestClient(app)\n    THRESHOLD = 60\n    responses_59 = [client.get(\"/tasks/\") for _ in range(THRESHOLD - 1)]\n    for i, r in enumerate(responses_59):\n        assert r.status_code == 200, f\"Request {i+1} of 59 returned {r.status_code}\"\n    r60 = client.get(\"/tasks/\")\n    assert r60.status_code == 200, f\"60th request returned {r60.status_code}, expected 200\"\n    all_responses = responses_59 + [r60]\n    assert len(all_responses) == 60\n    non_2xx = [r.status_code for r in all_responses if not (200 <= r.status_code < 300)]\n    assert non_2xx == [], f\"Non-2xx responses found: {non_2xx}\"\n    assert 429 not in [r.status_code for r in all_responses]\n\ntest_exactly_60_requests_boundary_all_2xx()"
+      },
+      {
+        "name": "test_mixed_endpoints_60_requests_all_succeed",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "Pre-loaded tasks with ids 1-20 exist in the database",
+          "Rate limit applies per client across endpoint types"
+        ],
+        "actions": [
+          "Send 60 requests alternating between GET /tasks/ and GET /tasks/1",
+          "Collect all response status codes"
+        ],
+        "expected": [
+          "All 60 responses return 200",
+          "No response returns 429",
+          "Exactly 60 responses are collected"
+        ],
+        "trace": [
+          "R-TASK-039: rate limit not enforced \u2014 any single-client request pattern up to 60/min must succeed",
+          "EP: mixed-endpoint burst is within the allowed equivalence class"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_mixed_endpoints_60_requests_all_succeed():\n    client = TestClient(app)\n    responses = []\n    for i in range(60):\n        if i % 2 == 0:\n            r = client.get(\"/tasks/\")\n        else:\n            r = client.get(\"/tasks/1\")\n        responses.append(r)\n    assert len(responses) == 60\n    status_codes = [r.status_code for r in responses]\n    assert 429 not in status_codes\n    for i, code in enumerate(status_codes):\n        assert code == 200, f\"Request {i+1} returned {code}\"\n\ntest_mixed_endpoints_60_requests_all_succeed()"
+      },
+      {
+        "name": "test_post_requests_within_rate_limit_all_succeed",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "POST /tasks/ accepts valid TaskCreate payloads",
+          "Rate limit applies to write operations as well as reads"
+        ],
+        "actions": [
+          "Send 20 valid POST /tasks/ requests in rapid succession",
+          "Verify each returns HTTP 201",
+          "Confirm no 429 is returned"
+        ],
+        "expected": [
+          "All 20 POST responses return status code 201",
+          "No response returns 429",
+          "Each response body contains the created task with a valid id"
+        ],
+        "trace": [
+          "R-TASK-039: rate limit not enforced for any request type below 60/min",
+          "DT: decision table covers write-path requests; 20 POSTs is well within 60/min threshold"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_post_requests_within_rate_limit_all_succeed():\n    client = TestClient(app)\n    responses = []\n    for i in range(20):\n        payload = {\"title\": f\"Rate test task {i}\", \"completed\": False}\n        r = client.post(\"/tasks/\", json=payload)\n        responses.append(r)\n    assert len(responses) == 20\n    status_codes = [r.status_code for r in responses]\n    assert 429 not in status_codes\n    for i, r in enumerate(responses):\n        assert r.status_code == 201, f\"POST {i+1} returned {r.status_code}\"\n        body = r.json()\n        assert \"id\" in body\n        assert body[\"id\"] >= 21\n\ntest_post_requests_within_rate_limit_all_succeed()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-039",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5900,
+    "output_tokens": 2628,
+    "latency_ms": 37923,
+    "wall_ms": 37923,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-039\",\n  \"reasoning\": \"R-TASK-039 states the system shall NOT throttle single-client request rates below 60/min, meaning all 60 requests within a minute window must succeed with HTTP 2xx. Tests cover: (1) positive \u2014 60 rapid sequential requests all return 2xx (EP: normal burst within allowed rate); (2) negative \u2014 a single malformed request returns 4xx, confirming error-path handling is distinct from rate-limiting (NEG); (3) boundary \u2014 exactly 60 requests succeed and none are rejected with 429 (BVA at the threshold). Each test uses FastAPI TestClient in-process, issues real HTTP calls, and asserts exact status codes to catch mutations on comparison operators and constants.\",\n  \"tests\": [\n    {\n      \"name\": \"test_60_requests_all_succeed_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process via TestClient\",\n        \"No rate-limiting middleware is active that would block < 60 req/min\",\n        \"GET /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"Send 60 consecutive GET /tasks/ requests using TestClient\",\n        \"Collect all response status codes\"\n      ],\n      \"expected\": [\n        \"All 60 responses have status code 200\",\n        \"No response has status code 429 or any 4xx/5xx\"\n      ],\n      \"trace\": [\n        \"R-TASK-039: system shall not throttle single-client request rates below 60/min\",\n        \"EP: 60 requests is within the allowed partition; all must succeed\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_60_requests_all_succeed_positive():\\n    client = TestClient(app)\\n    responses = [client.get(\\\"/tasks/\\\") for _ in range(60)]\\n    status_codes = [r.status_code for r in responses]\\n    assert len(status_codes) == 60\\n    for i, code in enumerate(status_codes):\\n        assert code == 200, f\\\"Request {i+1} returned {code}, expected 200\\\"\\n    assert all(c == 200 for c in status_codes)\\n    assert 429 not in status_codes\\n\\ntest_60_requests_all_succeed_positive()\"\n    },\n    {\n      \"name\": \"test_malformed_request_returns_4xx_not_rate_limited\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process via TestClient\",\n        \"POST /tasks/ endpoint validates request body\"\n      ],\n      \"actions\": [\n        \"Send a POST /tasks/ request with an empty body (missing required 'title' field)\",\n        \"Inspect the response status code and body\"\n      ],\n      \"expected\": [\n        \"Response status code is 422 (Unprocessable Entity) \u2014 a client error, not a rate-limit error\",\n        \"Response is NOT 429 (Too Many Requests)\",\n        \"Response is NOT 200 or 201\"\n      ],\n      \"trace\": [\n        \"R-TASK-039: error pathway is HTTP 4xx on client error\",\n        \"NEG: a bad request must return 4xx for client-error reasons, not be confused with rate-limiting\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_malformed_request_returns_4xx_not_rate_limited():\\n    client = TestClient(app)\\n    r = client.post(\\\"/tasks/\\\", json={})\\n    assert r.status_code == 422\\n    assert r.status_code != 429\\n    assert r.status_code != 200\\n    assert r.status_code != 201\\n    body = r.json()\\n    assert \\\"detail\\\" in body\\n\\ntest_malformed_request_returns_4xx_not_rate_limited()\"\n    },\n    {\n      \"name\": \"test_exactly_60_requests_boundary_all_2xx\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process via TestClient\",\n        \"The rate limit threshold per requirement is 60 requests per minute\",\n        \"GET /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"Send exactly 59 GET /tasks/ requests and verify all succeed\",\n        \"Send the 60th GET /tasks/ request and verify it also succeeds\",\n        \"Confirm no request in the set of 60 was rejected\"\n"
+  }
+}

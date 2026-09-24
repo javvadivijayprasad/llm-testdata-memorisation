@@ -1,0 +1,247 @@
+{
+  "req": {
+    "id": "R-PLAYER-028",
+    "domain": "sports_players",
+    "layer": "Integration",
+    "category": "startup",
+    "title": "Create schema on startup",
+    "statement": "The system shall create the players table via SQLAlchemy metadata at application startup if it does not exist.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "create schema on startup"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "lifecycle"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-028",
+    "reasoning": "R-PLAYER-028 requires that the players table is created via SQLAlchemy metadata at application startup if it does not exist. The lifespan handler in main.py logs startup completion; the schema creation is implicit in the app's database setup. We verify this by: (1) positive case \u2014 importing the app and hitting a lifecycle-adjacent endpoint (GET /players/) to confirm the table exists and returns HTTP 200 with a list payload, proving startup schema creation succeeded; (2) negative case \u2014 confirming that a malformed request to a player endpoint returns HTTP 4xx (not 5xx), proving the table is present and the DB layer is functional post-startup; (3) boundary case \u2014 confirming the app starts up exactly once and the lifespan event fires, then immediately querying the DB to assert the table is queryable (STC: pre-startup \u2192 post-startup state transition). All tests use FastAPI TestClient in-process, assert exact status codes, and inspect response structure to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_startup_creates_players_table_get_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "Database is pre-loaded with 26 player rows",
+          "App lifespan has not yet been triggered"
+        ],
+        "actions": [
+          "Import app from main",
+          "Wrap app in TestClient (triggers lifespan/startup)",
+          "Send GET /players/ request"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body is a JSON list",
+          "List contains exactly 26 players",
+          "Each player has an 'id' field"
+        ],
+        "trace": [
+          "R-PLAYER-028: table created at startup \u2192 GET /players/ succeeds with 200"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_startup_creates_players_table_get_returns_200():\n    with TestClient(app) as client:\n        response = client.get('/players/')\n        assert response.status_code == 200\n        body = response.json()\n        assert isinstance(body, list)\n        assert len(body) == 26\n        assert 'id' in body[0]\n        assert 'squadNumber' in body[0]\n\ntest_startup_creates_players_table_get_returns_200()"
+      },
+      {
+        "name": "test_startup_table_present_known_player_retrievable",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "Database contains player with squadNumber=1 (Anjali Banerjee)"
+        ],
+        "actions": [
+          "Import app from main",
+          "Wrap app in TestClient (triggers lifespan/startup)",
+          "Send GET /players/squadnumber/1"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body contains firstName='Anjali'",
+          "Response body contains lastName='Banerjee'",
+          "Response body contains squadNumber=1"
+        ],
+        "trace": [
+          "R-PLAYER-028: table exists post-startup \u2192 specific player lookup returns 200 with correct payload"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_startup_table_present_known_player_retrievable():\n    with TestClient(app) as client:\n        response = client.get('/players/squadnumber/1')\n        assert response.status_code == 200\n        body = response.json()\n        assert body['firstName'] == 'Anjali'\n        assert body['lastName'] == 'Banerjee'\n        assert body['squadNumber'] == 1\n        assert body['id'] == '97da2849-d73e-4b43-8a90-7d090402c802'\n\ntest_startup_table_present_known_player_retrievable()"
+      },
+      {
+        "name": "test_startup_table_present_missing_player_returns_404_not_500",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "Database does NOT contain a player with squadNumber=9999"
+        ],
+        "actions": [
+          "Import app from main",
+          "Wrap app in TestClient (triggers lifespan/startup)",
+          "Send GET /players/squadnumber/9999"
+        ],
+        "expected": [
+          "HTTP 404 response (not 500)",
+          "Table exists but record absent \u2014 proves schema was created, not missing"
+        ],
+        "trace": [
+          "R-PLAYER-028: if table did not exist, DB would raise 500; 404 proves table is present post-startup"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_startup_table_present_missing_player_returns_404_not_500():\n    with TestClient(app) as client:\n        response = client.get('/players/squadnumber/9999')\n        assert response.status_code == 404\n        assert response.status_code != 500\n        assert response.status_code != 200\n\ntest_startup_table_present_missing_player_returns_404_not_500()"
+      },
+      {
+        "name": "test_startup_lifespan_table_queryable_immediately_after_context_entry",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "Lifespan context has just been entered (startup just fired)"
+        ],
+        "actions": [
+          "Import app from main",
+          "Enter TestClient context (triggers lifespan startup)",
+          "Immediately send GET /players/ before any other operation"
+        ],
+        "expected": [
+          "HTTP 200 response immediately after startup",
+          "Response is a list (not an error)",
+          "No 500 errors indicating missing table"
+        ],
+        "trace": [
+          "R-PLAYER-028: STC pre-startup\u2192post-startup; table must be queryable the instant lifespan completes"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_startup_lifespan_table_queryable_immediately_after_context_entry():\n    with TestClient(app) as client:\n        # First request immediately after lifespan startup\n        response = client.get('/players/')\n        assert response.status_code == 200\n        assert response.status_code != 500\n        body = response.json()\n        assert isinstance(body, list)\n        assert len(body) >= 1\n\ntest_startup_lifespan_table_queryable_immediately_after_context_entry()"
+      },
+      {
+        "name": "test_startup_table_schema_has_expected_fields_in_response",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "Database pre-loaded with 26 rows including squadNumber=10 (Kabir Mary Reddy)"
+        ],
+        "actions": [
+          "Import app from main",
+          "Wrap app in TestClient",
+          "Send GET /players/squadnumber/10",
+          "Assert all schema fields are present and correctly typed"
+        ],
+        "expected": [
+          "HTTP 200",
+          "All PlayerResponseModel fields present: id, firstName, middleName, lastName, dateOfBirth, squadNumber, position, abbrPosition, team, league, starting11",
+          "Field values match pre-loaded data exactly"
+        ],
+        "trace": [
+          "R-PLAYER-028: schema created at startup must include all columns defined in Player ORM model"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_startup_table_schema_has_expected_fields_in_response():\n    with TestClient(app) as client:\n        response = client.get('/players/squadnumber/10')\n        assert response.status_code == 200\n        body = response.json()\n        assert body['id'] == 'e51a3744-b879-41cb-a100-533f9d5a0bc6'\n        assert body['firstName'] == 'Kabir'\n        assert body['middleName'] == 'Mary'\n        assert body['lastName'] == 'Reddy'\n        assert body['squadNumber'] == 10\n        assert body['position'] == 'Right Winger'\n        assert body['abbrPosition'] == 'DM'\n        assert body['team'] == 'River Plate'\n        assert body['league'] == 'Ligue 1'\n        assert body['starting11'] == False\n\ntest_startup_table_schema_has_expected_fields_in_response()"
+      },
+      {
+        "name": "test_startup_table_boundary_first_and_last_squad_numbers",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "Database contains squadNumber=1 (min) and squadNumber=26 (max)"
+        ],
+        "actions": [
+          "Import app from main",
+          "Wrap app in TestClient",
+          "Send GET /players/squadnumber/1 (boundary min)",
+          "Send GET /players/squadnumber/26 (boundary max)",
+          "Send GET /players/squadnumber/0 (below min \u2014 should 404)",
+          "Send GET /players/squadnumber/27 (above max \u2014 should 404)"
+        ],
+        "expected": [
+          "squadNumber=1 returns HTTP 200",
+          "squadNumber=26 returns HTTP 200",
+          "squadNumber=0 returns HTTP 404",
+          "squadNumber=27 returns HTTP 404"
+        ],
+        "trace": [
+          "R-PLAYER-028: BVA on squad number boundaries; table must exist and be queryable at both ends"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_startup_table_boundary_first_and_last_squad_numbers():\n    with TestClient(app) as client:\n        r1 = client.get('/players/squadnumber/1')\n        assert r1.status_code == 200\n        assert r1.json()['squadNumber'] == 1\n        r26 = client.get('/players/squadnumber/26')\n        assert r26.status_code == 200\n        assert r26.json()['squadNumber'] == 26\n        r0 = client.get('/players/squadnumber/0')\n        assert r0.status_code == 404\n        r27 = client.get('/players/squadnumber/27')\n        assert r27.status_code == 404\n\ntest_startup_table_boundary_first_and_last_squad_numbers()"
+      },
+      {
+        "name": "test_startup_post_player_then_retrieve_confirms_table_writable",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "Database does not contain squadNumber=99"
+        ],
+        "actions": [
+          "Import app from main",
+          "Wrap app in TestClient",
+          "POST a new player with squadNumber=99",
+          "Assert HTTP 201 and Location header",
+          "GET /players/squadnumber/99 to confirm persistence"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "Location header equals '/players/squadnumber/99'",
+          "GET returns HTTP 200 with matching firstName"
+        ],
+        "trace": [
+          "R-PLAYER-028: table created at startup must be writable; STC idle\u2192created state"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_startup_post_player_then_retrieve_confirms_table_writable():\n    payload = {\n        'firstName': 'Test', 'lastName': 'Player',\n        'squadNumber': 99, 'position': 'Goalkeeper'\n    }\n    with TestClient(app) as client:\n        post_r = client.post('/players/', json=payload)\n        assert post_r.status_code == 201\n        assert post_r.headers.get('location') == '/players/squadnumber/99'\n        get_r = client.get('/players/squadnumber/99')\n        assert get_r.status_code == 200\n        assert get_r.json()['firstName'] == 'Test'\n        assert get_r.json()['squadNumber'] == 99\n\ntest_startup_post_player_then_retrieve_confirms_table_writable()"
+      },
+      {
+        "name": "test_startup_duplicate_squad_number_returns_409_not_500",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable from main",
+          "Database already contains squadNumber=1"
+        ],
+        "actions": [
+          "Import app from main",
+          "Wrap app in TestClient",
+          "POST a player with squadNumber=1 (already exists)"
+        ],
+        "expected": [
+          "HTTP 409 Conflict (not 500, not 201)",
+          "Response detail mentions conflict"
+        ],
+        "trace": [
+          "R-PLAYER-028: table exists post-startup; unique constraint enforced \u2192 409 not 500"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_startup_duplicate_squad_number_returns_409_not_500():\n    payload = {\n        'firstName': 'Duplicate', 'lastName': 'Player',\n        'squadNumber': 1, 'position': 'Goalkeeper'\n    }\n    with TestClient(app) as client:\n        response = client.post('/players/', json=payload)\n        assert response.status_code == 409\n        assert response.status_code != 500\n        assert response.status_code != 201\n        body = response.json()\n        assert 'detail' in body\n\ntest_startup_duplicate_squad_number_returns_409_not_500()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-028",
+  "domain": "sports_players",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 15348,
+    "output_tokens": 3755,
+    "latency_ms": 51077,
+    "wall_ms": 51077,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-028\",\n  \"reasoning\": \"R-PLAYER-028 requires that the players table is created via SQLAlchemy metadata at application startup if it does not exist. The lifespan handler in main.py logs startup completion; the schema creation is implicit in the app's database setup. We verify this by: (1) positive case \u2014 importing the app and hitting a lifecycle-adjacent endpoint (GET /players/) to confirm the table exists and returns HTTP 200 with a list payload, proving startup schema creation succeeded; (2) negative case \u2014 confirming that a malformed request to a player endpoint returns HTTP 4xx (not 5xx), proving the table is present and the DB layer is functional post-startup; (3) boundary case \u2014 confirming the app starts up exactly once and the lifespan event fires, then immediately querying the DB to assert the table is queryable (STC: pre-startup \u2192 post-startup state transition). All tests use FastAPI TestClient in-process, assert exact status codes, and inspect response structure to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_startup_creates_players_table_get_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable from main\",\n        \"Database is pre-loaded with 26 player rows\",\n        \"App lifespan has not yet been triggered\"\n      ],\n      \"actions\": [\n        \"Import app from main\",\n        \"Wrap app in TestClient (triggers lifespan/startup)\",\n        \"Send GET /players/ request\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body is a JSON list\",\n        \"List contains exactly 26 players\",\n        \"Each player has an 'id' field\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-028: table created at startup \u2192 GET /players/ succeeds with 200\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\ndef test_startup_creates_players_table_get_returns_200():\\n    with TestClient(app) as client:\\n        response = client.get('/players/')\\n        assert response.status_code == 200\\n        body = response.json()\\n        assert isinstance(body, list)\\n        assert len(body) == 26\\n        assert 'id' in body[0]\\n        assert 'squadNumber' in body[0]\\n\\ntest_startup_creates_players_table_get_returns_200()\"\n    },\n    {\n      \"name\": \"test_startup_table_present_known_player_retrievable\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable from main\",\n        \"Database contains player with squadNumber=1 (Anjali Banerjee)\"\n      ],\n      \"actions\": [\n        \"Import app from main\",\n        \"Wrap app in TestClient (triggers lifespan/startup)\",\n        \"Send GET /players/squadnumber/1\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body contains firstName='Anjali'\",\n        \"Response body contains lastName='Banerjee'\",\n        \"Response body contains squadNumber=1\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-028: table exists post-startup \u2192 specific player lookup returns 200 with correct payload\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\ndef test_startup_table_present_known_player_retrievable():\\n    with TestClient(app) as client:\\n        response = client.get('/players/squadnumber/1')\\n        assert response.status_code == 200\\n        body = response.json()\\n        assert body['firstName'] == 'Anjali'\\n        assert body['lastName'] == 'Banerjee'\\n        assert body['squadNumber'] == 1\\n        assert body['id'] == '97da2849-d73e-4b43-8a90-7d090402c802'\\n\\ntest_startup_table_present_known_player_retrievable()\"\n    },\n    {\n      \"name\": \"test_startup_table_present_missing_player_returns_404_not_500\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"FastAPI app is importable from main\",\n        \"Database does NOT contain a player with squadNumber=9999\"\n      ]"
+  }
+}

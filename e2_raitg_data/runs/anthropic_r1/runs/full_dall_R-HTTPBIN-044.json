@@ -1,0 +1,250 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-044",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Cookie name path segment escaping",
+    "statement": "The system shall percent-decode the <name> and <value> path segments in /cookies/set/<name>/<value>.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "cookie name path segment escaping"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /cookies/set/<name>/<value>"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-044",
+    "reasoning": "The requirement states that /cookies/set/<name>/<value> must percent-decode the name and value path segments. Flask/Werkzeug handles URL decoding of path segments automatically, so the set_cookie handler receives already-decoded strings. Tests must verify: (1) a normal cookie name/value is set correctly (EP positive), (2) a percent-encoded name/value is decoded and set correctly (EP positive with encoding), (3) a percent-encoded space (%20) in name and value is decoded to a literal space (BVA), (4) a percent-encoded special character like %2F (slash) is decoded (BVA boundary), (5) an empty-string-equivalent or single-char boundary name (BVA), and (6) a cookie name with percent-encoded characters that would be invalid if not decoded (NEG/DT). We drive the Flask test client in follow_redirects=True mode so we can inspect the final /cookies JSON payload, confirming the decoded name and value appear. We also check the redirect response (302) without following to confirm the Set-Cookie header contains the decoded values.",
+    "tests": [
+      {
+        "name": "test_set_cookie_plain_name_value_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "No prior cookies set"
+        ],
+        "actions": [
+          "GET /cookies/set/mycookie/myvalue with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON body contains cookies dict with key 'mycookie' equal to 'myvalue'"
+        ],
+        "trace": [
+          "R-HTTPBIN-044: plain name/value path segments are passed through and set as cookie"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_set_cookie_plain_name_value_positive():\n    r = client.get('/cookies/set/mycookie/myvalue', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'cookies' in data\n    assert data['cookies']['mycookie'] == 'myvalue'\n\ntest_set_cookie_plain_name_value_positive()"
+      },
+      {
+        "name": "test_set_cookie_percent_encoded_value_decoded",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "No prior cookies set"
+        ],
+        "actions": [
+          "GET /cookies/set/token/hello%20world with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON body contains cookies dict with key 'token' equal to 'hello world' (space decoded from %20)"
+        ],
+        "trace": [
+          "R-HTTPBIN-044: percent-encoded value %20 must be decoded to space before setting cookie"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_set_cookie_percent_encoded_value_decoded():\n    r = client.get('/cookies/set/token/hello%20world', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'cookies' in data\n    assert data['cookies']['token'] == 'hello world'\n    assert data['cookies']['token'] != 'hello%20world'\n\ntest_set_cookie_percent_encoded_value_decoded()"
+      },
+      {
+        "name": "test_set_cookie_percent_encoded_name_decoded",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "No prior cookies set"
+        ],
+        "actions": [
+          "GET /cookies/set/my%5Fname/testval with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON body contains cookies dict with key 'my_name' (underscore decoded from %5F) equal to 'testval'"
+        ],
+        "trace": [
+          "R-HTTPBIN-044: percent-encoded name %5F must be decoded to underscore before setting cookie"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_set_cookie_percent_encoded_name_decoded():\n    r = client.get('/cookies/set/my%5Fname/testval', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'cookies' in data\n    assert 'my_name' in data['cookies']\n    assert data['cookies']['my_name'] == 'testval'\n    assert 'my%5Fname' not in data['cookies']\n\ntest_set_cookie_percent_encoded_name_decoded()"
+      },
+      {
+        "name": "test_set_cookie_redirect_sets_cookie_header",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "GET /cookies/set/alpha/beta%21 without following redirects",
+          "Inspect the 302 response Set-Cookie header"
+        ],
+        "expected": [
+          "HTTP 302 response",
+          "Set-Cookie header contains 'alpha' as cookie name",
+          "Set-Cookie header contains 'beta!' as decoded value (not 'beta%21')"
+        ],
+        "trace": [
+          "R-HTTPBIN-044: the redirect response must carry a Set-Cookie header with decoded value"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_set_cookie_redirect_sets_cookie_header():\n    r = client.get('/cookies/set/alpha/beta%21', follow_redirects=False)\n    assert r.status_code == 302\n    set_cookie = r.headers.get('Set-Cookie', '')\n    assert 'alpha' in set_cookie\n    assert 'beta!' in set_cookie\n    assert 'beta%21' not in set_cookie\n\ntest_set_cookie_redirect_sets_cookie_header()"
+      },
+      {
+        "name": "test_set_cookie_single_char_name_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "GET /cookies/set/a/z with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON body contains cookies dict with key 'a' equal to 'z'"
+        ],
+        "trace": [
+          "R-HTTPBIN-044: single-character name and value (minimum non-empty length) must be handled correctly"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_set_cookie_single_char_name_boundary():\n    r = client.get('/cookies/set/a/z', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'cookies' in data\n    assert 'a' in data['cookies']\n    assert data['cookies']['a'] == 'z'\n    assert len(data['cookies']['a']) == 1\n\ntest_set_cookie_single_char_name_boundary()"
+      },
+      {
+        "name": "test_set_cookie_percent_encoded_both_name_and_value_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "GET /cookies/set/my%2Dkey/val%2Ddata with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON body contains cookies dict with key 'my-key' (hyphen decoded from %2D) equal to 'val-data'"
+        ],
+        "trace": [
+          "R-HTTPBIN-044: both name and value percent-encoded simultaneously must both be decoded"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_set_cookie_percent_encoded_both_name_and_value_boundary():\n    r = client.get('/cookies/set/my%2Dkey/val%2Ddata', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'cookies' in data\n    assert 'my-key' in data['cookies']\n    assert data['cookies']['my-key'] == 'val-data'\n    assert 'my%2Dkey' not in data['cookies']\n\ntest_set_cookie_percent_encoded_both_name_and_value_boundary()"
+      },
+      {
+        "name": "test_set_cookie_numeric_value_exact",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "GET /cookies/set/count/42 with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON body contains cookies dict with key 'count' equal to string '42'"
+        ],
+        "trace": [
+          "R-HTTPBIN-044: numeric string value must be preserved exactly as string"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_set_cookie_numeric_value_exact():\n    r = client.get('/cookies/set/count/42', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'cookies' in data\n    assert data['cookies']['count'] == '42'\n    assert data['cookies']['count'] != '43'\n    assert data['cookies']['count'] != '41'\n\ntest_set_cookie_numeric_value_exact()"
+      },
+      {
+        "name": "test_set_cookie_wrong_method_negative",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "POST /cookies/set/foo/bar (wrong HTTP method)"
+        ],
+        "expected": [
+          "HTTP 405 Method Not Allowed response (not 200 or 302)"
+        ],
+        "trace": [
+          "R-HTTPBIN-044: endpoint only accepts GET; POST must be rejected with 405"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_set_cookie_wrong_method_negative():\n    r = client.post('/cookies/set/foo/bar')\n    assert r.status_code == 405\n    assert r.status_code != 200\n    assert r.status_code != 302\n\ntest_set_cookie_wrong_method_negative()"
+      },
+      {
+        "name": "test_set_cookie_percent_encoded_at_sign_in_value",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "GET /cookies/set/email/user%40example.com with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON body contains cookies dict with key 'email' equal to 'user@example.com' (@ decoded from %40)"
+        ],
+        "trace": [
+          "R-HTTPBIN-044: percent-encoded @ (%40) in value must be decoded to literal @ character"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_set_cookie_percent_encoded_at_sign_in_value():\n    r = client.get('/cookies/set/email/user%40example.com', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'cookies' in data\n    assert 'email' in data['cookies']\n    assert data['cookies']['email'] == 'user@example.com'\n    assert data['cookies']['email'] != 'user%40example.com'\n\ntest_set_cookie_percent_encoded_at_sign_in_value()"
+      },
+      {
+        "name": "test_set_cookie_response_redirects_to_view_cookies",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "GET /cookies/set/x/y without following redirects",
+          "Check Location header of 302 response"
+        ],
+        "expected": [
+          "HTTP 302 response",
+          "Location header equals '/cookies'"
+        ],
+        "trace": [
+          "R-HTTPBIN-044: after setting cookie, endpoint must redirect to /cookies (view_cookies)"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_set_cookie_response_redirects_to_view_cookies():\n    r = client.get('/cookies/set/x/y', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers.get('Location', '')\n    assert location == '/cookies'\n    assert location != '/cookies/set/x/y'\n    assert location != '/'\n\ntest_set_cookie_response_redirects_to_view_cookies()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-044",
+  "domain": "http_utilities",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9480,
+    "output_tokens": 3740,
+    "latency_ms": 44088,
+    "wall_ms": 44088,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-044\",\n  \"reasoning\": \"The requirement states that /cookies/set/<name>/<value> must percent-decode the name and value path segments. Flask/Werkzeug handles URL decoding of path segments automatically, so the set_cookie handler receives already-decoded strings. Tests must verify: (1) a normal cookie name/value is set correctly (EP positive), (2) a percent-encoded name/value is decoded and set correctly (EP positive with encoding), (3) a percent-encoded space (%20) in name and value is decoded to a literal space (BVA), (4) a percent-encoded special character like %2F (slash) is decoded (BVA boundary), (5) an empty-string-equivalent or single-char boundary name (BVA), and (6) a cookie name with percent-encoded characters that would be invalid if not decoded (NEG/DT). We drive the Flask test client in follow_redirects=True mode so we can inspect the final /cookies JSON payload, confirming the decoded name and value appear. We also check the redirect response (302) without following to confirm the Set-Cookie header contains the decoded values.\",\n  \"tests\": [\n    {\n      \"name\": \"test_set_cookie_plain_name_value_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"No prior cookies set\"\n      ],\n      \"actions\": [\n        \"GET /cookies/set/mycookie/myvalue with follow_redirects=True\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"JSON body contains cookies dict with key 'mycookie' equal to 'myvalue'\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-044: plain name/value path segments are passed through and set as cookie\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_set_cookie_plain_name_value_positive():\\n    r = client.get('/cookies/set/mycookie/myvalue', follow_redirects=True)\\n    assert r.status_code == 200\\n    data = r.get_json()\\n    assert data is not None\\n    assert 'cookies' in data\\n    assert data['cookies']['mycookie'] == 'myvalue'\\n\\ntest_set_cookie_plain_name_value_positive()\"\n    },\n    {\n      \"name\": \"test_set_cookie_percent_encoded_value_decoded\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"No prior cookies set\"\n      ],\n      \"actions\": [\n        \"GET /cookies/set/token/hello%20world with follow_redirects=True\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"JSON body contains cookies dict with key 'token' equal to 'hello world' (space decoded from %20)\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-044: percent-encoded value %20 must be decoded to space before setting cookie\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_set_cookie_percent_encoded_value_decoded():\\n    r = client.get('/cookies/set/token/hello%20world', follow_redirects=True)\\n    assert r.status_code == 200\\n    data = r.get_json()\\n    assert data is not None\\n    assert 'cookies' in data\\n    assert data['cookies']['token'] == 'hello world'\\n    assert data['cookies']['token'] != 'hello%20world'\\n\\ntest_set_cookie_percent_encoded_value_decoded()\"\n    },\n    {\n      \"name\": \"test_set_cookie_percent_encoded_name_decoded\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"No prior cookies set\"\n      ],\n      \"actions\": [\n        \"GET /cookies/set/my%5Fname/testval with follow_redirects=True\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"JSON body contains cookies dict with key 'my_name' (underscore decoded from %5F) equal to 'testval'\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-044: percent-encoded name %5F must be decoded to underscore before setting cookie\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_set_cookie_per"
+  }
+}

@@ -1,0 +1,148 @@
+{
+  "req": {
+    "id": "R-TASK-033",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "List returns empty array when db empty",
+    "statement": "The system shall return an empty JSON array on GET /tasks/ when no tasks exist.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "list returns empty array when db empty"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-033",
+    "reasoning": "R-TASK-033 requires GET /tasks/ to return an empty JSON array when no tasks exist. The pre-loaded fixture has 20 rows, so the positive test must use an in-memory SQLite DB with no rows. We need: (1) a positive test confirming empty array + exact 200 status on a truly empty DB, (2) a negative test confirming that a bad query parameter (e.g. invalid 'skip') yields 422 not 200, and (3) a boundary test confirming that with exactly 0 tasks the response body is precisely [] (not null, not {}, not a non-empty list). We override the app's get_db dependency to inject a fresh in-memory session with no rows, ensuring isolation from the pre-loaded fixture. Mutation resilience: we assert exact status codes (200 vs 422), exact response body (== []), exact Content-Type, and exact list length (== 0).",
+    "tests": [
+      {
+        "name": "test_list_tasks_empty_db_returns_200_and_empty_array",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains zero task rows",
+          "GET /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "Override get_db dependency with a fresh in-memory SQLite session containing no rows",
+          "Send GET /tasks/ with no query parameters"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body is exactly the JSON array []",
+          "Response Content-Type contains application/json"
+        ],
+        "trace": [
+          "R-TASK-033: system shall return empty JSON array on GET /tasks/ when no tasks exist",
+          "EP: valid partition \u2014 empty database, no filter params"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\ndef test_list_tasks_empty_db_returns_200_and_empty_array():\n    engine = create_engine(\n        \"sqlite:///:memory:\",\n        connect_args={\"check_same_thread\": False}\n    )\n    models.Base.metadata.create_all(bind=engine)\n    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n    def override_get_db():\n        db = TestingSession()\n        try:\n            yield db\n        finally:\n            db.close()\n\n    app.dependency_overrides[get_db] = override_get_db\n    try:\n        client = TestClient(app)\n        r = client.get(\"/tasks/\")\n        assert r.status_code == 200\n        body = r.json()\n        assert body == []\n        assert len(body) == 0\n        assert \"application/json\" in r.headers[\"content-type\"]\n    finally:\n        app.dependency_overrides.clear()\n\ntest_list_tasks_empty_db_returns_200_and_empty_array()"
+      },
+      {
+        "name": "test_list_tasks_invalid_skip_param_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "GET /tasks/ endpoint is reachable in-process",
+          "Query parameter 'skip' has constraint ge=0"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=-1 (violates ge=0 constraint)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 422 (Unprocessable Entity)",
+          "Response body is NOT an empty array",
+          "Status code is not 200"
+        ],
+        "trace": [
+          "R-TASK-033: error pathway \u2014 HTTP 4xx on client error",
+          "NEG: invalid query parameter triggers validation error, not success"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\ndef test_list_tasks_invalid_skip_param_returns_422():\n    engine = create_engine(\n        \"sqlite:///:memory:\",\n        connect_args={\"check_same_thread\": False}\n    )\n    models.Base.metadata.create_all(bind=engine)\n    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n    def override_get_db():\n        db = TestingSession()\n        try:\n            yield db\n        finally:\n            db.close()\n\n    app.dependency_overrides[get_db] = override_get_db\n    try:\n        client = TestClient(app)\n        r = client.get(\"/tasks/?skip=-1\")\n        assert r.status_code == 422\n        assert r.status_code != 200\n        body = r.json()\n        assert body != []\n    finally:\n        app.dependency_overrides.clear()\n\ntest_list_tasks_invalid_skip_param_returns_422()"
+      },
+      {
+        "name": "test_list_tasks_empty_db_body_is_exactly_empty_array_not_null_or_object",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly zero task rows (boundary: 0 tasks)",
+          "GET /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "Override get_db with empty in-memory DB (0 rows \u2014 boundary value)",
+          "Send GET /tasks/ with skip=0 and limit=1 (minimum valid limit)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response JSON is exactly [] \u2014 not null, not {}, not a non-empty list",
+          "len(response.json()) == 0 exactly",
+          "Response is a list type, not dict or None"
+        ],
+        "trace": [
+          "R-TASK-033: boundary \u2014 0 tasks is the exact boundary condition specified",
+          "BVA + boundary-mutation: catches mutations that return null/None or non-empty list instead of []"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\ndef test_list_tasks_empty_db_body_is_exactly_empty_array_not_null_or_object():\n    engine = create_engine(\n        \"sqlite:///:memory:\",\n        connect_args={\"check_same_thread\": False}\n    )\n    models.Base.metadata.create_all(bind=engine)\n    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n    def override_get_db():\n        db = TestingSession()\n        try:\n            yield db\n        finally:\n            db.close()\n\n    app.dependency_overrides[get_db] = override_get_db\n    try:\n        client = TestClient(app)\n        r = client.get(\"/tasks/?skip=0&limit=1\")\n        assert r.status_code == 200\n        body = r.json()\n        assert body == []\n        assert body is not None\n        assert isinstance(body, list)\n        assert len(body) == 0\n        assert body != {}\n        assert body != None\n    finally:\n        app.dependency_overrides.clear()\n\ntest_list_tasks_empty_db_body_is_exactly_empty_array_not_null_or_object()"
+      },
+      {
+        "name": "test_list_tasks_empty_db_with_completed_filter_returns_empty_array",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database contains exactly zero task rows",
+          "GET /tasks/ supports optional 'completed' filter"
+        ],
+        "actions": [
+          "Override get_db with empty in-memory DB",
+          "Send GET /tasks/?completed=false",
+          "Send GET /tasks/?completed=true"
+        ],
+        "expected": [
+          "Both requests return HTTP 200",
+          "Both response bodies are exactly []",
+          "completed=false yields [] (not null, not non-empty)",
+          "completed=true yields [] (not null, not non-empty)"
+        ],
+        "trace": [
+          "R-TASK-033: decision table \u2014 filter param present but DB empty; both boolean branches of completed filter must yield []",
+          "DT + boolean-mutation: catches and->or mutation in completed filter logic"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\ndef test_list_tasks_empty_db_with_completed_filter_returns_empty_array():\n    engine = create_engine(\n        \"sqlite:///:memory:\",\n        connect_args={\"check_same_thread\": False}\n    )\n    models.Base.metadata.create_all(bind=engine)\n    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n    def override_get_db():\n        db = TestingSession()\n        try:\n            yield db\n        finally:\n            db.close()\n\n    app.dependency_overrides[get_db] = override_get_db\n    try:\n        client = TestClient(app)\n        r_false = client.get(\"/tasks/?completed=false\")\n        assert r_false.status_code == 200\n        assert r_false.json() == []\n        assert len(r_false.json()) == 0\n\n        r_true = client.get(\"/tasks/?completed=true\")\n        assert r_true.status_code == 200\n        assert r_true.json() == []\n        assert len(r_true.json()) == 0\n    finally:\n        app.dependency_overrides.clear()\n\ntest_list_tasks_empty_db_with_completed_filter_returns_empty_array()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-033",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5655,
+    "output_tokens": 2743,
+    "latency_ms": 36794,
+    "wall_ms": 36794,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-033\",\n  \"reasoning\": \"R-TASK-033 requires GET /tasks/ to return an empty JSON array when no tasks exist. The pre-loaded fixture has 20 rows, so the positive test must use an in-memory SQLite DB with no rows. We need: (1) a positive test confirming empty array + exact 200 status on a truly empty DB, (2) a negative test confirming that a bad query parameter (e.g. invalid 'skip') yields 422 not 200, and (3) a boundary test confirming that with exactly 0 tasks the response body is precisely [] (not null, not {}, not a non-empty list). We override the app's get_db dependency to inject a fresh in-memory session with no rows, ensuring isolation from the pre-loaded fixture. Mutation resilience: we assert exact status codes (200 vs 422), exact response body (== []), exact Content-Type, and exact list length (== 0).\",\n  \"tests\": [\n    {\n      \"name\": \"test_list_tasks_empty_db_returns_200_and_empty_array\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains zero task rows\",\n        \"GET /tasks/ endpoint is reachable in-process\"\n      ],\n      \"actions\": [\n        \"Override get_db dependency with a fresh in-memory SQLite session containing no rows\",\n        \"Send GET /tasks/ with no query parameters\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body is exactly the JSON array []\",\n        \"Response Content-Type contains application/json\"\n      ],\n      \"trace\": [\n        \"R-TASK-033: system shall return empty JSON array on GET /tasks/ when no tasks exist\",\n        \"EP: valid partition \u2014 empty database, no filter params\"\n      ],\n      \"executable\": \"import pytest\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\ndef test_list_tasks_empty_db_returns_200_and_empty_array():\\n    engine = create_engine(\\n        \\\"sqlite:///:memory:\\\",\\n        connect_args={\\\"check_same_thread\\\": False}\\n    )\\n    models.Base.metadata.create_all(bind=engine)\\n    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\n\\n    def override_get_db():\\n        db = TestingSession()\\n        try:\\n            yield db\\n        finally:\\n            db.close()\\n\\n    app.dependency_overrides[get_db] = override_get_db\\n    try:\\n        client = TestClient(app)\\n        r = client.get(\\\"/tasks/\\\")\\n        assert r.status_code == 200\\n        body = r.json()\\n        assert body == []\\n        assert len(body) == 0\\n        assert \\\"application/json\\\" in r.headers[\\\"content-type\\\"]\\n    finally:\\n        app.dependency_overrides.clear()\\n\\ntest_list_tasks_empty_db_returns_200_and_empty_array()\"\n    },\n    {\n      \"name\": \"test_list_tasks_invalid_skip_param_returns_422\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"GET /tasks/ endpoint is reachable in-process\",\n        \"Query parameter 'skip' has constraint ge=0\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/?skip=-1 (violates ge=0 constraint)\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 422 (Unprocessable Entity)\",\n        \"Response body is NOT an empty array\",\n        \"Status code is not 200\"\n      ],\n      \"trace\": [\n        \"R-TASK-033: error pathway \u2014 HTTP 4xx on client error\",\n        \"NEG: invalid query parameter triggers validation error, not success\"\n      ],\n      \"executable\": \"import pytest\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\ndef test_list_tasks_invalid_skip_param_returns_422():\\n    engine = create_engine(\\n        \\\"sqlite:///:memory:\\\",\\n        connect_args={\\\"check_same_thread\\\": False}\\n    )\\n    models.Base.metadata.create_all(bind=engine)\\n    Testin"
+  }
+}

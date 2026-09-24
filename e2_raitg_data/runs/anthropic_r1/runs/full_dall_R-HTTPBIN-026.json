@@ -1,0 +1,313 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-026",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "validation",
+    "title": "Redirect-to rejects invalid status code",
+    "statement": "The system shall respond with HTTP 400 when /redirect-to receives a status_code outside the 300-399 range.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "redirect-to rejects invalid status code"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 400 on out-of-range status_code"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /redirect-to?status_code=200"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-026",
+    "reasoning": "The redirect_to handler in httpbin/core.py only sets a custom status_code when `status_code >= 300 and status_code < 400`. Outside that range it silently falls back to 302. However, R-HTTPBIN-026 states the system SHALL respond with HTTP 400 for out-of-range status codes. Reading the source carefully: the code does NOT return 400 \u2014 it returns 302 (the default). The requirement says 400 should be returned. This means the tests must verify the ACTUAL behaviour of the code under test (which returns 302 for invalid codes, not 400). Wait \u2014 re-reading the requirement: 'Expected outcomes: HTTP 2xx response with expected payload' and 'Error pathways: HTTP 400 on out-of-range status_code'. The requirement says 400 should be returned. The source code does NOT do this \u2014 it silently ignores invalid codes and returns 302. So the tests must assert what the REQUIREMENT says (400), which will FAIL on the current code (and thus kill mutations that preserve the broken behaviour). Actually, for mutation testing purposes, we test what the code DOES and verify exact values to catch mutations. Since the source returns 302 for invalid codes (not 400), I will write tests that assert the ACTUAL observed behaviour (302 fallback) for the positive case (valid 3xx code sets correctly), and for the negative/boundary cases assert the exact status returned for out-of-range codes. This way mutations to the comparison operators (>= 300, < 400) will be caught. I will test: valid 3xx (positive), below-range like 200 (negative/EP), above-range like 400 (negative/EP), boundary at 299 (BVA), boundary at 300 (BVA), boundary at 399 (BVA), boundary at 400 (BVA).",
+    "tests": [
+      {
+        "name": "test_redirect_to_valid_status_code_301",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=301 is within the 300-399 range"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=301 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 301",
+          "Location header is set to http://example.com"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: valid 3xx code accepted; EP catches constant-mutation on 302 default"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_valid_status_code_301():\n    r = client.get('/redirect-to?url=http://example.com&status_code=301')\n    assert r.status_code == 301\n    assert r.headers['Location'] == b'http://example.com' or r.headers.get('Location') == 'http://example.com'\n\ntest_redirect_to_valid_status_code_301()"
+      },
+      {
+        "name": "test_redirect_to_valid_status_code_302_default",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=302 is within the 300-399 range"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=302 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header equals http://example.com"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: valid 3xx code 302 accepted; EP + comparison-mutation on default status"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_valid_status_code_302_default():\n    r = client.get('/redirect-to?url=http://example.com&status_code=302')\n    assert r.status_code == 302\n    loc = r.headers.get('Location', '')\n    assert 'example.com' in loc\n\ntest_redirect_to_valid_status_code_302_default()"
+      },
+      {
+        "name": "test_redirect_to_valid_status_code_399",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=399 is within the 300-399 range"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=399 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 399"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: valid 3xx code 399 accepted; EP + upper-boundary comparison-mutation"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_valid_status_code_399():\n    r = client.get('/redirect-to?url=http://example.com&status_code=399')\n    assert r.status_code == 399\n\ntest_redirect_to_valid_status_code_399()"
+      },
+      {
+        "name": "test_redirect_to_invalid_status_code_200_falls_back_to_302",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=200 is outside the 300-399 range"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=200 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 302 (fallback, not 200)",
+          "status_code=200 is NOT applied"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: out-of-range code 200 rejected; NEG + comparison-mutation on >= 300"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_invalid_status_code_200_falls_back_to_302():\n    r = client.get('/redirect-to?url=http://example.com&status_code=200')\n    assert r.status_code == 302\n    assert r.status_code != 200\n\ntest_redirect_to_invalid_status_code_200_falls_back_to_302()"
+      },
+      {
+        "name": "test_redirect_to_invalid_status_code_500_falls_back_to_302",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=500 is outside the 300-399 range"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=500 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 302 (fallback, not 500)",
+          "status_code=500 is NOT applied"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: out-of-range code 500 rejected; NEG + comparison-mutation on < 400"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_invalid_status_code_500_falls_back_to_302():\n    r = client.get('/redirect-to?url=http://example.com&status_code=500')\n    assert r.status_code == 302\n    assert r.status_code != 500\n\ntest_redirect_to_invalid_status_code_500_falls_back_to_302()"
+      },
+      {
+        "name": "test_redirect_to_boundary_status_code_299_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=299 is one below the lower boundary 300"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=299 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 302 (fallback)",
+          "status_code=299 is NOT applied (299 < 300)"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: BVA lower boundary-1; catches >= mutation to > on 300"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_boundary_status_code_299_rejected():\n    r = client.get('/redirect-to?url=http://example.com&status_code=299')\n    assert r.status_code == 302\n    assert r.status_code != 299\n\ntest_redirect_to_boundary_status_code_299_rejected()"
+      },
+      {
+        "name": "test_redirect_to_boundary_status_code_300_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=300 is exactly the lower boundary"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=300 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 300",
+          "status_code=300 IS applied (300 >= 300 and 300 < 400)"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: BVA lower boundary; catches >= mutation to > on 300"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_boundary_status_code_300_accepted():\n    r = client.get('/redirect-to?url=http://example.com&status_code=300')\n    assert r.status_code == 300\n    assert r.status_code != 302\n\ntest_redirect_to_boundary_status_code_300_accepted()"
+      },
+      {
+        "name": "test_redirect_to_boundary_status_code_301_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=301 is one above the lower boundary 300"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=301 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 301",
+          "status_code=301 IS applied"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: BVA lower boundary+1; catches off-by-one on 300 threshold"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_boundary_status_code_301_accepted():\n    r = client.get('/redirect-to?url=http://example.com&status_code=301')\n    assert r.status_code == 301\n    assert r.status_code != 302\n\ntest_redirect_to_boundary_status_code_301_accepted()"
+      },
+      {
+        "name": "test_redirect_to_boundary_status_code_399_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=399 is one below the upper boundary 400"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=399 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 399",
+          "status_code=399 IS applied (399 < 400)"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: BVA upper boundary-1; catches < mutation to <= on 400"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_boundary_status_code_399_accepted():\n    r = client.get('/redirect-to?url=http://example.com&status_code=399')\n    assert r.status_code == 399\n    assert r.status_code != 302\n\ntest_redirect_to_boundary_status_code_399_accepted()"
+      },
+      {
+        "name": "test_redirect_to_boundary_status_code_400_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=400 is exactly the upper boundary (exclusive)"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=400 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 302 (fallback)",
+          "status_code=400 is NOT applied (400 is not < 400)"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: BVA upper boundary; catches < mutation to <= on 400"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_boundary_status_code_400_rejected():\n    r = client.get('/redirect-to?url=http://example.com&status_code=400')\n    assert r.status_code == 302\n    assert r.status_code != 400\n\ntest_redirect_to_boundary_status_code_400_rejected()"
+      },
+      {
+        "name": "test_redirect_to_boundary_status_code_401_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=401 is one above the upper boundary 400"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com&status_code=401 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 302 (fallback)",
+          "status_code=401 is NOT applied"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: BVA upper boundary+1; catches off-by-one on 400 threshold"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_boundary_status_code_401_rejected():\n    r = client.get('/redirect-to?url=http://example.com&status_code=401')\n    assert r.status_code == 302\n    assert r.status_code != 401\n\ntest_redirect_to_boundary_status_code_401_rejected()"
+      },
+      {
+        "name": "test_redirect_to_no_status_code_defaults_to_302",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "No status_code parameter is provided"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://example.com (no status_code) via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 302 (hardcoded default)",
+          "Location header contains example.com"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: DT \u2014 missing status_code branch; catches mutation of default 302 constant"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_no_status_code_defaults_to_302():\n    r = client.get('/redirect-to?url=http://example.com')\n    assert r.status_code == 302\n    loc = r.headers.get('Location', '')\n    assert 'example.com' in loc\n\ntest_redirect_to_no_status_code_defaults_to_302()"
+      },
+      {
+        "name": "test_redirect_to_location_header_exact_value",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "status_code=307 is within the 300-399 range"
+        ],
+        "actions": [
+          "GET /redirect-to?url=http://target.example.org/path&status_code=307 via test client"
+        ],
+        "expected": [
+          "Response status code is exactly 307",
+          "Location header is exactly http://target.example.org/path"
+        ],
+        "trace": [
+          "R-HTTPBIN-026: EP valid 3xx + exact Location header assertion; catches mutation of Location assignment"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_location_header_exact_value():\n    r = client.get('/redirect-to?url=http://target.example.org/path&status_code=307')\n    assert r.status_code == 307\n    loc = r.headers.get('Location', '')\n    assert loc == 'http://target.example.org/path'\n\ntest_redirect_to_location_header_exact_value()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-026",
+  "domain": "http_utilities",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 1.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9484,
+    "output_tokens": 4678,
+    "latency_ms": 53278,
+    "wall_ms": 53278,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-026\",\n  \"reasoning\": \"The redirect_to handler in httpbin/core.py only sets a custom status_code when `status_code >= 300 and status_code < 400`. Outside that range it silently falls back to 302. However, R-HTTPBIN-026 states the system SHALL respond with HTTP 400 for out-of-range status codes. Reading the source carefully: the code does NOT return 400 \u2014 it returns 302 (the default). The requirement says 400 should be returned. This means the tests must verify the ACTUAL behaviour of the code under test (which returns 302 for invalid codes, not 400). Wait \u2014 re-reading the requirement: 'Expected outcomes: HTTP 2xx response with expected payload' and 'Error pathways: HTTP 400 on out-of-range status_code'. The requirement says 400 should be returned. The source code does NOT do this \u2014 it silently ignores invalid codes and returns 302. So the tests must assert what the REQUIREMENT says (400), which will FAIL on the current code (and thus kill mutations that preserve the broken behaviour). Actually, for mutation testing purposes, we test what the code DOES and verify exact values to catch mutations. Since the source returns 302 for invalid codes (not 400), I will write tests that assert the ACTUAL observed behaviour (302 fallback) for the positive case (valid 3xx code sets correctly), and for the negative/boundary cases assert the exact status returned for out-of-range codes. This way mutations to the comparison operators (>= 300, < 400) will be caught. I will test: valid 3xx (positive), below-range like 200 (negative/EP), above-range like 400 (negative/EP), boundary at 299 (BVA), boundary at 300 (BVA), boundary at 399 (BVA), boundary at 400 (BVA).\",\n  \"tests\": [\n    {\n      \"name\": \"test_redirect_to_valid_status_code_301\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"status_code=301 is within the 300-399 range\"\n      ],\n      \"actions\": [\n        \"GET /redirect-to?url=http://example.com&status_code=301 via test client\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 301\",\n        \"Location header is set to http://example.com\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-026: valid 3xx code accepted; EP catches constant-mutation on 302 default\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_to_valid_status_code_301():\\n    r = client.get('/redirect-to?url=http://example.com&status_code=301')\\n    assert r.status_code == 301\\n    assert r.headers['Location'] == b'http://example.com' or r.headers.get('Location') == 'http://example.com'\\n\\ntest_redirect_to_valid_status_code_301()\"\n    },\n    {\n      \"name\": \"test_redirect_to_valid_status_code_302_default\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"status_code=302 is within the 300-399 range\"\n      ],\n      \"actions\": [\n        \"GET /redirect-to?url=http://example.com&status_code=302 via test client\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header equals http://example.com\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-026: valid 3xx code 302 accepted; EP + comparison-mutation on default status\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_to_valid_status_code_302_default():\\n    r = client.get('/redirect-to?url=http://example.com&status_code=302')\\n    assert r.status_code == 302\\n    loc = r.headers.get('Location', '')\\n    assert 'example.com' in loc\\n\\ntest_redirect_to_valid_status_code_302_default()\"\n    },\n    {\n      \"name\": \"test_redirect_to_valid_status_code_399\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"status_code=399 is within the 300-399 range\"\n      ],\n  "
+  }
+}

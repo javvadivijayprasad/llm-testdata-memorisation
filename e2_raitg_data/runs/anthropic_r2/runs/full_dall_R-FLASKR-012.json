@@ -1,0 +1,125 @@
+{
+  "req": {
+    "id": "R-FLASKR-012",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "authn",
+    "title": "Login required for create",
+    "statement": "The system shall redirect anonymous users to /auth/login when they attempt GET /create.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "login required for create"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "302 redirect to /auth/login"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /create"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-012",
+    "reasoning": "R-FLASKR-012 requires that anonymous (unauthenticated) users who attempt GET /create are redirected to /auth/login with a 302 status. The violation was that test[0] had kind=negative but heuristic=EP. EP (Equivalence Partitioning) is a positive-class heuristic when applied to the valid partition; however, the anonymous-user redirect IS the primary specified behaviour (the requirement's main statement), so it is correctly classified as kind=positive with heuristic=EP (testing the nominal/specified partition). Fixed: test[0] kind changed from 'negative' to 'positive'. Three test cases: (1) Positive/EP \u2014 anonymous GET /create yields exactly 302 to /auth/login (the primary requirement). (2) Negative/NEG \u2014 authenticated user GET /create yields 200, not a redirect (catches boolean-negation mutation on login_required guard). (3) Boundary/STC \u2014 state transition: login then logout then GET /create must redirect again (catches mutations that leave session state dirty after logout).",
+    "tests": [
+      {
+        "name": "test_anonymous_get_create_redirects_to_login",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Application is initialised with TESTING=True and a fresh database",
+          "No user is logged in (no session cookie)"
+        ],
+        "actions": [
+          "Send GET /create with no session cookie"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly /auth/login"
+        ],
+        "trace": [
+          "R-FLASKR-012: anonymous user \u2192 GET /create \u2192 302 \u2192 /auth/login"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\nclient = app.test_client()\nr = client.get('/create')\nassert r.status_code == 302, f'Expected 302, got {r.status_code}'\nlocation = r.headers.get('Location', '')\nassert location == '/auth/login', f'Expected /auth/login, got {location!r}'"
+      },
+      {
+        "name": "test_authenticated_get_create_returns_200",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Application is initialised with TESTING=True and a fresh database seeded with pre-loaded users",
+          "User Rahul (id=1, password=stone) exists in the database",
+          "User is logged in via POST /auth/login"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "Send GET /create with the authenticated session"
+        ],
+        "expected": [
+          "Login response status code is exactly 302",
+          "GET /create response status code is exactly 200",
+          "Response body contains the create form (not a redirect)"
+        ],
+        "trace": [
+          "R-FLASKR-012: authenticated user \u2192 GET /create \u2192 200 (no redirect)",
+          "Catches boolean-negation mutation on login_required guard"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\nclient = app.test_client()\nlogin_r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert login_r.status_code == 302, f'Login failed: {login_r.status_code}'\nr = client.get('/create')\nassert r.status_code == 200, f'Expected 200 for authed user, got {r.status_code}'\nassert r.headers.get('Location', '') != '/auth/login', 'Authenticated user should not be redirected to login'"
+      },
+      {
+        "name": "test_logout_then_get_create_redirects_again",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "Application is initialised with TESTING=True and a fresh database seeded with pre-loaded users",
+          "User Anjali (id=2, password=cloud) exists in the database",
+          "User logs in, then logs out, then attempts GET /create"
+        ],
+        "actions": [
+          "POST /auth/login with username=Anjali, password=cloud",
+          "GET /create \u2014 expect 200 (authenticated)",
+          "GET /auth/logout to clear session",
+          "GET /create again \u2014 expect 302 to /auth/login (anonymous again)"
+        ],
+        "expected": [
+          "First GET /create returns exactly 200",
+          "Logout returns exactly 302",
+          "Second GET /create returns exactly 302",
+          "Second GET /create Location header is exactly /auth/login"
+        ],
+        "trace": [
+          "R-FLASKR-012: state transition anonymous\u2192authenticated\u2192anonymous; second GET /create must redirect",
+          "Catches mutations that leave session state dirty after logout"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\nclient = app.test_client()\nlogin_r = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\nassert login_r.status_code == 302\nr1 = client.get('/create')\nassert r1.status_code == 200, f'Expected 200 while logged in, got {r1.status_code}'\nlogout_r = client.get('/auth/logout')\nassert logout_r.status_code == 302\nr2 = client.get('/create')\nassert r2.status_code == 302, f'Expected 302 after logout, got {r2.status_code}'\nlocation = r2.headers.get('Location', '')\nassert location == '/auth/login', f'Expected /auth/login, got {location!r}'"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-012",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8441,
+    "output_tokens": 1826,
+    "latency_ms": 26658,
+    "wall_ms": 26658,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-012\",\n  \"reasoning\": \"R-FLASKR-012 requires that anonymous (unauthenticated) users who attempt GET /create are redirected to /auth/login with a 302 status. Three test cases are designed: (1) Positive \u2014 anonymous GET /create yields exactly 302 to /auth/login (EP + comparison-mutation: catches status code mutations and redirect-target mutations). (2) Negative \u2014 authenticated user GET /create yields 200, not a redirect (NEG + boolean-negation: catches mutations that invert the login_required guard). (3) Boundary/STC \u2014 state transition: user logs in then logs out, then attempts GET /create again; must be redirected again (STC + comparison-mutation: catches mutations that leave session state dirty after logout). All tests use exact-value assertions on status_code and Location header to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_anonymous_get_create_redirects_to_login\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Application is initialised with TESTING=True and a fresh database\",\n        \"No user is logged in (no session cookie)\"\n      ],\n      \"actions\": [\n        \"Send GET /create with no session cookie\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header is exactly /auth/login\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-012: anonymous user \u2192 GET /create \u2192 302 \u2192 /auth/login\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_anonymous_get_create_redirects_to_login():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.get('/create')\\n    assert r.status_code == 302, f'Expected 302, got {r.status_code}'\\n    location = r.headers.get('Location', '')\\n    assert location == '/auth/login', f'Expected /auth/login, got {location!r}'\\n\\ntest_anonymous_get_create_redirects_to_login()\"\n    },\n    {\n      \"name\": \"test_authenticated_get_create_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Application is initialised with TESTING=True and a fresh database seeded with pre-loaded users\",\n        \"User Rahul (id=1, password=stone) exists in the database\",\n        \"User is logged in via POST /auth/login\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul, password=stone\",\n        \"Send GET /create with the authenticated session\"\n      ],\n      \"expected\": [\n        \"Login response status code is exactly 302\",\n        \"GET /create response status code is exactly 200\",\n        \"Response body contains the create form (not a redirect)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-012: authenticated user \u2192 GET /create \u2192 200 (no redirect)\",\n        \"Catches boolean-negation mutation on login_required guard\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_authenticated_get_create_returns_200():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    login_r = client.post('/auth/login',\\n                          data={'username': 'Rahul', 'password': 'stone'})\\n    assert login_r.status_code == 302, f'Login failed: {login_r.status_code}'\\n    r = client.get('/create')\\n    assert r.status_code == 200, f'Expected 200 for authed user, got {r.status_code}'\\n    assert r.headers.get('Location', '') != '/auth/login', \\\\\\n        'Authenticated user should not be redirected to login'\\n\\ntest_authenticated_get_create_returns_200()\"\n    },\n    {\n      \"name\": \"test_logout_then_get_create_redirects_again\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"STC\",\n      \"preconditions\":"
+  }
+}

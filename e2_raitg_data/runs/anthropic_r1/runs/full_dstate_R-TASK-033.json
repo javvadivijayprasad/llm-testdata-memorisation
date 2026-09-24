@@ -1,0 +1,169 @@
+{
+  "req": {
+    "id": "R-TASK-033",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "List returns empty array when db empty",
+    "statement": "The system shall return an empty JSON array on GET /tasks/ when no tasks exist.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "list returns empty array when db empty"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-033",
+    "reasoning": "R-TASK-033 requires GET /tasks/ to return an empty JSON array when no tasks exist. The database contract states 20 rows are pre-loaded before every test, so to test the empty-table scenario we must delete all 20 rows via the API first. We need: (1) a positive test confirming the empty-array response after deleting all rows, (2) a negative test confirming a client error (422) when an invalid query parameter is supplied, and (3) a boundary test confirming the response is exactly [] (zero items) vs. non-empty. Mutation resilience is achieved by asserting exact status codes (200, 204, 422), exact response body ([] not just list), exact Content-Type, and exact length (0). We also test the boundary between 0 items and 1 item to catch off-by-one mutations.",
+    "tests": [
+      {
+        "name": "test_list_tasks_empty_after_deleting_all_rows",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks (ids 1-20)",
+          "GET /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "Delete all 20 pre-loaded tasks via DELETE /tasks/{id} for ids 1-20",
+          "Send GET /tasks/ with no query parameters"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body is exactly the JSON empty array []",
+          "Response Content-Type includes application/json"
+        ],
+        "trace": [
+          "R-TASK-033: system shall return empty JSON array on GET /tasks/ when no tasks exist"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_list_tasks_empty_after_deleting_all_rows():\n    client = TestClient(app)\n    for task_id in range(1, 21):\n        del_resp = client.delete(f\"/tasks/{task_id}\")\n        assert del_resp.status_code == 204\n    response = client.get(\"/tasks/\")\n    assert response.status_code == 200\n    body = response.json()\n    assert body == []\n    assert len(body) == 0\n    assert \"application/json\" in response.headers[\"content-type\"]\n"
+      },
+      {
+        "name": "test_list_tasks_invalid_query_param_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks",
+          "GET /tasks/ endpoint validates query parameters"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=-1 (skip violates ge=0 constraint)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity response",
+          "Response body contains validation error detail"
+        ],
+        "trace": [
+          "R-TASK-033 error pathway: HTTP 4xx on client error",
+          "FastAPI Query(skip, ge=0) rejects negative skip values"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_list_tasks_invalid_query_param_returns_422():\n    client = TestClient(app)\n    response = client.get(\"/tasks/?skip=-1\")\n    assert response.status_code == 422\n    body = response.json()\n    assert \"detail\" in body\n    assert isinstance(body[\"detail\"], list)\n    assert len(body[\"detail\"]) >= 1\n"
+      },
+      {
+        "name": "test_list_tasks_boundary_zero_vs_one_item",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks (ids 1-20)"
+        ],
+        "actions": [
+          "Delete all 20 pre-loaded tasks via DELETE /tasks/{id} for ids 1-20",
+          "Assert GET /tasks/ returns exactly [] (length 0)",
+          "Create one new task via POST /tasks/",
+          "Assert GET /tasks/ returns exactly 1 item (length 1)",
+          "Assert the single item matches the created task's id and title"
+        ],
+        "expected": [
+          "After deletion: HTTP 200 with body == []",
+          "After creating one task: HTTP 200 with body of length exactly 1",
+          "The single returned task has the correct id and title"
+        ],
+        "trace": [
+          "R-TASK-033: boundary between 0 tasks (empty array) and 1 task (non-empty array)",
+          "BVA: tests n=0 and n=1 to catch off-by-one mutations in count/limit logic"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_list_tasks_boundary_zero_vs_one_item():\n    client = TestClient(app)\n    for task_id in range(1, 21):\n        del_resp = client.delete(f\"/tasks/{task_id}\")\n        assert del_resp.status_code == 204\n    empty_resp = client.get(\"/tasks/\")\n    assert empty_resp.status_code == 200\n    empty_body = empty_resp.json()\n    assert empty_body == []\n    assert len(empty_body) == 0\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"Boundary Task\", \"completed\": False})\n    assert create_resp.status_code == 201\n    created_id = create_resp.json()[\"id\"]\n    assert created_id == 21\n    one_resp = client.get(\"/tasks/\")\n    assert one_resp.status_code == 200\n    one_body = one_resp.json()\n    assert len(one_body) == 1\n    assert one_body[0][\"id\"] == created_id\n    assert one_body[0][\"title\"] == \"Boundary Task\"\n    assert one_body[0][\"completed\"] == False\n"
+      },
+      {
+        "name": "test_list_tasks_empty_with_completed_filter",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks",
+          "All 20 tasks are deleted before the assertion"
+        ],
+        "actions": [
+          "Delete all 20 pre-loaded tasks via DELETE /tasks/{id} for ids 1-20",
+          "Send GET /tasks/?completed=false",
+          "Send GET /tasks/?completed=true"
+        ],
+        "expected": [
+          "GET /tasks/?completed=false returns HTTP 200 with body == []",
+          "GET /tasks/?completed=true returns HTTP 200 with body == []",
+          "Both filtered responses are exactly empty arrays"
+        ],
+        "trace": [
+          "R-TASK-033: empty array must be returned regardless of completed filter when db is empty",
+          "DT: decision table covers completed=false and completed=true branches with empty db"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_list_tasks_empty_with_completed_filter():\n    client = TestClient(app)\n    for task_id in range(1, 21):\n        del_resp = client.delete(f\"/tasks/{task_id}\")\n        assert del_resp.status_code == 204\n    resp_false = client.get(\"/tasks/?completed=false\")\n    assert resp_false.status_code == 200\n    body_false = resp_false.json()\n    assert body_false == []\n    assert len(body_false) == 0\n    resp_true = client.get(\"/tasks/?completed=true\")\n    assert resp_true.status_code == 200\n    body_true = resp_true.json()\n    assert body_true == []\n    assert len(body_true) == 0\n"
+      },
+      {
+        "name": "test_list_tasks_empty_limit_boundary_at_one",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded tasks",
+          "All 20 tasks are deleted before the assertion"
+        ],
+        "actions": [
+          "Delete all 20 pre-loaded tasks via DELETE /tasks/{id} for ids 1-20",
+          "Send GET /tasks/?limit=1 (minimum valid limit)",
+          "Send GET /tasks/?limit=0 (below minimum, should be rejected)"
+        ],
+        "expected": [
+          "GET /tasks/?limit=1 returns HTTP 200 with body == []",
+          "GET /tasks/?limit=0 returns HTTP 422 (limit ge=1 violated)"
+        ],
+        "trace": [
+          "R-TASK-033: empty array returned even at minimum valid limit=1",
+          "BVA: limit boundary at ge=1; limit=0 triggers 422, limit=1 returns []"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_list_tasks_empty_limit_boundary_at_one():\n    client = TestClient(app)\n    for task_id in range(1, 21):\n        del_resp = client.delete(f\"/tasks/{task_id}\")\n        assert del_resp.status_code == 204\n    resp_limit1 = client.get(\"/tasks/?limit=1\")\n    assert resp_limit1.status_code == 200\n    body_limit1 = resp_limit1.json()\n    assert body_limit1 == []\n    assert len(body_limit1) == 0\n    resp_limit0 = client.get(\"/tasks/?limit=0\")\n    assert resp_limit0.status_code == 422\n    detail = resp_limit0.json()\n    assert \"detail\" in detail\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-033",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5908,
+    "output_tokens": 2634,
+    "latency_ms": 35485,
+    "wall_ms": 35485,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-033\",\n  \"reasoning\": \"R-TASK-033 requires GET /tasks/ to return an empty JSON array when no tasks exist. The database contract states 20 rows are pre-loaded before every test, so to test the empty-table scenario we must delete all 20 rows via the API first. We need: (1) a positive test confirming the empty-array response after deleting all rows, (2) a negative test confirming a client error (422) when an invalid query parameter is supplied, and (3) a boundary test confirming the response is exactly [] (zero items) vs. non-empty. Mutation resilience is achieved by asserting exact status codes (200, 204, 422), exact response body ([] not just list), exact Content-Type, and exact length (0). We also test the boundary between 0 items and 1 item to catch off-by-one mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_list_tasks_empty_after_deleting_all_rows\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded tasks (ids 1-20)\",\n        \"GET /tasks/ endpoint is reachable in-process\"\n      ],\n      \"actions\": [\n        \"Delete all 20 pre-loaded tasks via DELETE /tasks/{id} for ids 1-20\",\n        \"Send GET /tasks/ with no query parameters\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body is exactly the JSON empty array []\",\n        \"Response Content-Type includes application/json\"\n      ],\n      \"trace\": [\n        \"R-TASK-033: system shall return empty JSON array on GET /tasks/ when no tasks exist\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_list_tasks_empty_after_deleting_all_rows():\\n    client = TestClient(app)\\n    for task_id in range(1, 21):\\n        del_resp = client.delete(f\\\"/tasks/{task_id}\\\")\\n        assert del_resp.status_code == 204\\n    response = client.get(\\\"/tasks/\\\")\\n    assert response.status_code == 200\\n    body = response.json()\\n    assert body == []\\n    assert len(body) == 0\\n    assert \\\"application/json\\\" in response.headers[\\\"content-type\\\"]\\n\"\n    },\n    {\n      \"name\": \"test_list_tasks_invalid_query_param_returns_422\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded tasks\",\n        \"GET /tasks/ endpoint validates query parameters\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/?skip=-1 (skip violates ge=0 constraint)\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity response\",\n        \"Response body contains validation error detail\"\n      ],\n      \"trace\": [\n        \"R-TASK-033 error pathway: HTTP 4xx on client error\",\n        \"FastAPI Query(skip, ge=0) rejects negative skip values\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_list_tasks_invalid_query_param_returns_422():\\n    client = TestClient(app)\\n    response = client.get(\\\"/tasks/?skip=-1\\\")\\n    assert response.status_code == 422\\n    body = response.json()\\n    assert \\\"detail\\\" in body\\n    assert isinstance(body[\\\"detail\\\"], list)\\n    assert len(body[\\\"detail\\\"]) >= 1\\n\"\n    },\n    {\n      \"name\": \"test_list_tasks_boundary_zero_vs_one_item\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded tasks (ids 1-20)\"\n      ],\n      \"actions\": [\n        \"Delete all 20 pre-loaded tasks via DELETE /tasks/{id} for ids 1-20\",\n        \"Assert GET /tasks/ returns exactly [] (length 0)\",\n        \"Create one new task via POST /tasks/\",\n        \"Assert GET /tasks/ returns exactly 1 item (length 1)\",\n        \"Assert the single item matches the created task's id and title\"\n      ],\n      \"expected\": [\n        \"After deletion: HTTP 200 with body == []\",\n        \"After creating one task: HTTP 200 with body of length exactly 1\",\n        \"The single returned task has the correct id and title\"\n      ],\n      \"trace\": [\n   "
+  }
+}

@@ -1,0 +1,183 @@
+{
+  "req": {
+    "id": "R-TASK-009",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "error_pathway",
+    "title": "404 on unknown task id",
+    "statement": "The system shall respond with HTTP 404 and detail 'Task not found' when the id does not exist.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "404 on unknown task id"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 404"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-009",
+    "reasoning": "R-TASK-009 requires HTTP 404 with detail containing 'Task not found' (actual message is 'Task with id {task_id} not found') when GET /tasks/{task_id} is called with a non-existent ID. The table is EMPTY before every test, so any positive-path test must first create a task. Tests cover: (1) NEG/EP \u2014 request a clearly non-existent ID in an empty DB, assert exact 404 and exact detail string; (2) positive \u2014 create a task then retrieve it by its real ID, assert 200 and exact payload fields; (3) BVA \u2014 use task_id=0 (below the minimum auto-increment PK of 1) to confirm 404; (4) BVA boundary+1 \u2014 create one task (id=1), then request id=2 (one above the only existing id) to confirm 404; (5) DT \u2014 verify that after deletion the same id returns 404, confirming state-dependent routing. Each test uses an in-memory SQLite override via dependency injection to remain isolated and deterministic.",
+    "tests": [
+      {
+        "name": "test_get_nonexistent_task_returns_404_empty_db",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty (no tasks exist)",
+          "FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "Send GET /tasks/9999 where 9999 does not exist in the empty database"
+        ],
+        "expected": [
+          "HTTP status code is exactly 404",
+          "Response JSON detail contains 'Task with id 9999 not found'"
+        ],
+        "trace": [
+          "R-TASK-009: system shall respond with HTTP 404 when id does not exist"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nBase.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_nonexistent_task_returns_404_empty_db():\n    r = client.get('/tasks/9999')\n    assert r.status_code == 404\n    body = r.json()\n    assert body['detail'] == 'Task with id 9999 not found'\n\ntest_get_nonexistent_task_returns_404_empty_db()\napp.dependency_overrides.clear()\n"
+      },
+      {
+        "name": "test_get_existing_task_returns_200_with_correct_payload",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty initially",
+          "A task is created via POST /tasks/ before retrieval"
+        ],
+        "actions": [
+          "POST /tasks/ with title='Test Task' and completed=false",
+          "Extract the returned task id",
+          "Send GET /tasks/{task_id} with the real id"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response JSON title equals 'Test Task'",
+          "Response JSON completed equals false",
+          "Response JSON id matches the created task id"
+        ],
+        "trace": [
+          "R-TASK-009: positive path \u2014 existing id must return 200 (not 404)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nBase.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_existing_task_returns_200_with_correct_payload():\n    cr = client.post('/tasks/', json={'title': 'Test Task', 'completed': False})\n    assert cr.status_code == 201\n    task_id = cr.json()['id']\n    r = client.get(f'/tasks/{task_id}')\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == task_id\n    assert body['title'] == 'Test Task'\n    assert body['completed'] == False\n\ntest_get_existing_task_returns_200_with_correct_payload()\napp.dependency_overrides.clear()\n"
+      },
+      {
+        "name": "test_get_task_id_zero_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "Auto-increment PKs start at 1, so id=0 can never exist"
+        ],
+        "actions": [
+          "Send GET /tasks/0 against an empty database"
+        ],
+        "expected": [
+          "HTTP status code is exactly 404",
+          "Response JSON detail equals 'Task with id 0 not found'"
+        ],
+        "trace": [
+          "R-TASK-009: boundary \u2014 id=0 is below the minimum valid PK (1), must return 404"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nBase.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_id_zero_returns_404():\n    r = client.get('/tasks/0')\n    assert r.status_code == 404\n    body = r.json()\n    assert body['detail'] == 'Task with id 0 not found'\n\ntest_get_task_id_zero_returns_404()\napp.dependency_overrides.clear()\n"
+      },
+      {
+        "name": "test_get_task_id_one_above_max_existing_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Exactly one task exists with id=1 (created via POST)"
+        ],
+        "actions": [
+          "POST /tasks/ to create one task (id will be 1)",
+          "Send GET /tasks/2 \u2014 one above the only existing id"
+        ],
+        "expected": [
+          "HTTP status code is exactly 404",
+          "Response JSON detail equals 'Task with id 2 not found'"
+        ],
+        "trace": [
+          "R-TASK-009: BVA boundary+1 \u2014 id immediately above the highest existing id must return 404"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nBase.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_id_one_above_max_existing_returns_404():\n    cr = client.post('/tasks/', json={'title': 'Only Task', 'completed': False})\n    assert cr.status_code == 201\n    created_id = cr.json()['id']\n    r = client.get(f'/tasks/{created_id + 1}')\n    assert r.status_code == 404\n    body = r.json()\n    assert body['detail'] == f'Task with id {created_id + 1} not found'\n\ntest_get_task_id_one_above_max_existing_returns_404()\napp.dependency_overrides.clear()\n"
+      },
+      {
+        "name": "test_get_deleted_task_returns_404",
+        "kind": "negative",
+        "heuristic": "STC",
+        "preconditions": [
+          "A task is created and then deleted before the GET request"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task",
+          "DELETE /tasks/{task_id} to remove it",
+          "Send GET /tasks/{task_id} for the now-deleted id"
+        ],
+        "expected": [
+          "HTTP status code is exactly 404",
+          "Response JSON detail equals 'Task with id {task_id} not found'"
+        ],
+        "trace": [
+          "R-TASK-009: state transition \u2014 task transitions from existing to deleted; GET must return 404 post-deletion"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nBase.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_deleted_task_returns_404():\n    cr = client.post('/tasks/', json={'title': 'Doomed Task', 'completed': False})\n    assert cr.status_code == 201\n    task_id = cr.json()['id']\n    dr = client.delete(f'/tasks/{task_id}')\n    assert dr.status_code == 204\n    r = client.get(f'/tasks/{task_id}')\n    assert r.status_code == 404\n    body = r.json()\n    assert body['detail'] == f'Task with id {task_id} not found'\n\ntest_get_deleted_task_returns_404()\napp.dependency_overrides.clear()\n"
+      },
+      {
+        "name": "test_get_task_detail_message_exact_format",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty",
+          "Task id 42 does not exist"
+        ],
+        "actions": [
+          "Send GET /tasks/42 against an empty database",
+          "Inspect both status code and exact detail string"
+        ],
+        "expected": [
+          "HTTP status code is exactly 404 (not 400, not 422, not 200)",
+          "Response JSON has key 'detail' with value exactly 'Task with id 42 not found'",
+          "Response JSON does NOT have a 2xx status"
+        ],
+        "trace": [
+          "R-TASK-009: decision table \u2014 unknown id maps to 404 + specific detail; catches constant/string mutations in error message"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nBase.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_detail_message_exact_format():\n    r = client.get('/tasks/42')\n    assert r.status_code == 404\n    assert r.status_code != 200\n    assert r.status_code != 400\n    assert r.status_code != 422\n    body = r.json()\n    assert 'detail' in body\n    assert body['detail'] == 'Task with id 42 not found'\n\ntest_get_task_detail_message_exact_format()\napp.dependency_overrides.clear()\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-009",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 0,
+  "verify_violations": [
+    "[logical] test[4] negative kind but heuristic=STC"
+  ],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4860,
+    "output_tokens": 3631,
+    "latency_ms": 42530,
+    "wall_ms": 42530,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-009\",\n  \"reasoning\": \"R-TASK-009 requires HTTP 404 with detail containing 'Task not found' (actual message is 'Task with id {task_id} not found') when GET /tasks/{task_id} is called with a non-existent ID. The table is EMPTY before every test, so any positive-path test must first create a task. Tests cover: (1) NEG/EP \u2014 request a clearly non-existent ID in an empty DB, assert exact 404 and exact detail string; (2) positive \u2014 create a task then retrieve it by its real ID, assert 200 and exact payload fields; (3) BVA \u2014 use task_id=0 (below the minimum auto-increment PK of 1) to confirm 404; (4) BVA boundary+1 \u2014 create one task (id=1), then request id=2 (one above the only existing id) to confirm 404; (5) DT \u2014 verify that after deletion the same id returns 404, confirming state-dependent routing. Each test uses an in-memory SQLite override via dependency injection to remain isolated and deterministic.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_nonexistent_task_returns_404_empty_db\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty (no tasks exist)\",\n        \"FastAPI app is running in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/9999 where 9999 does not exist in the empty database\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 404\",\n        \"Response JSON detail contains 'Task with id 9999 not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-009: system shall respond with HTTP 404 when id does not exist\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\n\\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\\nBase.metadata.create_all(bind=engine_mem)\\n\\ndef override_get_db():\\n    db = SessionMem()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_get_nonexistent_task_returns_404_empty_db():\\n    r = client.get('/tasks/9999')\\n    assert r.status_code == 404\\n    body = r.json()\\n    assert body['detail'] == 'Task with id 9999 not found'\\n\\ntest_get_nonexistent_task_returns_404_empty_db()\\napp.dependency_overrides.clear()\\n\"\n    },\n    {\n      \"name\": \"test_get_existing_task_returns_200_with_correct_payload\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty initially\",\n        \"A task is created via POST /tasks/ before retrieval\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title='Test Task' and completed=false\",\n        \"Extract the returned task id\",\n        \"Send GET /tasks/{task_id} with the real id\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response JSON title equals 'Test Task'\",\n        \"Response JSON completed equals false\",\n        \"Response JSON id matches the created task id\"\n      ],\n      \"trace\": [\n        \"R-TASK-009: positive path \u2014 existing id must return 200 (not 404)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\n\\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\\nBase.metadata.create_all(bind=engine_mem)\\n\\ndef override_get_db():\\n    db = SessionMem()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_get_existing_task_returns_200_with_correct_payload():\\n    cr = client.post('/tasks/', json={'title': 'Test Task'"
+  }
+}

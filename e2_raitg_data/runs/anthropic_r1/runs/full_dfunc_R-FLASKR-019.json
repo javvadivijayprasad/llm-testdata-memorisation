@@ -1,0 +1,184 @@
+{
+  "req": {
+    "id": "R-FLASKR-019",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "authz",
+    "title": "Update only by author",
+    "statement": "The system shall respond with HTTP 403 Forbidden when a user attempts to update a post they did not author.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "update only by author"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 403"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /<id>/update"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-019",
+    "reasoning": "The violation is that test[4] has kind=negative but heuristic=STC. The STC (State Transition Coverage) heuristic is not restricted to negative tests, but the rule-based verifier flags the combination. The fix is to change test[4]'s heuristic from STC to NEG, which is consistent with its negative kind (a non-author attempting a GET on the update endpoint and receiving 403). All other tests are preserved exactly as they were.",
+    "tests": [
+      {
+        "name": "test_author_can_update_own_post_returns_2xx",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post 2 exists with author_id=1 (Rahul)",
+          "User Rahul (id=1) is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "POST /2/update with title='Updated Title', body='Updated body'"
+        ],
+        "expected": [
+          "HTTP 302 redirect (successful update redirects to index)",
+          "No 403 status code"
+        ],
+        "trace": [
+          "R-FLASKR-019: author is permitted \u2014 complement of the forbidden path"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_author_can_update_own_post_returns_2xx():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.post('/2/update', data={'title': 'Updated Title', 'body': 'Updated body'})\n    assert r.status_code == 302\n    assert r.status_code != 403\n    assert r.headers['Location'] == '/'\n\ntest_author_can_update_own_post_returns_2xx()"
+      },
+      {
+        "name": "test_non_author_update_returns_403",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post 7 exists with author_id=2 (Anjali)",
+          "User Rahul (id=1, not the author) is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "POST /7/update with title='Hacked Title', body='Hacked body'"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden \u2014 exact status code"
+        ],
+        "trace": [
+          "R-FLASKR-019: non-author must receive 403",
+          "blog.get_post checks post['author_id'] != g.user['id'] and calls abort(403)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_non_author_update_returns_403():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.post('/7/update', data={'title': 'Hacked Title', 'body': 'Hacked body'})\n    assert r.status_code == 403\n\ntest_non_author_update_returns_403()"
+      },
+      {
+        "name": "test_adjacent_user_id_non_author_update_returns_403",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post 7 exists with author_id=2 (Anjali)",
+          "User Ishaan (id=3, author_id+1 relative to post 7's author) is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username=Ishaan, password=stone",
+          "POST /7/update with title='Adjacent Hack', body='Adjacent body'"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden \u2014 user id=3 is adjacent to author id=2 but still not the author"
+        ],
+        "trace": [
+          "R-FLASKR-019: BVA on author_id equality \u2014 id=3 != id=2 must still yield 403",
+          "Catches off-by-one mutation on the != comparison in get_post"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_adjacent_user_id_non_author_update_returns_403():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Ishaan', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.post('/7/update', data={'title': 'Adjacent Hack', 'body': 'Adjacent body'})\n    assert r.status_code == 403\n\ntest_adjacent_user_id_non_author_update_returns_403()"
+      },
+      {
+        "name": "test_unauthenticated_update_redirects_not_403",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "No user is logged in (anonymous session)"
+        ],
+        "actions": [
+          "POST /7/update with title='Anon Hack', body='Anon body' without logging in"
+        ],
+        "expected": [
+          "HTTP 302 redirect to /auth/login (login_required decorator fires before authz check)",
+          "Status code is exactly 302, NOT 403"
+        ],
+        "trace": [
+          "R-FLASKR-019: decision table \u2014 unauthenticated path is redirect (302), not 403; distinguishes two failure modes"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_unauthenticated_update_redirects_not_403():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/7/update', data={'title': 'Anon Hack', 'body': 'Anon body'})\n    assert r.status_code == 302\n    assert r.status_code != 403\n    assert '/auth/login' in r.headers['Location']\n\ntest_unauthenticated_update_redirects_not_403()"
+      },
+      {
+        "name": "test_non_author_get_update_page_returns_403",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post 7 exists with author_id=2 (Anjali)",
+          "User Rahul (id=1) is logged in \u2014 not the author of post 7"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "GET /7/update (attempt to load the update form for a post not authored by Rahul)"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden on GET as well as POST \u2014 get_post is called on both methods"
+        ],
+        "trace": [
+          "R-FLASKR-019: NEG \u2014 logged-in non-author attempting GET of update endpoint also triggers 403 via get_post(id)",
+          "Verifies that the authz check is not limited to POST method only"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_non_author_get_update_page_returns_403():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.get('/7/update')\n    assert r.status_code == 403\n\ntest_non_author_get_update_page_returns_403()"
+      },
+      {
+        "name": "test_author_id_minus_one_user_non_author_returns_403",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post 7 exists with author_id=2 (Anjali)",
+          "User Rahul (id=1, author_id-1 relative to post 7's author) is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "POST /7/update with title='Below Boundary', body='Below body'"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden \u2014 user id=1 is one below author id=2, still not the author"
+        ],
+        "trace": [
+          "R-FLASKR-019: BVA boundary-1 on author_id equality \u2014 id=1 != id=2 must yield 403",
+          "Catches mutations that change != to < or <= in get_post comparison"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_author_id_minus_one_user_non_author_returns_403():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.post('/7/update', data={'title': 'Below Boundary', 'body': 'Below body'})\n    assert r.status_code == 403\n\ntest_author_id_minus_one_user_non_author_returns_403()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-019",
+  "domain": "blogging",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6321,
+    "output_tokens": 3107,
+    "latency_ms": 39619,
+    "wall_ms": 39619,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-019\",\n  \"reasoning\": \"The requirement states that POST /<id>/update must return HTTP 403 when the authenticated user is not the post's author. We need: (1) a positive case where the author successfully updates their own post (2xx), (2) a negative case where a non-author gets 403, and (3) a boundary case testing the exact author_id comparison boundary \u2014 a user whose id is adjacent to the author's id still gets 403. We also add a decision-table case covering the logged-out state (redirect, not 403) to distinguish the two authorization failure modes. All tests use pre-loaded data: post 7 is authored by user 2 (Anjali/cloud); user 1 (Rahul/stone) is a non-author. Post 2 is authored by user 1 (Rahul/stone).\",\n  \"tests\": [\n    {\n      \"name\": \"test_author_can_update_own_post_returns_2xx\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database pre-loaded with standard fixture rows\",\n        \"Post 2 exists with author_id=1 (Rahul)\",\n        \"User Rahul (id=1) is logged in\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul, password=stone\",\n        \"POST /2/update with title='Updated Title', body='Updated body'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect (successful update redirects to index)\",\n        \"No 403 status code\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-019: author is permitted \u2014 complement of the forbidden path\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_author_can_update_own_post_returns_2xx():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302\\n    r = client.post('/2/update', data={'title': 'Updated Title', 'body': 'Updated body'})\\n    assert r.status_code == 302\\n    assert r.status_code != 403\\n    assert r.headers['Location'] == '/'\\n\\ntest_author_can_update_own_post_returns_2xx()\"\n    },\n    {\n      \"name\": \"test_non_author_update_returns_403\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database pre-loaded with standard fixture rows\",\n        \"Post 7 exists with author_id=2 (Anjali)\",\n        \"User Rahul (id=1, not the author) is logged in\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul, password=stone\",\n        \"POST /7/update with title='Hacked Title', body='Hacked body'\"\n      ],\n      \"expected\": [\n        \"HTTP 403 Forbidden \u2014 exact status code\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-019: non-author must receive 403\",\n        \"blog.get_post checks post['author_id'] != g.user['id'] and calls abort(403)\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_non_author_update_returns_403():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302\\n    r = client.post('/7/update', data={'title': 'Hacked Title', 'body': 'Hacked body'})\\n    assert r.status_code == 403\\n\\ntest_non_author_update_returns_403()\"\n    },\n    {\n      \"name\": \"test_adjacent_user_id_non_author_update_returns_403\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database pre-loaded with standard fixture rows\",\n        \"Post 7 exists with author_id=2 (Anjali)\",\n        \"User Ishaan (id=3, author_id+1 relative to post 7's author) is logged in\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Ishaan, password=stone\",\n        \"POST /7/"
+  }
+}

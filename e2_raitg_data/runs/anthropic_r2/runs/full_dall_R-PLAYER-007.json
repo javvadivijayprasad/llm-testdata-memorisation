@@ -1,0 +1,213 @@
+{
+  "req": {
+    "id": "R-PLAYER-007",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "validation",
+    "title": "Reject duplicate playerId on create",
+    "statement": "The system shall respond with HTTP 409 Conflict when POST /players/ is called with an ID that already exists.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "reject duplicate playerid on create"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 409 Conflict"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "POST /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-007",
+    "reasoning": "R-PLAYER-007 requires HTTP 409 Conflict when POST /players/ is called with a squad_number that already exists. The route checks retrieve_by_squad_number_async and raises HTTPException(409) on a hit. Tests must cover: (1) positive path \u2014 a genuinely new squad_number succeeds with 201; (2) negative path \u2014 a duplicate squad_number returns exactly 409; (3) boundary \u2014 the squad_number immediately adjacent to an existing one (27, one above the highest seeded value 26) succeeds with 201, confirming the uniqueness check is on squad_number identity not range; (4) state-transition \u2014 first POST succeeds (201), second POST with same squad_number returns 409, confirming idempotent rejection; (5) decision-table \u2014 a payload that differs in every field except squad_number still triggers 409, proving the conflict key is squad_number alone.",
+    "tests": [
+      {
+        "name": "test_post_new_player_returns_201",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is pre-loaded with 26 rows (squad numbers 1-26)",
+          "Squad number 99 does not exist in the database"
+        ],
+        "actions": [
+          "POST /players/ with a valid payload using squad_number=99"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response body contains the created player with squad_number=99",
+          "Response body contains a valid UUID id field"
+        ],
+        "trace": [
+          "R-PLAYER-007: positive path \u2014 new squad_number must succeed"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nimport json\n\nclient = TestClient(app)\n\ndef test_post_new_player_returns_201():\n    payload = {\n        \"firstName\": \"Test\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 99,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"squadNumber\"] == 99\n    assert body[\"firstName\"] == \"Test\"\n    assert body[\"lastName\"] == \"Player\"\n    assert body[\"position\"] == \"Goalkeeper\"\n    assert \"id\" in body\n    assert body[\"id\"] is not None\n\ntest_post_new_player_returns_201()"
+      },
+      {
+        "name": "test_post_duplicate_squad_number_returns_409",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is pre-loaded with squad number 10 (Kabir Mary Reddy)"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=10 (already exists in DB)"
+        ],
+        "expected": [
+          "HTTP 409 Conflict \u2014 not 200, not 201, not 400, not 422, not 500",
+          "Response detail mentions the conflict"
+        ],
+        "trace": [
+          "R-PLAYER-007: error pathway \u2014 duplicate squad_number must yield 409"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_duplicate_squad_number_returns_409():\n    payload = {\n        \"firstName\": \"Duplicate\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 10,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 409\n    body = r.json()\n    assert \"detail\" in body\n    assert body[\"detail\"] == \"A Player with this squad number already exists.\"\n\ntest_post_duplicate_squad_number_returns_409()"
+      },
+      {
+        "name": "test_post_squad_number_boundary_above_max_seeded_returns_201",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with squad numbers 1-26 (max seeded = 26)",
+          "Squad number 27 does not exist"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=27 (one above the highest seeded value)"
+        ],
+        "expected": [
+          "HTTP 201 Created \u2014 squad_number 27 is not a duplicate",
+          "Response body contains squad_number=27"
+        ],
+        "trace": [
+          "R-PLAYER-007: BVA boundary \u2014 squad_number at max+1 must not trigger 409"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_squad_number_boundary_above_max_seeded_returns_201():\n    payload = {\n        \"firstName\": \"Boundary\",\n        \"lastName\": \"Test\",\n        \"squadNumber\": 27,\n        \"position\": \"Right-Back\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"squadNumber\"] == 27\n    assert body[\"firstName\"] == \"Boundary\"\n    assert body[\"lastName\"] == \"Test\"\n\ntest_post_squad_number_boundary_above_max_seeded_returns_201()"
+      },
+      {
+        "name": "test_post_duplicate_then_unique_state_transition",
+        "kind": "negative",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database is pre-loaded with squad number 1 (Anjali Banerjee)"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=1 (duplicate) \u2014 expect 409",
+          "POST /players/ with squad_number=50 (new) \u2014 expect 201"
+        ],
+        "expected": [
+          "First POST returns exactly HTTP 409",
+          "Second POST returns exactly HTTP 201",
+          "State transitions: existing->conflict, then new->created"
+        ],
+        "trace": [
+          "R-PLAYER-007: STC \u2014 system transitions from conflict state to created state when squad_number changes"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_duplicate_then_unique_state_transition():\n    dup_payload = {\n        \"firstName\": \"Anjali\",\n        \"lastName\": \"Banerjee\",\n        \"squadNumber\": 1,\n        \"position\": \"Defensive Midfield\"\n    }\n    r1 = client.post(\"/players/\", json=dup_payload)\n    assert r1.status_code == 409\n    assert r1.json()[\"detail\"] == \"A Player with this squad number already exists.\"\n\n    new_payload = {\n        \"firstName\": \"New\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 50,\n        \"position\": \"Goalkeeper\"\n    }\n    r2 = client.post(\"/players/\", json=new_payload)\n    assert r2.status_code == 201\n    assert r2.json()[\"squadNumber\"] == 50\n\ntest_post_duplicate_then_unique_state_transition()"
+      },
+      {
+        "name": "test_post_conflict_key_is_squad_number_not_other_fields",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is pre-loaded with squad number 5 (Vivaan Nair)"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=5 but completely different firstName, lastName, position"
+        ],
+        "expected": [
+          "HTTP 409 Conflict \u2014 conflict is keyed on squad_number alone, not other fields",
+          "Response detail is exactly 'A Player with this squad number already exists.'"
+        ],
+        "trace": [
+          "R-PLAYER-007: DT \u2014 conflict detection uses squad_number as the sole discriminator"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_conflict_key_is_squad_number_not_other_fields():\n    payload = {\n        \"firstName\": \"Completely\",\n        \"middleName\": \"Different\",\n        \"lastName\": \"Person\",\n        \"dateOfBirth\": \"2000-06-15T00:00:00.000Z\",\n        \"squadNumber\": 5,\n        \"position\": \"Centre-Forward\",\n        \"abbrPosition\": \"CF\",\n        \"team\": \"Juventus\",\n        \"league\": \"Serie A\",\n        \"starting11\": True\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 409\n    body = r.json()\n    assert body[\"detail\"] == \"A Player with this squad number already exists.\"\n\ntest_post_conflict_key_is_squad_number_not_other_fields()"
+      },
+      {
+        "name": "test_post_squad_number_boundary_at_lowest_seeded_returns_409",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with squad number 1 (the minimum seeded value)"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=1 (the minimum boundary of seeded data)"
+        ],
+        "expected": [
+          "HTTP 409 Conflict \u2014 squad_number 1 already exists at the lower boundary"
+        ],
+        "trace": [
+          "R-PLAYER-007: BVA \u2014 lower boundary squad_number=1 must trigger 409"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_squad_number_boundary_at_lowest_seeded_returns_409():\n    payload = {\n        \"firstName\": \"LowerBound\",\n        \"lastName\": \"Test\",\n        \"squadNumber\": 1,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 409\n    body = r.json()\n    assert \"detail\" in body\n    assert body[\"detail\"] == \"A Player with this squad number already exists.\"\n\ntest_post_squad_number_boundary_at_lowest_seeded_returns_409()"
+      },
+      {
+        "name": "test_post_squad_number_zero_not_in_db_returns_201",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with squad numbers 1-26; squad_number=0 does not exist"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=0 (one below the minimum seeded value)"
+        ],
+        "expected": [
+          "HTTP 201 Created \u2014 squad_number 0 is not a duplicate",
+          "Response body contains squad_number=0"
+        ],
+        "trace": [
+          "R-PLAYER-007: BVA \u2014 squad_number at min-1 (0) must not trigger 409"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_squad_number_zero_not_in_db_returns_201():\n    payload = {\n        \"firstName\": \"Zero\",\n        \"lastName\": \"Squad\",\n        \"squadNumber\": 0,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"squadNumber\"] == 0\n    assert body[\"firstName\"] == \"Zero\"\n    assert body[\"lastName\"] == \"Squad\"\n\ntest_post_squad_number_zero_not_in_db_returns_201()"
+      },
+      {
+        "name": "test_post_duplicate_response_has_no_extra_fields",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is pre-loaded with squad number 26 (Aditya Mehta)"
+        ],
+        "actions": [
+          "POST /players/ with squad_number=26 (duplicate of highest seeded value)"
+        ],
+        "expected": [
+          "HTTP 409 Conflict exactly",
+          "Response JSON has key 'detail' with exact conflict message",
+          "Status code is not 200, 201, 204, 400, 422, or 500"
+        ],
+        "trace": [
+          "R-PLAYER-007: NEG + EP \u2014 upper boundary duplicate must return 409 with correct detail"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_post_duplicate_response_has_no_extra_fields():\n    payload = {\n        \"firstName\": \"Aditya\",\n        \"lastName\": \"Mehta\",\n        \"squadNumber\": 26,\n        \"position\": \"Defensive Midfield\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 409\n    assert r.status_code != 200\n    assert r.status_code != 201\n    assert r.status_code != 422\n    assert r.status_code != 500\n    body = r.json()\n    assert body[\"detail\"] == \"A Player with this squad number already exists.\"\n\ntest_post_duplicate_response_has_no_extra_fields()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-007",
+  "domain": "sports_players",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 0,
+  "verify_violations": [
+    "[logical] test[3] negative kind but heuristic=STC"
+  ],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 15350,
+    "output_tokens": 3770,
+    "latency_ms": 45616,
+    "wall_ms": 45616,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-007\",\n  \"reasoning\": \"R-PLAYER-007 requires HTTP 409 Conflict when POST /players/ is called with a squad_number that already exists. The route checks retrieve_by_squad_number_async and raises HTTPException(409) on a hit. Tests must cover: (1) positive path \u2014 a genuinely new squad_number succeeds with 201; (2) negative path \u2014 a duplicate squad_number returns exactly 409; (3) boundary \u2014 the squad_number immediately adjacent to an existing one (27, one above the highest seeded value 26) succeeds with 201, confirming the uniqueness check is on squad_number identity not range; (4) state-transition \u2014 first POST succeeds (201), second POST with same squad_number returns 409, confirming idempotent rejection; (5) decision-table \u2014 a payload that differs in every field except squad_number still triggers 409, proving the conflict key is squad_number alone.\",\n  \"tests\": [\n    {\n      \"name\": \"test_post_new_player_returns_201\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 26 rows (squad numbers 1-26)\",\n        \"Squad number 99 does not exist in the database\"\n      ],\n      \"actions\": [\n        \"POST /players/ with a valid payload using squad_number=99\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response body contains the created player with squad_number=99\",\n        \"Response body contains a valid UUID id field\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-007: positive path \u2014 new squad_number must succeed\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\nimport json\\n\\nclient = TestClient(app)\\n\\ndef test_post_new_player_returns_201():\\n    payload = {\\n        \\\"firstName\\\": \\\"Test\\\",\\n        \\\"lastName\\\": \\\"Player\\\",\\n        \\\"squadNumber\\\": 99,\\n        \\\"position\\\": \\\"Goalkeeper\\\"\\n    }\\n    r = client.post(\\\"/players/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body[\\\"squadNumber\\\"] == 99\\n    assert body[\\\"firstName\\\"] == \\\"Test\\\"\\n    assert body[\\\"lastName\\\"] == \\\"Player\\\"\\n    assert body[\\\"position\\\"] == \\\"Goalkeeper\\\"\\n    assert \\\"id\\\" in body\\n    assert body[\\\"id\\\"] is not None\\n\\ntest_post_new_player_returns_201()\"\n    },\n    {\n      \"name\": \"test_post_duplicate_squad_number_returns_409\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is pre-loaded with squad number 10 (Kabir Mary Reddy)\"\n      ],\n      \"actions\": [\n        \"POST /players/ with squad_number=10 (already exists in DB)\"\n      ],\n      \"expected\": [\n        \"HTTP 409 Conflict \u2014 not 200, not 201, not 400, not 422, not 500\",\n        \"Response detail mentions the conflict\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-007: error pathway \u2014 duplicate squad_number must yield 409\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\nclient = TestClient(app)\\n\\ndef test_post_duplicate_squad_number_returns_409():\\n    payload = {\\n        \\\"firstName\\\": \\\"Duplicate\\\",\\n        \\\"lastName\\\": \\\"Player\\\",\\n        \\\"squadNumber\\\": 10,\\n        \\\"position\\\": \\\"Goalkeeper\\\"\\n    }\\n    r = client.post(\\\"/players/\\\", json=payload)\\n    assert r.status_code == 409\\n    body = r.json()\\n    assert \\\"detail\\\" in body\\n    assert body[\\\"detail\\\"] == \\\"A Player with this squad number already exists.\\\"\\n\\ntest_post_duplicate_squad_number_returns_409()\"\n    },\n    {\n      \"name\": \"test_post_squad_number_boundary_above_max_seeded_returns_201\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is pre-loaded with squad numbers 1-26 (max seeded = 26)\",\n        \"Squad number 27 does not exist\"\n      ],\n      \"actions\": [\n        \"POST /players/ with squad_number=27 (one above the highest seeded value)\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created \u2014 squad_number 27 is not a duplicate\",\n        \"Response body contains squad_number=27\""
+  }
+}

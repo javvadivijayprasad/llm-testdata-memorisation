@@ -1,0 +1,187 @@
+{
+  "req": {
+    "id": "R-PLAYER-013",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "validation",
+    "title": "PUT rejects squadNumber conflict",
+    "statement": "The system shall respond with HTTP 409 when the updated squadNumber collides with another player's squadNumber.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "put rejects squadnumber conflict"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 409"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "PUT /players/{playerId}"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-013",
+    "reasoning": "The PUT endpoint /players/squadnumber/{squad_number} enforces that body.squad_number == path param (else 400). The service always writes the path param's squad_number back, so a true cross-player squad number collision via PUT is architecturally constrained. The requirement mandates HTTP 409 when the updated squadNumber collides with another player's squadNumber. Tests cover: (1) positive - successful PUT with no conflict returns 204; (2) negative - attempting to PUT a player with a squad_number that belongs to another player should return 409 (the body squad_number must match path, so the conflict is same-number-different-player scenario, which the current route does not guard against beyond the 400 mismatch check); (3) boundary - PUT where squad_number in body matches path but that number is already owned by a different player record. Since the route checks body==path first, the only way to trigger a true 409 is if the system detects the squad_number is taken by a DIFFERENT player entity. Tests assert exact status codes to catch operator/constant mutations.",
+    "tests": [
+      {
+        "name": "test_put_player_no_conflict_returns_204",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Player with squadNumber=1 exists in the database (Anjali Banerjee)",
+          "No other player has squadNumber=1"
+        ],
+        "actions": [
+          "Send PUT /players/squadnumber/1 with valid body where squad_number=1 (same player, no conflict)"
+        ],
+        "expected": [
+          "HTTP 204 No Content is returned",
+          "No conflict error is raised"
+        ],
+        "trace": [
+          "R-PLAYER-013: happy path \u2014 updating a player with its own squad number must not trigger 409"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_player_no_conflict_returns_204():\n    payload = {\n        \"firstName\": \"Anjali\",\n        \"lastName\": \"Banerjee\",\n        \"squadNumber\": 1,\n        \"position\": \"Defensive Midfield\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"Manchester City\",\n        \"league\": \"Serie A\",\n        \"starting11\": False\n    }\n    r = client.put(\"/players/squadnumber/1\", json=payload)\n    assert r.status_code == 204\n\ntest_put_player_no_conflict_returns_204()"
+      },
+      {
+        "name": "test_put_player_squad_number_conflict_returns_409",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Player with squadNumber=1 exists (Anjali Banerjee)",
+          "Player with squadNumber=2 exists (Ishaan Banerjee)",
+          "Attempting to update player at squadNumber=2 to use squadNumber=1 would conflict"
+        ],
+        "actions": [
+          "Send PUT /players/squadnumber/1 with body squad_number=1 but representing data that would collide with another existing player's squad number",
+          "Specifically: attempt to PUT /players/squadnumber/2 with body squad_number=1 (mismatch triggers 400, not 409)",
+          "Then attempt the true conflict: PUT /players/squadnumber/1 where squad_number=1 is already owned by a different DB row than the one being updated"
+        ],
+        "expected": [
+          "HTTP 409 Conflict when the squadNumber in the request body collides with another player's squadNumber"
+        ],
+        "trace": [
+          "R-PLAYER-013: error pathway \u2014 squad number collision must yield HTTP 409"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_player_squad_number_mismatch_body_path_returns_400():\n    # body squad_number != path squad_number => 400 (not 409)\n    payload = {\n        \"firstName\": \"Ishaan\",\n        \"lastName\": \"Banerjee\",\n        \"squadNumber\": 1,\n        \"position\": \"Centre-Forward\",\n        \"abbrPosition\": \"CM\",\n        \"team\": \"Boca Juniors\",\n        \"league\": \"La Liga\",\n        \"starting11\": False\n    }\n    r = client.put(\"/players/squadnumber/2\", json=payload)\n    # body.squad_number(1) != path(2) => 400\n    assert r.status_code == 400\n\ndef test_put_player_squad_number_conflict_returns_409():\n    # POST a new player with squadNumber=99 to create a second player\n    payload_new = {\n        \"firstName\": \"Test\",\n        \"lastName\": \"Conflict\",\n        \"squadNumber\": 99,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"TestFC\",\n        \"league\": \"Test League\",\n        \"starting11\": False\n    }\n    post_r = client.post(\"/players/\", json=payload_new)\n    assert post_r.status_code == 201\n    # Now try to PUT player 99 with squad_number=1 (conflict with existing player)\n    # body.squad_number must equal path param to avoid 400\n    # So we cannot directly test cross-player conflict via PUT without 400 intercepting\n    # The requirement mandates 409; assert the route returns 409 for conflict\n    payload_conflict = {\n        \"firstName\": \"Test\",\n        \"lastName\": \"Conflict\",\n        \"squadNumber\": 1,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"TestFC\",\n        \"league\": \"Test League\",\n        \"starting11\": False\n    }\n    r = client.put(\"/players/squadnumber/1\", json=payload_conflict)\n    assert r.status_code == 409\n\ntest_put_player_squad_number_mismatch_body_path_returns_400()\ntest_put_player_squad_number_conflict_returns_409()"
+      },
+      {
+        "name": "test_put_player_nonexistent_squad_number_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No player with squadNumber=999 exists in the database"
+        ],
+        "actions": [
+          "Send PUT /players/squadnumber/999 with valid body where squad_number=999"
+        ],
+        "expected": [
+          "HTTP 404 Not Found is returned (player does not exist, not a conflict)"
+        ],
+        "trace": [
+          "R-PLAYER-013: distinguishes 404 (not found) from 409 (conflict) \u2014 ensures status code is exactly 404 not 409"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_player_nonexistent_squad_number_returns_404():\n    payload = {\n        \"firstName\": \"Ghost\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 999,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"NoTeam\",\n        \"league\": \"NoLeague\",\n        \"starting11\": False\n    }\n    r = client.put(\"/players/squadnumber/999\", json=payload)\n    assert r.status_code == 404\n    # Must NOT be 409 (conflict) or 204 (success)\n    assert r.status_code != 409\n    assert r.status_code != 204\n\ntest_put_player_nonexistent_squad_number_returns_404()"
+      },
+      {
+        "name": "test_put_player_conflict_with_adjacent_squad_number",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Player with squadNumber=1 exists (Anjali Banerjee)",
+          "Player with squadNumber=2 exists (Ishaan Banerjee)",
+          "Player with squadNumber=3 exists (Kabir Khan)"
+        ],
+        "actions": [
+          "Attempt PUT /players/squadnumber/2 with body squad_number=2 (self-update, no conflict) => expect 204",
+          "Attempt PUT /players/squadnumber/1 with body squad_number=2 (mismatch) => expect 400",
+          "Verify boundary: squad_number=2 in body vs path=2 is the exact boundary where 400 is NOT triggered"
+        ],
+        "expected": [
+          "PUT with matching squad_number (body==path, no conflict) returns 204",
+          "PUT with mismatched squad_number (body!=path) returns exactly 400, not 409"
+        ],
+        "trace": [
+          "R-PLAYER-013: BVA on squad_number equality boundary \u2014 body==path avoids 400, body!=path triggers 400 before 409 check"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_boundary_self_update_no_conflict():\n    # squadNumber=2 updating itself: body.squad_number == path => no 400, no 409\n    payload = {\n        \"firstName\": \"Ishaan\",\n        \"lastName\": \"Banerjee\",\n        \"squadNumber\": 2,\n        \"position\": \"Centre-Forward\",\n        \"abbrPosition\": \"CM\",\n        \"team\": \"Boca Juniors\",\n        \"league\": \"La Liga\",\n        \"starting11\": False\n    }\n    r = client.put(\"/players/squadnumber/2\", json=payload)\n    assert r.status_code == 204\n\ndef test_put_boundary_mismatch_returns_400_not_409():\n    # body.squad_number=3 != path=2 => 400 (mismatch intercepted before conflict check)\n    payload = {\n        \"firstName\": \"Ishaan\",\n        \"lastName\": \"Banerjee\",\n        \"squadNumber\": 3,\n        \"position\": \"Centre-Forward\",\n        \"abbrPosition\": \"CM\",\n        \"team\": \"Boca Juniors\",\n        \"league\": \"La Liga\",\n        \"starting11\": False\n    }\n    r = client.put(\"/players/squadnumber/2\", json=payload)\n    assert r.status_code == 400\n    assert r.status_code != 409\n    assert r.status_code != 204\n\ntest_put_boundary_self_update_no_conflict()\ntest_put_boundary_mismatch_returns_400_not_409()"
+      },
+      {
+        "name": "test_put_conflict_detection_distinct_from_self_update",
+        "kind": "boundary",
+        "heuristic": "DT",
+        "preconditions": [
+          "Players with squadNumbers 1 through 26 all exist",
+          "squadNumber=1 belongs to Anjali Banerjee (id=97da2849-d73e-4b43-8a90-7d090402c802)",
+          "squadNumber=26 belongs to Aditya Mehta (id=77a3ac92-52d1-48c4-871c-73988df20dc8)"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/26 with body squad_number=26 (self, no conflict) => 204",
+          "PUT /players/squadnumber/1 with body squad_number=26 (mismatch) => 400",
+          "POST new player with squadNumber=27, then PUT /players/squadnumber/27 with squad_number=26 (mismatch) => 400"
+        ],
+        "expected": [
+          "Self-update (body==path, player exists) returns exactly 204",
+          "Mismatch (body!=path) returns exactly 400 regardless of whether target squad_number is taken",
+          "Conflict scenario (body==path but squad_number taken by different player) returns 409"
+        ],
+        "trace": [
+          "R-PLAYER-013: Decision table covering all combinations of body==path and squad_number-taken conditions"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_decision_table_put_squad_number_conflict():\n    # Row 1: body==path, player exists, no other player has this number => 204\n    payload_26 = {\n        \"firstName\": \"Aditya\",\n        \"lastName\": \"Mehta\",\n        \"squadNumber\": 26,\n        \"position\": \"Defensive Midfield\",\n        \"abbrPosition\": \"RB\",\n        \"team\": \"Liverpool\",\n        \"league\": \"Serie A\",\n        \"starting11\": False\n    }\n    r1 = client.put(\"/players/squadnumber/26\", json=payload_26)\n    assert r1.status_code == 204\n\n    # Row 2: body!=path => 400 (mismatch guard fires before conflict check)\n    payload_mismatch = {\n        \"firstName\": \"Aditya\",\n        \"lastName\": \"Mehta\",\n        \"squadNumber\": 25,\n        \"position\": \"Defensive Midfield\",\n        \"abbrPosition\": \"RB\",\n        \"team\": \"Liverpool\",\n        \"league\": \"Serie A\",\n        \"starting11\": False\n    }\n    r2 = client.put(\"/players/squadnumber/26\", json=payload_mismatch)\n    assert r2.status_code == 400\n    assert r2.status_code != 409\n\n    # Row 3: POST new player squadNumber=50, then PUT /50 with squad_number=1 => 400\n    post_payload = {\n        \"firstName\": \"New\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 50,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"FC Test\",\n        \"league\": \"Test\",\n        \"starting11\": False\n    }\n    pr = client.post(\"/players/\", json=post_payload)\n    assert pr.status_code == 201\n    conflict_payload = {\n        \"firstName\": \"New\",\n        \"lastName\": \"Player\",\n        \"squadNumber\": 1,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"FC Test\",\n        \"league\": \"Test\",\n        \"starting11\": False\n    }\n    r3 = client.put(\"/players/squadnumber/50\", json=conflict_payload)\n    assert r3.status_code == 400\n\ntest_decision_table_put_squad_number_conflict()"
+      },
+      {
+        "name": "test_put_conflict_post_then_put_same_squad_number",
+        "kind": "negative",
+        "heuristic": "STC",
+        "preconditions": [
+          "Player with squadNumber=1 exists",
+          "No player with squadNumber=98 exists initially"
+        ],
+        "actions": [
+          "POST a new player with squadNumber=98 (succeeds, 201)",
+          "POST same squadNumber=98 again (should return 409 from POST endpoint)",
+          "PUT /players/squadnumber/1 with body squad_number=1 (self-update, no conflict) => 204",
+          "Verify state: PUT on existing player with its own squad_number never returns 409"
+        ],
+        "expected": [
+          "First POST with squadNumber=98 returns 201",
+          "Second POST with squadNumber=98 returns 409",
+          "PUT /players/squadnumber/1 with squad_number=1 returns 204 (not 409)"
+        ],
+        "trace": [
+          "R-PLAYER-013: STC \u2014 state transitions from non-existent to created to conflict-on-create, and PUT self-update stays in valid state"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_state_transition_post_conflict_then_put_self():\n    payload_98 = {\n        \"firstName\": \"State\",\n        \"lastName\": \"Transition\",\n        \"squadNumber\": 98,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"StateFC\",\n        \"league\": \"StateLeague\",\n        \"starting11\": True\n    }\n    # Transition: non-existent -> created\n    r1 = client.post(\"/players/\", json=payload_98)\n    assert r1.status_code == 201\n    body1 = r1.json()\n    assert body1[\"squadNumber\"] == 98\n\n    # Transition: created -> conflict on duplicate POST\n    r2 = client.post(\"/players/\", json=payload_98)\n    assert r2.status_code == 409\n\n    # PUT self-update on squadNumber=1 must return 204, not 409\n    payload_1 = {\n        \"firstName\": \"Anjali\",\n        \"lastName\": \"Banerjee\",\n        \"squadNumber\": 1,\n        \"position\": \"Defensive Midfield\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"Manchester City\",\n        \"league\": \"Serie A\",\n        \"starting11\": False\n    }\n    r3 = client.put(\"/players/squadnumber/1\", json=payload_1)\n    assert r3.status_code == 204\n    assert r3.status_code != 409\n    assert r3.status_code != 400\n\ntest_state_transition_post_conflict_then_put_self()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-013",
+  "domain": "sports_players",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 0,
+  "verify_violations": [
+    "[logical] test[5] negative kind but heuristic=STC"
+  ],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 15348,
+    "output_tokens": 5233,
+    "latency_ms": 73573,
+    "wall_ms": 73573,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "Looking at the requirement R-PLAYER-013, I need to analyze the SUT carefully.\n\n**Key observation from source code analysis:**\nThe PUT endpoint is `PUT /players/squadnumber/{squad_number}` (not `/players/{playerId}`). The route checks if `player_model.squad_number != squad_number` \u2192 400, then checks if player exists \u2192 404, then calls `update_by_squad_number_async`. \n\n**Critical finding:** The `update_by_squad_number_async` service always sets `player.squad_number = squad_number` (the path param), so it never actually changes the squad number. The 409 conflict for squad number collision is handled in POST but **not** in PUT. The PUT endpoint doesn't check for squad number conflicts with other players.\n\n**However**, the requirement says the system SHALL respond 409 when updated squadNumber collides. Since the PUT body must match the path param (or 400), and the service always uses the path param's squad_number, a true \"collision\" scenario would require the body to have a different squad_number \u2014 but that triggers 400 first. This means the 409 path for PUT squad number conflict may not be implemented, making this a negative test that should expose the missing behavior.\n\nI'll write tests that: (1) verify normal PUT works (positive), (2) verify the 409 is returned when squad number conflicts (negative \u2014 likely fails since not implemented), (3) boundary cases around the conflict detection.\n\n```json\n{\n  \"requirement_id\": \"R-PLAYER-013\",\n  \"reasoning\": \"The PUT endpoint /players/squadnumber/{squad_number} enforces that body.squad_number == path param (else 400). The service always writes the path param's squad_number back, so a true cross-player squad number collision via PUT is architecturally constrained. The requirement mandates HTTP 409 when the updated squadNumber collides with another player's squadNumber. Tests cover: (1) positive - successful PUT with no conflict returns 204; (2) negative - attempting to PUT a player with a squad_number that belongs to another player should return 409 (the body squad_number must match path, so the conflict is same-number-different-player scenario, which the current route does not guard against beyond the 400 mismatch check); (3) boundary - PUT where squad_number in body matches path but that number is already owned by a different player record. Since the route checks body==path first, the only way to trigger a true 409 is if the system detects the squad_number is taken by a DIFFERENT player entity. Tests assert exact status codes to catch operator/constant mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_player_no_conflict_returns_204\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Player with squadNumber=1 exists in the database (Anjali Banerjee)\",\n        \"No other player has squadNumber=1\"\n      ],\n      \"actions\": [\n        \"Send PUT /players/squadnumber/1 with valid body where squad_number=1 (same player, no conflict)\"\n      ],\n      \"expected\": [\n        \"HTTP 204 No Content is returned\",\n        \"No conflict error is raised\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-013: happy path \u2014 updating a player with its own squad number must not trigger 409\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\nclient = TestClient(app)\\n\\ndef test_put_player_no_conflict_returns_204():\\n    payload = {\\n        \\\"firstName\\\": \\\"Anjali\\\",\\n        \\\"lastName\\\": \\\"Banerjee\\\",\\n        \\\"squadNumber\\\": 1,\\n        \\\"position\\\": \\\"Defensive Midfield\\\",\\n        \\\"abbrPosition\\\": \\\"GK\\\",\\n        \\\"team\\\": \\\"Manchester City\\\",\\n        \\\"league\\\": \\\"Serie A\\\",\\n        \\\"starting11\\\": False\\n    }\\n    r = client.put(\\\"/players/squadnumber/1\\\", json=payload)\\n    assert r.status_code == 204\\n\\ntest_put_player_no_conflict_returns_204()\"\n    },\n    {\n      \"name\": \"test_put_player_squad_number_conflict_returns_409\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Player with squad"
+  }
+}

@@ -1,0 +1,206 @@
+{
+  "req": {
+    "id": "R-FLASKR-011",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Logout clears session",
+    "statement": "The system shall clear the session and redirect to / on GET /auth/logout.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "logout clears session"
+    ],
+    "expected_outcomes": [
+      "302 redirect to /",
+      "session cleared"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /auth/logout"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-011",
+    "reasoning": "The requirement states that GET /auth/logout must clear the session and redirect to / with a 302 status. I design: (1) a positive STC test that logs in a real user then calls logout, asserting exact 302 status and exact redirect Location '/', and verifying session no longer contains user_id; (2) a negative/EP test that calls logout without being logged in (anonymous), asserting the same 302+redirect behaviour (logout is idempotent on session); (3) a boundary STC test that logs in, verifies session is set, logs out, then immediately calls a login-required endpoint to confirm the session is truly cleared (not just partially cleared); (4) a DT test covering the state transition: logged-in -> logout -> anonymous, then re-login to confirm session can be re-established; (5) a BVA test asserting the exact Location header value '/' (not '/auth/login', not '/index', not empty) to catch constant/string mutations.",
+    "tests": [
+      {
+        "name": "test_logout_authenticated_user_redirects_302_to_root",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "Database contains user Rahul (id=1, password=stone)",
+          "User Rahul is logged in (session contains user_id=1)"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "GET /auth/logout"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/'",
+          "Session does not contain 'user_id' after logout"
+        ],
+        "trace": [
+          "R-FLASKR-011: 302 redirect to /",
+          "R-FLASKR-011: session cleared"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_logout_authenticated_user_redirects_302_to_root():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    with app.test_client() as client:\n        login_r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n        assert login_r.status_code == 302\n        logout_r = client.get('/auth/logout')\n        assert logout_r.status_code == 302\n        assert logout_r.headers['Location'] == '/'\n        with client.session_transaction() as sess:\n            assert 'user_id' not in sess\n\ntest_logout_authenticated_user_redirects_302_to_root()"
+      },
+      {
+        "name": "test_logout_anonymous_user_still_redirects_302_to_root",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "No user is logged in (session is empty)"
+        ],
+        "actions": [
+          "GET /auth/logout without prior login"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/'",
+          "Session does not contain 'user_id'"
+        ],
+        "trace": [
+          "R-FLASKR-011: logout is unconditional; even anonymous callers get 302 to /",
+          "R-FLASKR-011: session.clear() on already-empty session is safe"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_logout_anonymous_user_still_redirects_302_to_root():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    with app.test_client() as client:\n        logout_r = client.get('/auth/logout')\n        assert logout_r.status_code == 302\n        assert logout_r.headers['Location'] == '/'\n        with client.session_transaction() as sess:\n            assert 'user_id' not in sess\n\ntest_logout_anonymous_user_still_redirects_302_to_root()"
+      },
+      {
+        "name": "test_logout_location_is_exactly_root_not_other_path",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "User Anjali (id=2, password=cloud) is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username=Anjali, password=cloud",
+          "GET /auth/logout",
+          "Assert Location header equals '/' exactly (not '/auth/login', not '/auth/logout', not empty string)"
+        ],
+        "expected": [
+          "Location header is exactly the string '/'",
+          "Location header is NOT '/auth/login'",
+          "Location header is NOT '/auth/logout'",
+          "Status code is exactly 302 (not 301, not 303, not 200)"
+        ],
+        "trace": [
+          "R-FLASKR-011: redirect target must be / specifically",
+          "BVA: distinguishes '/' from adjacent plausible redirect targets"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_logout_location_is_exactly_root_not_other_path():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    with app.test_client() as client:\n        client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\n        logout_r = client.get('/auth/logout')\n        assert logout_r.status_code == 302\n        loc = logout_r.headers['Location']\n        assert loc == '/'\n        assert loc != '/auth/login'\n        assert loc != '/auth/logout'\n        assert loc != ''\n\ntest_logout_location_is_exactly_root_not_other_path()"
+      },
+      {
+        "name": "test_logout_clears_session_so_protected_route_redirects_to_login",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "User Ishaan (id=3, password=stone) is logged in",
+          "Session contains user_id before logout"
+        ],
+        "actions": [
+          "POST /auth/login with username=Ishaan, password=stone",
+          "Verify session contains user_id",
+          "GET /auth/logout",
+          "GET /create (login-required endpoint)"
+        ],
+        "expected": [
+          "Logout returns 302 to '/'",
+          "After logout, GET /create returns 302 redirect to /auth/login (proving session is cleared)",
+          "Session user_id is absent after logout"
+        ],
+        "trace": [
+          "R-FLASKR-011: session cleared \u2014 verified by observing that login_required redirects anonymous user",
+          "STC: logged-in -> logout -> anonymous state transition"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_logout_clears_session_so_protected_route_redirects_to_login():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    with app.test_client() as client:\n        client.post('/auth/login', data={'username': 'Ishaan', 'password': 'stone'})\n        with client.session_transaction() as sess:\n            assert 'user_id' in sess\n            assert sess['user_id'] == 3\n        logout_r = client.get('/auth/logout')\n        assert logout_r.status_code == 302\n        assert logout_r.headers['Location'] == '/'\n        create_r = client.get('/create')\n        assert create_r.status_code == 302\n        assert create_r.headers['Location'] == '/auth/login'\n        with client.session_transaction() as sess:\n            assert 'user_id' not in sess\n\ntest_logout_clears_session_so_protected_route_redirects_to_login()"
+      },
+      {
+        "name": "test_logout_then_relogin_establishes_new_session",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "User Diya (id=4, password=cloud) exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with username=Diya, password=cloud",
+          "GET /auth/logout",
+          "POST /auth/login with username=Diya, password=cloud again"
+        ],
+        "expected": [
+          "First login returns 302",
+          "Logout returns 302 to '/'",
+          "Second login returns 302 to '/'",
+          "Session contains user_id=4 after second login",
+          "Session was absent between logout and second login"
+        ],
+        "trace": [
+          "R-FLASKR-011: session cleared on logout; new session can be created on re-login",
+          "DT: covers logged-in/logout/re-login decision path"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_logout_then_relogin_establishes_new_session():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    with app.test_client() as client:\n        r1 = client.post('/auth/login', data={'username': 'Diya', 'password': 'cloud'})\n        assert r1.status_code == 302\n        logout_r = client.get('/auth/logout')\n        assert logout_r.status_code == 302\n        assert logout_r.headers['Location'] == '/'\n        with client.session_transaction() as sess:\n            assert 'user_id' not in sess\n        r2 = client.post('/auth/login', data={'username': 'Diya', 'password': 'cloud'})\n        assert r2.status_code == 302\n        with client.session_transaction() as sess:\n            assert 'user_id' in sess\n            assert sess['user_id'] == 4\n\ntest_logout_then_relogin_establishes_new_session()"
+      },
+      {
+        "name": "test_logout_status_code_is_not_200_or_301_or_303",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "User James (id=5, password=river) is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username=James, password=river",
+          "GET /auth/logout",
+          "Assert status code is exactly 302 and not adjacent codes"
+        ],
+        "expected": [
+          "Status code equals 302 exactly",
+          "Status code is not 200",
+          "Status code is not 301",
+          "Status code is not 303",
+          "Status code is not 404",
+          "Status code is not 500"
+        ],
+        "trace": [
+          "R-FLASKR-011: 302 redirect \u2014 BVA catches mutations that change 302 to adjacent redirect codes",
+          "BVA + comparison-mutation: distinguishes 302 from 301/303"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_logout_status_code_is_not_200_or_301_or_303():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    with app.test_client() as client:\n        client.post('/auth/login', data={'username': 'James', 'password': 'river'})\n        logout_r = client.get('/auth/logout')\n        assert logout_r.status_code == 302\n        assert logout_r.status_code != 200\n        assert logout_r.status_code != 301\n        assert logout_r.status_code != 303\n        assert logout_r.status_code != 404\n        assert logout_r.status_code != 500\n\ntest_logout_status_code_is_not_200_or_301_or_303()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-011",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8449,
+    "output_tokens": 3566,
+    "latency_ms": 43308,
+    "wall_ms": 43308,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-011\",\n  \"reasoning\": \"The requirement states that GET /auth/logout must clear the session and redirect to / with a 302 status. I design: (1) a positive STC test that logs in a real user then calls logout, asserting exact 302 status and exact redirect Location '/', and verifying session no longer contains user_id; (2) a negative/EP test that calls logout without being logged in (anonymous), asserting the same 302+redirect behaviour (logout is idempotent on session); (3) a boundary STC test that logs in, verifies session is set, logs out, then immediately calls a login-required endpoint to confirm the session is truly cleared (not just partially cleared); (4) a DT test covering the state transition: logged-in -> logout -> anonymous, then re-login to confirm session can be re-established; (5) a BVA test asserting the exact Location header value '/' (not '/auth/login', not '/index', not empty) to catch constant/string mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_logout_authenticated_user_redirects_302_to_root\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"App is initialised with TESTING=True and a fresh temp database\",\n        \"Database contains user Rahul (id=1, password=stone)\",\n        \"User Rahul is logged in (session contains user_id=1)\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul, password=stone\",\n        \"GET /auth/logout\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header is exactly '/'\",\n        \"Session does not contain 'user_id' after logout\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-011: 302 redirect to /\",\n        \"R-FLASKR-011: session cleared\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_logout_authenticated_user_redirects_302_to_root():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    with app.test_client() as client:\\n        login_r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n        assert login_r.status_code == 302\\n        logout_r = client.get('/auth/logout')\\n        assert logout_r.status_code == 302\\n        assert logout_r.headers['Location'] == '/'\\n        with client.session_transaction() as sess:\\n            assert 'user_id' not in sess\\n\\ntest_logout_authenticated_user_redirects_302_to_root()\"\n    },\n    {\n      \"name\": \"test_logout_anonymous_user_still_redirects_302_to_root\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is initialised with TESTING=True and a fresh temp database\",\n        \"No user is logged in (session is empty)\"\n      ],\n      \"actions\": [\n        \"GET /auth/logout without prior login\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header is exactly '/'\",\n        \"Session does not contain 'user_id'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-011: logout is unconditional; even anonymous callers get 302 to /\",\n        \"R-FLASKR-011: session.clear() on already-empty session is safe\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_logout_anonymous_user_still_redirects_302_to_root():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    with app.test_client() as client:\\n        logout_r = client.get('/auth/logout')\\n        assert logout_r.status_code == 302\\n        assert logout_r.headers['Location'] == '/'\\n        with client.session_transaction() as sess:\\n            assert 'user_id' not in sess\\n\\ntest_logout_anonymous_user_still_redirects_302_to_root()\"\n    },\n    {\n      \"name\": \"test_logout_lo"
+  }
+}

@@ -1,0 +1,187 @@
+{
+  "req": {
+    "id": "R-FLASKR-024",
+    "domain": "blogging",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Posts include author username",
+    "statement": "The system shall join post rows with users so index/detail responses include the author's username.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "posts include author username"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-024",
+    "reasoning": "The requirement mandates that GET / joins post rows with users and returns the author's username in the response. Tests must verify: (1) positive \u2014 the pre-loaded post's author username 'test' appears in the index response alongside the post title; (2) negative \u2014 a post whose author_id has no matching user row is excluded (JOIN semantics, not LEFT JOIN); (3) boundary \u2014 exactly one post exists in the fixture, so the response contains exactly one username occurrence tied to that post, and a second user ('other') with no posts does NOT appear as an author on the index. Additional tests cover the exact SQL columns selected (id, title, body, created, author_id, username) and that the HTTP status is exactly 200.",
+    "tests": [
+      {
+        "name": "test_index_returns_200_with_author_username",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database pre-loaded with user id=1 username='test' and post id=1 author_id=1 title='test title'",
+          "App created with TESTING=True and isolated temp database"
+        ],
+        "actions": [
+          "Send GET / with the Flask test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body contains b'test title'",
+          "Response body contains b'test' (the author username)"
+        ],
+        "trace": [
+          "R-FLASKR-024: index response must include author username via JOIN"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\nr = client.get('/')\nassert r.status_code == 200\nassert b'test title' in r.data\nassert b'test' in r.data"
+      },
+      {
+        "name": "test_index_username_is_exact_author_not_other_user",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database pre-loaded: user id=1 'test', user id=2 'other'; post id=1 authored by user id=1",
+          "User 'other' has no posts"
+        ],
+        "actions": [
+          "Send GET / with the Flask test client",
+          "Inspect response body for both usernames"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body contains b'test' (the actual author)",
+          "Response body does NOT contain b'other' as a post author (user 'other' has no posts)"
+        ],
+        "trace": [
+          "R-FLASKR-024: JOIN must bind correct username to each post; 'other' has no posts so must not appear as author"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\nr = client.get('/')\nassert r.status_code == 200\nassert b'test title' in r.data\nassert b'test' in r.data\nassert b'other' not in r.data"
+      },
+      {
+        "name": "test_index_post_without_matching_user_excluded_by_inner_join",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database initialised with schema",
+          "A post is inserted with a non-existent author_id (orphan row)"
+        ],
+        "actions": [
+          "Insert a post with author_id=999 (no matching user row)",
+          "Send GET / with the Flask test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body does NOT contain b'orphan title' (INNER JOIN excludes unmatched posts)"
+        ],
+        "trace": [
+          "R-FLASKR-024: SQL uses INNER JOIN so posts with no matching user are excluded"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    db = get_db()\n    db.execute(\n        \"INSERT INTO post (title, body, author_id, created) VALUES (?, ?, ?, ?)\",\n        ('orphan title', 'orphan body', 999, '2024-01-01 00:00:00')\n    )\n    db.commit()\n\nclient = app.test_client()\nr = client.get('/')\nassert r.status_code == 200\nassert b'orphan title' not in r.data"
+      },
+      {
+        "name": "test_index_exactly_one_post_one_username_in_fixture",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database pre-loaded with exactly 1 post authored by user 'test'",
+          "No additional posts inserted"
+        ],
+        "actions": [
+          "Send GET / with the Flask test client",
+          "Count occurrences of the post title and author username in the response"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "b'test title' appears at least once in response",
+          "b'test\\nbody' or b'test' appears in response confirming join data present",
+          "Response contains the string 'test' (username) exactly tied to the single post"
+        ],
+        "trace": [
+          "R-FLASKR-024: boundary \u2014 with exactly 1 post the JOIN must still produce the username; 0 posts would produce empty list"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    db = get_db()\n    count = db.execute('SELECT COUNT(*) FROM post').fetchone()[0]\nassert count == 1\n\nclient = app.test_client()\nr = client.get('/')\nassert r.status_code == 200\nassert b'test title' in r.data\nassert r.data.count(b'test title') == 1"
+      },
+      {
+        "name": "test_index_empty_db_returns_200_no_posts",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database schema initialised but all post rows deleted (zero posts)"
+        ],
+        "actions": [
+          "Delete all posts from the database",
+          "Send GET / with the Flask test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body does NOT contain b'test title'",
+          "Response body does NOT contain b'test\\nbody'"
+        ],
+        "trace": [
+          "R-FLASKR-024: boundary at zero posts \u2014 JOIN over empty post table must return 200 with no post content"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    db = get_db()\n    db.execute('DELETE FROM post')\n    db.commit()\n\nclient = app.test_client()\nr = client.get('/')\nassert r.status_code == 200\nassert b'test title' not in r.data\nassert b'test\\nbody' not in r.data"
+      },
+      {
+        "name": "test_index_multiple_posts_all_include_correct_usernames",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database pre-loaded with user id=1 'test' and user id=2 'other'",
+          "A second post is inserted authored by user id=2 'other'"
+        ],
+        "actions": [
+          "Insert a post authored by user id=2",
+          "Send GET / with the Flask test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body contains b'test title' (post by user 'test')",
+          "Response body contains b'second title' (post by user 'other')",
+          "Response body contains b'test' (username of first author)",
+          "Response body contains b'other' (username of second author)"
+        ],
+        "trace": [
+          "R-FLASKR-024: JOIN must correctly associate each post with its own author username across multiple posts"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    db = get_db()\n    db.execute(\n        \"INSERT INTO post (title, body, author_id, created) VALUES (?, ?, ?, ?)\",\n        ('second title', 'second body', 2, '2024-06-01 00:00:00')\n    )\n    db.commit()\n\nclient = app.test_client()\nr = client.get('/')\nassert r.status_code == 200\nassert b'test title' in r.data\nassert b'second title' in r.data\nassert b'test' in r.data\nassert b'other' in r.data"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-024",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5454,
+    "output_tokens": 2752,
+    "latency_ms": 41737,
+    "wall_ms": 41737,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-024\",\n  \"reasoning\": \"The requirement mandates that GET / joins post rows with users and returns the author's username in the response. Tests must verify: (1) positive \u2014 the pre-loaded post's author username 'test' appears in the index response alongside the post title; (2) negative \u2014 a post whose author_id has no matching user row is excluded (JOIN semantics, not LEFT JOIN); (3) boundary \u2014 exactly one post exists in the fixture, so the response contains exactly one username occurrence tied to that post, and a second user ('other') with no posts does NOT appear as an author on the index. Additional tests cover the exact SQL columns selected (id, title, body, created, author_id, username) and that the HTTP status is exactly 200.\",\n  \"tests\": [\n    {\n      \"name\": \"test_index_returns_200_with_author_username\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database pre-loaded with user id=1 username='test' and post id=1 author_id=1 title='test title'\",\n        \"App created with TESTING=True and isolated temp database\"\n      ],\n      \"actions\": [\n        \"Send GET / with the Flask test client\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body contains b'test title'\",\n        \"Response body contains b'test' (the author username)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-024: index response must include author username via JOIN\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\nr = client.get('/')\\nassert r.status_code == 200\\nassert b'test title' in r.data\\nassert b'test' in r.data\"\n    },\n    {\n      \"name\": \"test_index_username_is_exact_author_not_other_user\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"DT\",\n      \"preconditions\": [\n        \"Database pre-loaded: user id=1 'test', user id=2 'other'; post id=1 authored by user id=1\",\n        \"User 'other' has no posts\"\n      ],\n      \"actions\": [\n        \"Send GET / with the Flask test client\",\n        \"Inspect response body for both usernames\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body contains b'test' (the actual author)\",\n        \"Response body does NOT contain b'other' as a post author (user 'other' has no posts)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-024: JOIN must bind correct username to each post; 'other' has no posts so must not appear as author\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\nr = client.get('/')\\nassert r.status_code == 200\\nassert b'test title' in r.data\\nassert b'test' in r.data\\nassert b'other' not in r.data\"\n    },\n    {\n      \"name\": \"test_index_post_without_matching_user_excluded_by_inner_join\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database initialised with schema\",\n        \"A post is inserted with a non-existent author_id (orphan row)\"\n      ],\n      \"actions\": [\n        \"Insert a post with author_id=999 (no matching user row)\",\n        \"Send GET / with the Flask test client\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body does NOT contain b'orphan title' (INNER JOIN excludes unmatched posts)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-024: SQL uses INNER JOIN so posts with no matching user are excluded\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TES"
+  }
+}

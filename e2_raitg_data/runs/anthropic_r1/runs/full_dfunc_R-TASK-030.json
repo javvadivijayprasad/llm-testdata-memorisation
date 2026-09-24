@@ -1,0 +1,220 @@
+{
+  "req": {
+    "id": "R-TASK-030",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Task id is auto-generated",
+    "statement": "The system shall assign a unique integer id to each new task; client-supplied ids in the payload shall be ignored.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task id is auto-generated"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-030",
+    "reasoning": "R-TASK-030 requires that (1) every POST /tasks/ response carries a system-assigned integer id, (2) that id is unique across successive calls, and (3) any id supplied by the client in the request body is silently ignored. The test suite covers: EP-positive (valid payload, no client id \u2192 server assigns id), NEG (client supplies an explicit id \u2192 it is ignored, server id differs), BVA (two back-to-back creates \u2192 ids are distinct integers, second id == first+1 under sequential DB autoincrement). Each test asserts exact status code 201, exact field types, and exact uniqueness/override semantics to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_auto_id_assigned_on_valid_create",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows (ids 1-20)",
+          "POST /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "POST /tasks/ with a valid payload containing only title, description, completed",
+          "Inspect the response body"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON contains key 'id' with an integer value",
+          "id is greater than 0",
+          "id is greater than 20 (beyond all seed rows)",
+          "Response contains correct title, description, completed fields"
+        ],
+        "trace": [
+          "R-TASK-030: system shall assign a unique integer id to each new task"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_auto_id_assigned_on_valid_create():\n    client = TestClient(app)\n    payload = {\n        \"title\": \"Auto ID Test Task\",\n        \"description\": \"Checking auto id assignment\",\n        \"completed\": False\n    }\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert \"id\" in body\n    assert isinstance(body[\"id\"], int)\n    assert body[\"id\"] > 0\n    assert body[\"id\"] > 20\n    assert body[\"title\"] == \"Auto ID Test Task\"\n    assert body[\"description\"] == \"Checking auto id assignment\"\n    assert body[\"completed\"] == False\n\ntest_auto_id_assigned_on_valid_create()"
+      },
+      {
+        "name": "test_client_supplied_id_is_ignored",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows (ids 1-20)",
+          "POST /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "POST /tasks/ with a payload that includes an explicit 'id' field set to 9999",
+          "Inspect the response body"
+        ],
+        "expected": [
+          "HTTP 201 Created (not 4xx)",
+          "Response JSON 'id' is NOT 9999 \u2014 the client-supplied id is ignored",
+          "Response JSON 'id' is an integer greater than 20",
+          "title and completed fields match the submitted values"
+        ],
+        "trace": [
+          "R-TASK-030: client-supplied ids in the payload shall be ignored"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_client_supplied_id_is_ignored():\n    client = TestClient(app)\n    payload = {\n        \"id\": 9999,\n        \"title\": \"Client ID Ignored Task\",\n        \"description\": \"id field should be stripped\",\n        \"completed\": True\n    }\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert \"id\" in body\n    assert isinstance(body[\"id\"], int)\n    assert body[\"id\"] != 9999\n    assert body[\"id\"] > 20\n    assert body[\"title\"] == \"Client ID Ignored Task\"\n    assert body[\"completed\"] == True\n\ntest_client_supplied_id_is_ignored()"
+      },
+      {
+        "name": "test_successive_creates_have_unique_sequential_ids",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows (ids 1-20)",
+          "POST /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "POST /tasks/ with first valid payload",
+          "POST /tasks/ with second valid payload",
+          "Compare the two returned ids"
+        ],
+        "expected": [
+          "Both responses return HTTP 201",
+          "Both ids are integers greater than 20",
+          "The two ids are distinct (uniqueness invariant)",
+          "Second id equals first id + 1 (sequential autoincrement boundary)"
+        ],
+        "trace": [
+          "R-TASK-030: system shall assign a unique integer id to each new task"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_successive_creates_have_unique_sequential_ids():\n    client = TestClient(app)\n    payload1 = {\"title\": \"First BVA Task\", \"completed\": False}\n    payload2 = {\"title\": \"Second BVA Task\", \"completed\": False}\n    r1 = client.post(\"/tasks/\", json=payload1)\n    r2 = client.post(\"/tasks/\", json=payload2)\n    assert r1.status_code == 201\n    assert r2.status_code == 201\n    id1 = r1.json()[\"id\"]\n    id2 = r2.json()[\"id\"]\n    assert isinstance(id1, int)\n    assert isinstance(id2, int)\n    assert id1 > 20\n    assert id2 > 20\n    assert id1 != id2\n    assert id2 == id1 + 1\n\ntest_successive_creates_have_unique_sequential_ids()"
+      },
+      {
+        "name": "test_id_not_present_in_request_schema_still_auto_assigned",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows (ids 1-20)",
+          "TaskCreate schema does not expose an id field"
+        ],
+        "actions": [
+          "POST /tasks/ with minimal payload (title only, no id, no description, no completed)",
+          "Inspect response"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response id is an integer > 20",
+          "Response completed defaults to False",
+          "Response description is None",
+          "Response created_at is a non-empty string"
+        ],
+        "trace": [
+          "R-TASK-030: system shall assign a unique integer id to each new task",
+          "R-TASK-030: client-supplied ids in the payload shall be ignored"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_id_not_present_in_request_schema_still_auto_assigned():\n    client = TestClient(app)\n    payload = {\"title\": \"Minimal Task\"}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert isinstance(body[\"id\"], int)\n    assert body[\"id\"] > 20\n    assert body[\"completed\"] == False\n    assert body[\"description\"] is None\n    assert isinstance(body[\"created_at\"], str)\n    assert len(body[\"created_at\"]) > 0\n\ntest_id_not_present_in_request_schema_still_auto_assigned()"
+      },
+      {
+        "name": "test_missing_title_returns_4xx_not_201",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows",
+          "POST /tasks/ requires title field (min_length=1)"
+        ],
+        "actions": [
+          "POST /tasks/ with payload missing the required title field",
+          "Inspect response status code"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (client error, not 201)",
+          "No id is assigned because task was not created"
+        ],
+        "trace": [
+          "R-TASK-030: error pathway \u2014 HTTP 4xx on client error"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_missing_title_returns_4xx_not_201():\n    client = TestClient(app)\n    payload = {\"description\": \"No title here\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n    assert \"id\" not in body\n\ntest_missing_title_returns_4xx_not_201()"
+      },
+      {
+        "name": "test_empty_title_returns_4xx_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows",
+          "title field has min_length=1 constraint"
+        ],
+        "actions": [
+          "POST /tasks/ with title set to empty string (length 0, one below min boundary of 1)",
+          "Inspect response"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response body contains 'detail' key",
+          "No 'id' key in response (task not created)"
+        ],
+        "trace": [
+          "R-TASK-030: error pathway \u2014 HTTP 4xx on client error; BVA on title min_length=1"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_empty_title_returns_4xx_boundary():\n    client = TestClient(app)\n    payload = {\"title\": \"\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n    assert \"id\" not in body\n\ntest_empty_title_returns_4xx_boundary()"
+      },
+      {
+        "name": "test_created_task_retrievable_by_auto_id",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows",
+          "POST /tasks/ and GET /tasks/{task_id} are both reachable"
+        ],
+        "actions": [
+          "POST /tasks/ to create a new task",
+          "Extract the auto-assigned id from the response",
+          "GET /tasks/{id} using the returned id",
+          "Compare the retrieved task with the created task"
+        ],
+        "expected": [
+          "POST returns HTTP 201 with an integer id > 20",
+          "GET returns HTTP 200",
+          "Retrieved task id matches the auto-assigned id exactly",
+          "Retrieved task title matches the submitted title exactly"
+        ],
+        "trace": [
+          "R-TASK-030: system shall assign a unique integer id to each new task",
+          "STC: state transition from created to retrievable via auto-assigned id"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_created_task_retrievable_by_auto_id():\n    client = TestClient(app)\n    payload = {\"title\": \"STC Retrieval Task\", \"completed\": False}\n    r_create = client.post(\"/tasks/\", json=payload)\n    assert r_create.status_code == 201\n    created = r_create.json()\n    auto_id = created[\"id\"]\n    assert isinstance(auto_id, int)\n    assert auto_id > 20\n    r_get = client.get(f\"/tasks/{auto_id}\")\n    assert r_get.status_code == 200\n    retrieved = r_get.json()\n    assert retrieved[\"id\"] == auto_id\n    assert retrieved[\"title\"] == \"STC Retrieval Task\"\n    assert retrieved[\"completed\"] == False\n\ntest_created_task_retrievable_by_auto_id()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-030",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5670,
+    "output_tokens": 3384,
+    "latency_ms": 43117,
+    "wall_ms": 43117,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-030\",\n  \"reasoning\": \"R-TASK-030 requires that (1) every POST /tasks/ response carries a system-assigned integer id, (2) that id is unique across successive calls, and (3) any id supplied by the client in the request body is silently ignored. The test suite covers: EP-positive (valid payload, no client id \u2192 server assigns id), NEG (client supplies an explicit id \u2192 it is ignored, server id differs), BVA (two back-to-back creates \u2192 ids are distinct integers, second id == first+1 under sequential DB autoincrement). Each test asserts exact status code 201, exact field types, and exact uniqueness/override semantics to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_auto_id_assigned_on_valid_create\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 20 seed rows (ids 1-20)\",\n        \"POST /tasks/ endpoint is reachable in-process\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with a valid payload containing only title, description, completed\",\n        \"Inspect the response body\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response JSON contains key 'id' with an integer value\",\n        \"id is greater than 0\",\n        \"id is greater than 20 (beyond all seed rows)\",\n        \"Response contains correct title, description, completed fields\"\n      ],\n      \"trace\": [\n        \"R-TASK-030: system shall assign a unique integer id to each new task\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_auto_id_assigned_on_valid_create():\\n    client = TestClient(app)\\n    payload = {\\n        \\\"title\\\": \\\"Auto ID Test Task\\\",\\n        \\\"description\\\": \\\"Checking auto id assignment\\\",\\n        \\\"completed\\\": False\\n    }\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert \\\"id\\\" in body\\n    assert isinstance(body[\\\"id\\\"], int)\\n    assert body[\\\"id\\\"] > 0\\n    assert body[\\\"id\\\"] > 20\\n    assert body[\\\"title\\\"] == \\\"Auto ID Test Task\\\"\\n    assert body[\\\"description\\\"] == \\\"Checking auto id assignment\\\"\\n    assert body[\\\"completed\\\"] == False\\n\\ntest_auto_id_assigned_on_valid_create()\"\n    },\n    {\n      \"name\": \"test_client_supplied_id_is_ignored\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 20 seed rows (ids 1-20)\",\n        \"POST /tasks/ endpoint is reachable in-process\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with a payload that includes an explicit 'id' field set to 9999\",\n        \"Inspect the response body\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created (not 4xx)\",\n        \"Response JSON 'id' is NOT 9999 \u2014 the client-supplied id is ignored\",\n        \"Response JSON 'id' is an integer greater than 20\",\n        \"title and completed fields match the submitted values\"\n      ],\n      \"trace\": [\n        \"R-TASK-030: client-supplied ids in the payload shall be ignored\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_client_supplied_id_is_ignored():\\n    client = TestClient(app)\\n    payload = {\\n        \\\"id\\\": 9999,\\n        \\\"title\\\": \\\"Client ID Ignored Task\\\",\\n        \\\"description\\\": \\\"id field should be stripped\\\",\\n        \\\"completed\\\": True\\n    }\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert \\\"id\\\" in body\\n    assert isinstance(body[\\\"id\\\"], int)\\n    assert body[\\\"id\\\"] != 9999\\n    assert body[\\\"id\\\"] > 20\\n    assert body[\\\"title\\\"] == \\\"Client ID Ignored Task\\\"\\n    assert body[\\\"completed\\\"] == True\\n\\ntest_client_supplied_id_is_ignored()\"\n    },\n    {\n      \"name\": \"test_successive_creates_have_unique_sequential_ids\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 20 seed rows (ids 1-20)"
+  }
+}

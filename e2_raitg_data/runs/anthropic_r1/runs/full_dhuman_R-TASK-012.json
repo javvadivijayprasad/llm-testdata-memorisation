@@ -1,0 +1,214 @@
+{
+  "req": {
+    "id": "R-TASK-012",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Partial update supported",
+    "statement": "The system shall accept a partial payload on PUT /tasks/{task_id} and leave omitted fields unchanged.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "partial update supported"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-012",
+    "reasoning": "R-TASK-012 requires that PUT /tasks/{task_id} accepts a partial payload and leaves omitted fields unchanged. Tests must cover: (1) positive EP \u2014 sending only one field updates that field and preserves others; (2) negative NEG \u2014 sending a partial payload to a non-existent task_id returns 404; (3) boundary BVA \u2014 updating title at its max length boundary (100 chars) while omitting other fields; (4) DT \u2014 updating each individual field independently to confirm isolation; (5) STC \u2014 state transition from completed=False to completed=True via partial payload. Mutation resilience is achieved by asserting exact status codes (200 not >=200), exact field values for both updated and untouched fields, and boundary constants (100-char title).",
+    "tests": [
+      {
+        "name": "test_partial_update_only_title_leaves_other_fields_unchanged",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "A task exists with known title, description, and completed=False"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with title='Original', description='Keep me', completed=False",
+          "PUT /tasks/{task_id} with payload {\"title\": \"Updated\"} (omitting description and completed)"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body title == 'Updated'",
+          "Response body description == 'Keep me' (unchanged)",
+          "Response body completed == False (unchanged)",
+          "Response body id matches created task id"
+        ],
+        "trace": [
+          "R-TASK-012: partial payload accepted",
+          "R-TASK-012: omitted fields left unchanged"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_partial_update_only_title_leaves_other_fields_unchanged():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"Original\", \"description\": \"Keep me\", \"completed\": False})\n    assert create_resp.status_code == 201\n    task_id = create_resp.json()[\"id\"]\n\n    update_resp = client.put(f\"/tasks/{task_id}\", json={\"title\": \"Updated\"})\n    assert update_resp.status_code == 200\n    body = update_resp.json()\n    assert body[\"id\"] == task_id\n    assert body[\"title\"] == \"Updated\"\n    assert body[\"description\"] == \"Keep me\"\n    assert body[\"completed\"] == False\n\ntest_partial_update_only_title_leaves_other_fields_unchanged()"
+      },
+      {
+        "name": "test_partial_update_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "No task with id=99999 exists"
+        ],
+        "actions": [
+          "PUT /tasks/99999 with partial payload {\"title\": \"Ghost\"}"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response detail contains 'not found'"
+        ],
+        "trace": [
+          "R-TASK-012: HTTP 4xx on client error (non-existent resource)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_partial_update_nonexistent_task_returns_404():\n    client = TestClient(app)\n    resp = client.put(\"/tasks/99999\", json={\"title\": \"Ghost\"})\n    assert resp.status_code == 404\n    body = resp.json()\n    assert \"not found\" in body[\"detail\"].lower()\n\ntest_partial_update_nonexistent_task_returns_404()"
+      },
+      {
+        "name": "test_partial_update_title_at_max_length_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "A task exists with a short title and a description"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with title='Short', description='Desc', completed=False",
+          "PUT /tasks/{task_id} with payload {\"title\": <100-char string>} (exactly at max_length=100)"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body title has exactly 100 characters",
+          "Response body description == 'Desc' (unchanged)",
+          "Response body completed == False (unchanged)"
+        ],
+        "trace": [
+          "R-TASK-012: partial payload accepted at title boundary max_length=100",
+          "R-TASK-012: omitted fields left unchanged"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_partial_update_title_at_max_length_boundary():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"Short\", \"description\": \"Desc\", \"completed\": False})\n    assert create_resp.status_code == 201\n    task_id = create_resp.json()[\"id\"]\n\n    max_title = \"A\" * 100\n    assert len(max_title) == 100\n    update_resp = client.put(f\"/tasks/{task_id}\", json={\"title\": max_title})\n    assert update_resp.status_code == 200\n    body = update_resp.json()\n    assert body[\"title\"] == max_title\n    assert len(body[\"title\"]) == 100\n    assert body[\"description\"] == \"Desc\"\n    assert body[\"completed\"] == False\n\ntest_partial_update_title_at_max_length_boundary()"
+      },
+      {
+        "name": "test_partial_update_title_exceeds_max_length_returns_422",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "A task exists"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task",
+          "PUT /tasks/{task_id} with payload {\"title\": <101-char string>} (one over max_length=100)"
+        ],
+        "expected": [
+          "HTTP 422 response (validation error)",
+          "Response body contains validation error detail"
+        ],
+        "trace": [
+          "R-TASK-012: HTTP 4xx on client error \u2014 title exceeds max_length boundary"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_partial_update_title_exceeds_max_length_returns_422():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"Valid\", \"description\": None, \"completed\": False})\n    assert create_resp.status_code == 201\n    task_id = create_resp.json()[\"id\"]\n\n    over_limit_title = \"B\" * 101\n    assert len(over_limit_title) == 101\n    update_resp = client.put(f\"/tasks/{task_id}\", json={\"title\": over_limit_title})\n    assert update_resp.status_code == 422\n    body = update_resp.json()\n    assert \"detail\" in body\n\ntest_partial_update_title_exceeds_max_length_returns_422()"
+      },
+      {
+        "name": "test_partial_update_only_completed_field_transitions_state",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "A task exists with completed=False"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with completed=False",
+          "PUT /tasks/{task_id} with payload {\"completed\": true} (omitting title and description)",
+          "GET /tasks/{task_id} to verify persisted state"
+        ],
+        "expected": [
+          "PUT returns HTTP 200",
+          "PUT response body completed == True",
+          "PUT response body title unchanged from creation",
+          "GET response body completed == True (state persisted)"
+        ],
+        "trace": [
+          "R-TASK-012: partial payload accepted \u2014 only completed field sent",
+          "R-TASK-012: omitted fields (title, description) left unchanged after state transition"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_partial_update_only_completed_field_transitions_state():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"My Task\", \"description\": \"Do it\", \"completed\": False})\n    assert create_resp.status_code == 201\n    task_id = create_resp.json()[\"id\"]\n\n    update_resp = client.put(f\"/tasks/{task_id}\", json={\"completed\": True})\n    assert update_resp.status_code == 200\n    body = update_resp.json()\n    assert body[\"completed\"] == True\n    assert body[\"title\"] == \"My Task\"\n    assert body[\"description\"] == \"Do it\"\n    assert body[\"id\"] == task_id\n\n    get_resp = client.get(f\"/tasks/{task_id}\")\n    assert get_resp.status_code == 200\n    assert get_resp.json()[\"completed\"] == True\n\ntest_partial_update_only_completed_field_transitions_state()"
+      },
+      {
+        "name": "test_partial_update_each_field_independently_decision_table",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "Three separate tasks created with known initial values"
+        ],
+        "actions": [
+          "Create task1 with title='T1', description='D1', completed=False; update only description='D1-new'",
+          "Create task2 with title='T2', description='D2', completed=False; update only completed=True",
+          "Create task3 with title='T3', description='D3', completed=True; update only title='T3-new'"
+        ],
+        "expected": [
+          "task1: title=='T1' (unchanged), description=='D1-new', completed==False (unchanged)",
+          "task2: title=='T2' (unchanged), description=='D2' (unchanged), completed==True",
+          "task3: title=='T3-new', description=='D3' (unchanged), completed==True (unchanged)"
+        ],
+        "trace": [
+          "R-TASK-012: each field can be independently updated while others remain unchanged"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_partial_update_each_field_independently_decision_table():\n    client = TestClient(app)\n\n    r1 = client.post(\"/tasks/\", json={\"title\": \"T1\", \"description\": \"D1\", \"completed\": False})\n    assert r1.status_code == 201\n    id1 = r1.json()[\"id\"]\n    u1 = client.put(f\"/tasks/{id1}\", json={\"description\": \"D1-new\"})\n    assert u1.status_code == 200\n    b1 = u1.json()\n    assert b1[\"title\"] == \"T1\"\n    assert b1[\"description\"] == \"D1-new\"\n    assert b1[\"completed\"] == False\n\n    r2 = client.post(\"/tasks/\", json={\"title\": \"T2\", \"description\": \"D2\", \"completed\": False})\n    assert r2.status_code == 201\n    id2 = r2.json()[\"id\"]\n    u2 = client.put(f\"/tasks/{id2}\", json={\"completed\": True})\n    assert u2.status_code == 200\n    b2 = u2.json()\n    assert b2[\"title\"] == \"T2\"\n    assert b2[\"description\"] == \"D2\"\n    assert b2[\"completed\"] == True\n\n    r3 = client.post(\"/tasks/\", json={\"title\": \"T3\", \"description\": \"D3\", \"completed\": True})\n    assert r3.status_code == 201\n    id3 = r3.json()[\"id\"]\n    u3 = client.put(f\"/tasks/{id3}\", json={\"title\": \"T3-new\"})\n    assert u3.status_code == 200\n    b3 = u3.json()\n    assert b3[\"title\"] == \"T3-new\"\n    assert b3[\"description\"] == \"D3\"\n    assert b3[\"completed\"] == True\n\ntest_partial_update_each_field_independently_decision_table()"
+      },
+      {
+        "name": "test_partial_update_empty_payload_leaves_all_fields_unchanged",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is running in-process with a fresh SQLite database",
+          "A task exists with known field values"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task with title='Stable', description='NoChange', completed=False",
+          "PUT /tasks/{task_id} with empty JSON payload {}"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "All fields remain exactly as created: title=='Stable', description=='NoChange', completed==False"
+        ],
+        "trace": [
+          "R-TASK-012: empty partial payload accepted; all omitted fields unchanged"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_partial_update_empty_payload_leaves_all_fields_unchanged():\n    client = TestClient(app)\n    create_resp = client.post(\"/tasks/\", json={\"title\": \"Stable\", \"description\": \"NoChange\", \"completed\": False})\n    assert create_resp.status_code == 201\n    task_id = create_resp.json()[\"id\"]\n\n    update_resp = client.put(f\"/tasks/{task_id}\", json={})\n    assert update_resp.status_code == 200\n    body = update_resp.json()\n    assert body[\"id\"] == task_id\n    assert body[\"title\"] == \"Stable\"\n    assert body[\"description\"] == \"NoChange\"\n    assert body[\"completed\"] == False\n\ntest_partial_update_empty_payload_leaves_all_fields_unchanged()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-012",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4862,
+    "output_tokens": 4013,
+    "latency_ms": 45987,
+    "wall_ms": 45987,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-012\",\n  \"reasoning\": \"R-TASK-012 requires that PUT /tasks/{task_id} accepts a partial payload and leaves omitted fields unchanged. Tests must cover: (1) positive EP \u2014 sending only one field updates that field and preserves others; (2) negative NEG \u2014 sending a partial payload to a non-existent task_id returns 404; (3) boundary BVA \u2014 updating title at its max length boundary (100 chars) while omitting other fields; (4) DT \u2014 updating each individual field independently to confirm isolation; (5) STC \u2014 state transition from completed=False to completed=True via partial payload. Mutation resilience is achieved by asserting exact status codes (200 not >=200), exact field values for both updated and untouched fields, and boundary constants (100-char title).\",\n  \"tests\": [\n    {\n      \"name\": \"test_partial_update_only_title_leaves_other_fields_unchanged\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App is running in-process with a fresh SQLite database\",\n        \"A task exists with known title, description, and completed=False\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a task with title='Original', description='Keep me', completed=False\",\n        \"PUT /tasks/{task_id} with payload {\\\"title\\\": \\\"Updated\\\"} (omitting description and completed)\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body title == 'Updated'\",\n        \"Response body description == 'Keep me' (unchanged)\",\n        \"Response body completed == False (unchanged)\",\n        \"Response body id matches created task id\"\n      ],\n      \"trace\": [\n        \"R-TASK-012: partial payload accepted\",\n        \"R-TASK-012: omitted fields left unchanged\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_partial_update_only_title_leaves_other_fields_unchanged():\\n    client = TestClient(app)\\n    create_resp = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Original\\\", \\\"description\\\": \\\"Keep me\\\", \\\"completed\\\": False})\\n    assert create_resp.status_code == 201\\n    task_id = create_resp.json()[\\\"id\\\"]\\n\\n    update_resp = client.put(f\\\"/tasks/{task_id}\\\", json={\\\"title\\\": \\\"Updated\\\"})\\n    assert update_resp.status_code == 200\\n    body = update_resp.json()\\n    assert body[\\\"id\\\"] == task_id\\n    assert body[\\\"title\\\"] == \\\"Updated\\\"\\n    assert body[\\\"description\\\"] == \\\"Keep me\\\"\\n    assert body[\\\"completed\\\"] == False\\n\\ntest_partial_update_only_title_leaves_other_fields_unchanged()\"\n    },\n    {\n      \"name\": \"test_partial_update_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is running in-process with a fresh SQLite database\",\n        \"No task with id=99999 exists\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/99999 with partial payload {\\\"title\\\": \\\"Ghost\\\"}\"\n      ],\n      \"expected\": [\n        \"HTTP 404 response\",\n        \"Response detail contains 'not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-012: HTTP 4xx on client error (non-existent resource)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_partial_update_nonexistent_task_returns_404():\\n    client = TestClient(app)\\n    resp = client.put(\\\"/tasks/99999\\\", json={\\\"title\\\": \\\"Ghost\\\"})\\n    assert resp.status_code == 404\\n    body = resp.json()\\n    assert \\\"not found\\\" in body[\\\"detail\\\"].lower()\\n\\ntest_partial_update_nonexistent_task_returns_404()\"\n    },\n    {\n      \"name\": \"test_partial_update_title_at_max_length_boundary\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"App is running in-process with a fresh SQLite database\",\n        \"A task exists with a short title and a description\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a task with title='Short', description='Desc', completed=False\",\n        \"PUT /tasks/{task_id} with payload {\\\"ti"
+  }
+}

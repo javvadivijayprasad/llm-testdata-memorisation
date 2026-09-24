@@ -1,0 +1,168 @@
+{
+  "req": {
+    "id": "R-FLASKR-037",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Index renders even with zero posts",
+    "statement": "The system shall render the index page with 'No posts' or empty state when the post table is empty.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "index renders even with zero posts"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-037",
+    "reasoning": "R-FLASKR-037 requires the index page to render correctly when the post table is empty. The default DB has 20 posts, so we must delete all posts before testing the empty-state. We need: (1) a positive test confirming HTTP 200 and empty-state rendering when posts are deleted, (2) a negative test confirming the index still returns 200 (not 4xx) even with no posts \u2014 verifying the error pathway is not triggered, (3) a boundary test at the exact transition from 1 post to 0 posts (last post deleted triggers empty state). We also add a state-transition test covering the normal (non-empty) index to confirm the contrast. All tests use in-process Flask test client, delete posts via direct DB manipulation inside the app context, and assert exact status codes and response body content.",
+    "tests": [
+      {
+        "name": "test_index_empty_posts_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is created with a fresh temporary SQLite database initialised via init_db()",
+          "All 20 pre-loaded posts are deleted so the post table is empty",
+          "No user is logged in"
+        ],
+        "actions": [
+          "Delete all rows from the post table inside the app context",
+          "Send GET / with the test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body does not raise a server error"
+        ],
+        "trace": [
+          "R-FLASKR-037: system shall render index page with HTTP 2xx when post table is empty"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    db = get_db()\n    db.execute('DELETE FROM post')\n    db.commit()\n    row = db.execute('SELECT COUNT(*) FROM post').fetchone()\n    assert row[0] == 0\n\nclient = app.test_client()\nresponse = client.get('/')\nassert response.status_code == 200\nassert response.status_code != 404\nassert response.status_code != 500\n"
+      },
+      {
+        "name": "test_index_empty_posts_no_4xx_error",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is created with a fresh temporary SQLite database initialised via init_db()",
+          "All posts are deleted so the post table is empty",
+          "No user is logged in"
+        ],
+        "actions": [
+          "Delete all rows from the post table inside the app context",
+          "Send GET / with the test client",
+          "Check that the response is NOT a 4xx client error"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200, not any 4xx value",
+          "Response data is non-empty bytes (page was rendered)"
+        ],
+        "trace": [
+          "R-FLASKR-037: error pathway states HTTP 4xx on client error; empty post table must NOT trigger a client error"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    db = get_db()\n    db.execute('DELETE FROM post')\n    db.commit()\n\nclient = app.test_client()\nresponse = client.get('/')\nassert response.status_code == 200\nassert response.status_code < 400\nassert response.status_code != 400\nassert response.status_code != 404\nassert len(response.data) > 0\n"
+      },
+      {
+        "name": "test_index_last_post_deleted_triggers_empty_state",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is created with a fresh temporary SQLite database initialised via init_db()",
+          "Exactly 1 post remains in the post table (all others deleted)",
+          "No user is logged in"
+        ],
+        "actions": [
+          "Delete 19 of the 20 pre-loaded posts leaving exactly 1",
+          "Confirm GET / returns 200 with that post's title in the body",
+          "Delete the final post so the table is empty (boundary: 1 -> 0)",
+          "Send GET / again and confirm 200 is still returned"
+        ],
+        "expected": [
+          "With 1 post: HTTP 200 and the remaining post title appears in the response",
+          "With 0 posts: HTTP 200 still returned (boundary at zero posts)"
+        ],
+        "trace": [
+          "R-FLASKR-037: boundary at exactly zero posts \u2014 transition from last post to empty table must still yield HTTP 2xx"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    db = get_db()\n    db.execute('DELETE FROM post WHERE id != 20')\n    db.commit()\n    count = db.execute('SELECT COUNT(*) FROM post').fetchone()[0]\n    assert count == 1\n\nclient = app.test_client()\nresponse_one = client.get('/')\nassert response_one.status_code == 200\nassert b'Heacon signal pulse' in response_one.data\n\nwith app.app_context():\n    db = get_db()\n    db.execute('DELETE FROM post WHERE id = 20')\n    db.commit()\n    count = db.execute('SELECT COUNT(*) FROM post').fetchone()[0]\n    assert count == 0\n\nresponse_zero = client.get('/')\nassert response_zero.status_code == 200\nassert b'Heacon signal pulse' not in response_zero.data\n"
+      },
+      {
+        "name": "test_index_non_empty_returns_200_with_post_titles",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App is created with a fresh temporary SQLite database initialised via init_db()",
+          "20 pre-loaded posts exist in the post table",
+          "No user is logged in"
+        ],
+        "actions": [
+          "Send GET / with the test client without deleting any posts"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body contains the most recent post title 'Heacon signal pulse' (post id 20, created 2025-04-01)"
+        ],
+        "trace": [
+          "R-FLASKR-037: contrast state \u2014 non-empty table must also return 200 and render posts; validates the state machine has two valid states"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    count = get_db().execute('SELECT COUNT(*) FROM post').fetchone()[0]\n    assert count == 20\n\nclient = app.test_client()\nresponse = client.get('/')\nassert response.status_code == 200\nassert b'Heacon signal pulse' in response.data\nassert b'Pulse ember signal' in response.data\n"
+      },
+      {
+        "name": "test_index_empty_posts_response_body_not_server_error_content",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is created with a fresh temporary SQLite database initialised via init_db()",
+          "All posts deleted \u2014 post table has exactly 0 rows",
+          "No user is logged in"
+        ],
+        "actions": [
+          "Delete all posts",
+          "Send GET / and inspect response body for absence of server-error indicators and presence of valid HTML structure"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body does not contain b'500'",
+          "Response body does not contain b'Internal Server Error'",
+          "Response body contains b'<html' or b'<!doctype' indicating a rendered page"
+        ],
+        "trace": [
+          "R-FLASKR-037: empty post table must not cause a server error; response must be a valid rendered page"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    db = get_db()\n    db.execute('DELETE FROM post')\n    db.commit()\n    assert db.execute('SELECT COUNT(*) FROM post').fetchone()[0] == 0\n\nclient = app.test_client()\nresponse = client.get('/')\nassert response.status_code == 200\ndata_lower = response.data.lower()\nassert b'internal server error' not in data_lower\nassert b'<html' in data_lower or b'<!doctype' in data_lower\nassert len(response.data) > 10\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-037",
+  "domain": "blogging",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6575,
+    "output_tokens": 2657,
+    "latency_ms": 44217,
+    "wall_ms": 44217,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-037\",\n  \"reasoning\": \"R-FLASKR-037 requires the index page to render correctly when the post table is empty. The default DB has 20 posts, so we must delete all posts before testing the empty-state. We need: (1) a positive test confirming HTTP 200 and empty-state rendering when posts are deleted, (2) a negative test confirming the index still returns 200 (not 4xx) even with no posts \u2014 verifying the error pathway is not triggered, (3) a boundary test at the exact transition from 1 post to 0 posts (last post deleted triggers empty state). We also add a state-transition test covering the normal (non-empty) index to confirm the contrast. All tests use in-process Flask test client, delete posts via direct DB manipulation inside the app context, and assert exact status codes and response body content.\",\n  \"tests\": [\n    {\n      \"name\": \"test_index_empty_posts_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App is created with a fresh temporary SQLite database initialised via init_db()\",\n        \"All 20 pre-loaded posts are deleted so the post table is empty\",\n        \"No user is logged in\"\n      ],\n      \"actions\": [\n        \"Delete all rows from the post table inside the app context\",\n        \"Send GET / with the test client\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body does not raise a server error\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-037: system shall render index page with HTTP 2xx when post table is empty\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, init_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n    db = get_db()\\n    db.execute('DELETE FROM post')\\n    db.commit()\\n    row = db.execute('SELECT COUNT(*) FROM post').fetchone()\\n    assert row[0] == 0\\n\\nclient = app.test_client()\\nresponse = client.get('/')\\nassert response.status_code == 200\\nassert response.status_code != 404\\nassert response.status_code != 500\\n\"\n    },\n    {\n      \"name\": \"test_index_empty_posts_no_4xx_error\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is created with a fresh temporary SQLite database initialised via init_db()\",\n        \"All posts are deleted so the post table is empty\",\n        \"No user is logged in\"\n      ],\n      \"actions\": [\n        \"Delete all rows from the post table inside the app context\",\n        \"Send GET / with the test client\",\n        \"Check that the response is NOT a 4xx client error\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200, not any 4xx value\",\n        \"Response data is non-empty bytes (page was rendered)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-037: error pathway states HTTP 4xx on client error; empty post table must NOT trigger a client error\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, init_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n    db = get_db()\\n    db.execute('DELETE FROM post')\\n    db.commit()\\n\\nclient = app.test_client()\\nresponse = client.get('/')\\nassert response.status_code == 200\\nassert response.status_code < 400\\nassert response.status_code != 400\\nassert response.status_code != 404\\nassert len(response.data) > 0\\n\"\n    },\n    {\n      \"name\": \"test_index_last_post_deleted_triggers_empty_state\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"App is created with a fresh temporary SQLite database initialised via init_db()\",\n        \"Exactly 1 post remains in the post table (all others deleted)\",\n        \"No user is logged in\"\n      ],\n      \"actions\": [\n        \"Delete 19 of the 2"
+  }
+}

@@ -1,0 +1,222 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-022",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Redirect once when n==1",
+    "statement": "The system shall respond with a single 302 to /get when /redirect/1 is called.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "redirect once when n==1"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /redirect/1"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-022",
+    "reasoning": "The requirement states that GET /redirect/1 must issue exactly one 302 redirect to /get, and the final response (after following the redirect) must be HTTP 200 with the expected JSON payload. We need: (1) a positive test confirming the 302 + Location header and the final 200 payload; (2) a boundary test at n==1 (the exact threshold where the code branches to url_for('view_get') instead of _redirect()); (3) a negative test confirming that without redirect-following the raw response is 302 (not 200, not 301, not 303); (4) a state-transition test confirming the redirect chain terminates in exactly one hop; (5) a decision-table test confirming the Location header points to /get and not some other path. These together kill off-by-one mutations (n==1 vs n==0 or n==2), status-code mutations (302->301, 302->303), and Location-value mutations.",
+    "tests": [
+      {
+        "name": "test_redirect_1_returns_302_with_location_to_get",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "GET /redirect/1 endpoint is registered"
+        ],
+        "actions": [
+          "Create Flask test client with follow_redirects=False",
+          "GET /redirect/1"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header ends with /get"
+        ],
+        "trace": [
+          "R-HTTPBIN-022: single 302 to /get when n==1"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_1_returns_302_with_location_to_get():\n    r = client.get('/redirect/1', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers.get('Location', '')\n    assert location.endswith('/get'), f'Expected Location ending in /get, got: {location}'\n\ntest_redirect_1_returns_302_with_location_to_get()"
+      },
+      {
+        "name": "test_redirect_1_final_response_is_200_with_json_payload",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "GET /redirect/1 endpoint is registered",
+          "GET /get endpoint is registered"
+        ],
+        "actions": [
+          "Create Flask test client with follow_redirects=True",
+          "GET /redirect/1"
+        ],
+        "expected": [
+          "Final response status code is exactly 200",
+          "Response body is JSON containing keys: url, args, headers, origin"
+        ],
+        "trace": [
+          "R-HTTPBIN-022: HTTP 2xx response with expected payload after redirect"
+        ],
+        "executable": "import json\nfrom httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_1_final_response_is_200_with_json_payload():\n    r = client.get('/redirect/1', follow_redirects=True)\n    assert r.status_code == 200\n    body = json.loads(r.data)\n    assert 'url' in body\n    assert 'args' in body\n    assert 'headers' in body\n    assert 'origin' in body\n\ntest_redirect_1_final_response_is_200_with_json_payload()"
+      },
+      {
+        "name": "test_redirect_1_status_is_not_301_or_303",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process"
+        ],
+        "actions": [
+          "Create Flask test client with follow_redirects=False",
+          "GET /redirect/1"
+        ],
+        "expected": [
+          "Response status code is NOT 301",
+          "Response status code is NOT 303",
+          "Response status code is NOT 200",
+          "Response status code is exactly 302"
+        ],
+        "trace": [
+          "R-HTTPBIN-022: must be 302, not any other redirect or success code"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_1_status_is_not_301_or_303():\n    r = client.get('/redirect/1', follow_redirects=False)\n    assert r.status_code != 301, 'Must not be 301 Moved Permanently'\n    assert r.status_code != 303, 'Must not be 303 See Other'\n    assert r.status_code != 200, 'Must not be 200 OK (no redirect followed)'\n    assert r.status_code != 307, 'Must not be 307 Temporary Redirect'\n    assert r.status_code == 302\n\ntest_redirect_1_status_is_not_301_or_303()"
+      },
+      {
+        "name": "test_redirect_1_boundary_exactly_one_hop",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "n==1 is the exact boundary where code branches to url_for('view_get')"
+        ],
+        "actions": [
+          "GET /redirect/1 with follow_redirects=False to capture first response",
+          "Follow Location header manually to confirm it resolves to /get"
+        ],
+        "expected": [
+          "First response is 302",
+          "Location header points to /get (not /redirect/0 or /redirect/2)",
+          "Second response (following Location) is 200"
+        ],
+        "trace": [
+          "R-HTTPBIN-022: n==1 boundary \u2014 exactly one redirect hop, not zero, not two"
+        ],
+        "executable": "import json\nfrom httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_1_boundary_exactly_one_hop():\n    r1 = client.get('/redirect/1', follow_redirects=False)\n    assert r1.status_code == 302\n    location = r1.headers.get('Location', '')\n    assert '/redirect/' not in location, f'Should not redirect to another /redirect/N, got: {location}'\n    assert location.endswith('/get'), f'Location must end with /get, got: {location}'\n    r2 = client.get(location, follow_redirects=False)\n    assert r2.status_code == 200\n    body = json.loads(r2.data)\n    assert 'url' in body\n\ntest_redirect_1_boundary_exactly_one_hop()"
+      },
+      {
+        "name": "test_redirect_2_does_not_go_directly_to_get",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "n==2 is one above the n==1 boundary"
+        ],
+        "actions": [
+          "GET /redirect/2 with follow_redirects=False"
+        ],
+        "expected": [
+          "Response status code is 302",
+          "Location header does NOT end with /get (it should point to /redirect/1)"
+        ],
+        "trace": [
+          "R-HTTPBIN-022: n==2 (boundary+1) must NOT go directly to /get \u2014 catches off-by-one mutation n==1 -> n==2"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_2_does_not_go_directly_to_get():\n    r = client.get('/redirect/2', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers.get('Location', '')\n    assert not location.endswith('/get'), (\n        f'n==2 should NOT redirect directly to /get, got Location: {location}'\n    )\n    assert '/redirect/' in location or location != '/get', (\n        f'n==2 should chain through another redirect, got: {location}'\n    )\n\ntest_redirect_2_does_not_go_directly_to_get()"
+      },
+      {
+        "name": "test_redirect_1_location_header_exact_path",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "absolute query param is absent (defaults to false)"
+        ],
+        "actions": [
+          "GET /redirect/1 without absolute param, follow_redirects=False"
+        ],
+        "expected": [
+          "Location header is exactly '/get' (relative URL, not absolute)"
+        ],
+        "trace": [
+          "R-HTTPBIN-022: default relative redirect \u2014 Location must be /get not http://localhost/get"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_1_location_header_exact_path():\n    r = client.get('/redirect/1', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers.get('Location', '')\n    assert location == '/get', (\n        f'Expected Location to be exactly \"/get\", got: \"{location}\"'\n    )\n\ntest_redirect_1_location_header_exact_path()"
+      },
+      {
+        "name": "test_redirect_1_absolute_true_location_is_absolute_url",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "absolute=true query param is provided"
+        ],
+        "actions": [
+          "GET /redirect/1?absolute=true with follow_redirects=False"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header starts with 'http' (absolute URL)",
+          "Location header ends with '/get'"
+        ],
+        "trace": [
+          "R-HTTPBIN-022: absolute=true branch \u2014 url_for('view_get', _external=True) produces absolute URL"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_1_absolute_true_location_is_absolute_url():\n    r = client.get('/redirect/1?absolute=true', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers.get('Location', '')\n    assert location.startswith('http'), (\n        f'Expected absolute URL starting with http, got: \"{location}\"'\n    )\n    assert location.endswith('/get'), (\n        f'Expected Location ending with /get, got: \"{location}\"'\n    )\n\ntest_redirect_1_absolute_true_location_is_absolute_url()"
+      },
+      {
+        "name": "test_redirect_0_returns_500_or_error",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "n==0 violates the assert n > 0 precondition in redirect_n_times"
+        ],
+        "actions": [
+          "GET /redirect/0 with follow_redirects=False"
+        ],
+        "expected": [
+          "Response status code is 500 (AssertionError triggers internal server error)",
+          "Response is NOT 302"
+        ],
+        "trace": [
+          "R-HTTPBIN-022: n==0 is below boundary \u2014 assert n > 0 fires; catches mutation n > 0 -> n >= 0"
+        ],
+        "executable": "from httpbin.core import app\napp.config['TESTING'] = False\nclient = app.test_client()\n\ndef test_redirect_0_returns_500_or_error():\n    r = client.get('/redirect/0', follow_redirects=False)\n    assert r.status_code == 500, (\n        f'Expected 500 for n==0 (assert n>0 should fire), got: {r.status_code}'\n    )\n    assert r.status_code != 302\n\ntest_redirect_0_returns_500_or_error()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-022",
+  "domain": "http_utilities",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9470,
+    "output_tokens": 3267,
+    "latency_ms": 40891,
+    "wall_ms": 40891,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-022\",\n  \"reasoning\": \"The requirement states that GET /redirect/1 must issue exactly one 302 redirect to /get, and the final response (after following the redirect) must be HTTP 200 with the expected JSON payload. We need: (1) a positive test confirming the 302 + Location header and the final 200 payload; (2) a boundary test at n==1 (the exact threshold where the code branches to url_for('view_get') instead of _redirect()); (3) a negative test confirming that without redirect-following the raw response is 302 (not 200, not 301, not 303); (4) a state-transition test confirming the redirect chain terminates in exactly one hop; (5) a decision-table test confirming the Location header points to /get and not some other path. These together kill off-by-one mutations (n==1 vs n==0 or n==2), status-code mutations (302->301, 302->303), and Location-value mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_redirect_1_returns_302_with_location_to_get\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"GET /redirect/1 endpoint is registered\"\n      ],\n      \"actions\": [\n        \"Create Flask test client with follow_redirects=False\",\n        \"GET /redirect/1\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header ends with /get\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-022: single 302 to /get when n==1\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_1_returns_302_with_location_to_get():\\n    r = client.get('/redirect/1', follow_redirects=False)\\n    assert r.status_code == 302\\n    location = r.headers.get('Location', '')\\n    assert location.endswith('/get'), f'Expected Location ending in /get, got: {location}'\\n\\ntest_redirect_1_returns_302_with_location_to_get()\"\n    },\n    {\n      \"name\": \"test_redirect_1_final_response_is_200_with_json_payload\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"GET /redirect/1 endpoint is registered\",\n        \"GET /get endpoint is registered\"\n      ],\n      \"actions\": [\n        \"Create Flask test client with follow_redirects=True\",\n        \"GET /redirect/1\"\n      ],\n      \"expected\": [\n        \"Final response status code is exactly 200\",\n        \"Response body is JSON containing keys: url, args, headers, origin\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-022: HTTP 2xx response with expected payload after redirect\"\n      ],\n      \"executable\": \"import json\\nfrom httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_1_final_response_is_200_with_json_payload():\\n    r = client.get('/redirect/1', follow_redirects=True)\\n    assert r.status_code == 200\\n    body = json.loads(r.data)\\n    assert 'url' in body\\n    assert 'args' in body\\n    assert 'headers' in body\\n    assert 'origin' in body\\n\\ntest_redirect_1_final_response_is_200_with_json_payload()\"\n    },\n    {\n      \"name\": \"test_redirect_1_status_is_not_301_or_303\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\"\n      ],\n      \"actions\": [\n        \"Create Flask test client with follow_redirects=False\",\n        \"GET /redirect/1\"\n      ],\n      \"expected\": [\n        \"Response status code is NOT 301\",\n        \"Response status code is NOT 303\",\n        \"Response status code is NOT 200\",\n        \"Response status code is exactly 302\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-022: must be 302, not any other redirect or success code\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_1_status_is_not_301_or_303():\\n    r = client.get('/redirect/1', follow_redirects=False)\\n    assert r.status_code != 301, 'Must not be 301 Moved Permanently'\\n    assert r.status_code != 303, "
+  }
+}

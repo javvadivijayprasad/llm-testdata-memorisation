@@ -1,0 +1,258 @@
+{
+  "req": {
+    "id": "R-TASK-024",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "startup",
+    "title": "Create schema on startup",
+    "statement": "The system shall create the tasks table via SQLAlchemy metadata at application startup.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "create schema on startup"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "lifecycle"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-024",
+    "reasoning": "R-TASK-024 requires that the tasks table is created via SQLAlchemy metadata at application startup. The key observable behaviour is: (1) after importing the app, the tasks table exists in the database and the root endpoint responds with HTTP 200 and the expected payload (positive/EP); (2) the tasks table is inspectable and contains the 'tasks' table name (positive/STC \u2014 schema state after startup); (3) a GET /tasks/ call immediately after startup returns HTTP 200 with a list (not a 500 from a missing table) \u2014 boundary: zero rows in a fresh in-memory DB (BVA); (4) a POST to /tasks/ with a valid payload succeeds with HTTP 201 proving the table is writable (positive/DT); (5) a POST with a missing required field (title=null) returns HTTP 422 proving schema validation is active (negative/NEG). All tests use an in-memory SQLite engine so they are isolated, deterministic, and idempotent.",
+    "tests": [
+      {
+        "name": "test_startup_root_endpoint_returns_200_and_exact_payload",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable",
+          "SQLAlchemy metadata.create_all runs at import time"
+        ],
+        "actions": [
+          "Import app from app.main",
+          "Create TestClient",
+          "GET /"
+        ],
+        "expected": [
+          "HTTP 200",
+          "JSON body contains message, docs, version with exact values"
+        ],
+        "trace": [
+          "R-TASK-024: schema created at startup enables the app to serve requests"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_root_endpoint_returns_200_and_exact_payload():\n    client = TestClient(app)\n    r = client.get(\"/\")\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"message\"] == \"Welcome to Task Manager API\"\n    assert body[\"docs\"] == \"/docs\"\n    assert body[\"version\"] == \"1.0.0\"\n\ntest_startup_root_endpoint_returns_200_and_exact_payload()"
+      },
+      {
+        "name": "test_startup_tasks_table_exists_in_engine",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "app.database.engine is the engine used by the app",
+          "models.Base.metadata.create_all has been called at import"
+        ],
+        "actions": [
+          "Import engine from app.database",
+          "Import inspect from sqlalchemy",
+          "Call inspect(engine).get_table_names()"
+        ],
+        "expected": [
+          "'tasks' is in the list of table names",
+          "Exactly one table named 'tasks' exists"
+        ],
+        "trace": [
+          "R-TASK-024: tasks table created via SQLAlchemy metadata at startup"
+        ],
+        "executable": "from sqlalchemy import inspect as sa_inspect\nfrom app.database import engine\nfrom app.main import app  # ensure startup side-effects have run\n\ndef test_startup_tasks_table_exists_in_engine():\n    inspector = sa_inspect(engine)\n    table_names = inspector.get_table_names()\n    assert \"tasks\" in table_names\n    assert table_names.count(\"tasks\") == 1\n\ntest_startup_tasks_table_exists_in_engine()"
+      },
+      {
+        "name": "test_startup_tasks_table_columns_match_model",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "app.database.engine is the engine used by the app",
+          "models.Base.metadata.create_all has been called at import"
+        ],
+        "actions": [
+          "Import engine from app.database",
+          "Inspect columns of the tasks table"
+        ],
+        "expected": [
+          "Columns id, title, description, completed, created_at, updated_at all present"
+        ],
+        "trace": [
+          "R-TASK-024: schema created at startup must match the Task model definition"
+        ],
+        "executable": "from sqlalchemy import inspect as sa_inspect\nfrom app.database import engine\nfrom app.main import app  # trigger startup\n\ndef test_startup_tasks_table_columns_match_model():\n    inspector = sa_inspect(engine)\n    cols = {c[\"name\"] for c in inspector.get_columns(\"tasks\")}\n    expected = {\"id\", \"title\", \"description\", \"completed\", \"created_at\", \"updated_at\"}\n    assert cols == expected\n\ntest_startup_tasks_table_columns_match_model()"
+      },
+      {
+        "name": "test_startup_get_tasks_returns_200_list_immediately",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App started; tasks table exists (may be empty in fresh in-memory DB)"
+        ],
+        "actions": [
+          "GET /tasks/ with no query params immediately after startup"
+        ],
+        "expected": [
+          "HTTP 200 (not 500 from missing table)",
+          "Response body is a JSON array"
+        ],
+        "trace": [
+          "R-TASK-024: table must exist at startup so first request does not 500"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_get_tasks_returns_200_list_immediately():\n    client = TestClient(app)\n    r = client.get(\"/tasks/\")\n    assert r.status_code == 200\n    body = r.json()\n    assert isinstance(body, list)\n\ntest_startup_get_tasks_returns_200_list_immediately()"
+      },
+      {
+        "name": "test_startup_post_task_succeeds_proving_table_writable",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "tasks table created at startup",
+          "Valid TaskCreate payload available"
+        ],
+        "actions": [
+          "POST /tasks/ with title='Buy groceries', description='A', completed=true"
+        ],
+        "expected": [
+          "HTTP 201",
+          "Response contains id (int), title='Buy groceries', description='A', completed=true",
+          "created_at is present"
+        ],
+        "trace": [
+          "R-TASK-024: writable table proves schema was created correctly at startup"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_post_task_succeeds_proving_table_writable():\n    client = TestClient(app)\n    payload = {\"title\": \"Buy groceries\", \"description\": \"A\", \"completed\": True}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert isinstance(body[\"id\"], int)\n    assert body[\"title\"] == \"Buy groceries\"\n    assert body[\"description\"] == \"A\"\n    assert body[\"completed\"] is True\n    assert \"created_at\" in body\n\ntest_startup_post_task_succeeds_proving_table_writable()"
+      },
+      {
+        "name": "test_startup_post_task_null_title_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "tasks table created at startup",
+          "Invalid payload: title is null (violates NOT NULL constraint)"
+        ],
+        "actions": [
+          "POST /tasks/ with title=null, description='some text', completed=true"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (Pydantic validation rejects null title)",
+          "Response body contains 'detail' key"
+        ],
+        "trace": [
+          "R-TASK-024 error pathway: HTTP 4xx on client error; null title is invalid"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_post_task_null_title_returns_422():\n    client = TestClient(app)\n    payload = {\"title\": None, \"description\": \"Signal pulse ember orbit harbor.\", \"completed\": True}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_startup_post_task_null_title_returns_422()"
+      },
+      {
+        "name": "test_startup_post_task_title_exceeds_max_length_returns_422",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "tasks table created at startup",
+          "Invalid payload: title length 101 chars (max is 100)"
+        ],
+        "actions": [
+          "POST /tasks/ with title of 101 characters"
+        ],
+        "expected": [
+          "HTTP 422 \u2014 title exceeds max_length=100"
+        ],
+        "trace": [
+          "R-TASK-024 error pathway: HTTP 4xx on client error; BVA at max_length boundary+1"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_post_task_title_exceeds_max_length_returns_422():\n    client = TestClient(app)\n    long_title = \"X\" * 101  # max_length=100, so 101 must be rejected\n    payload = {\"title\": long_title, \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_startup_post_task_title_exceeds_max_length_returns_422()"
+      },
+      {
+        "name": "test_startup_post_task_title_at_max_length_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "tasks table created at startup",
+          "Valid payload: title length exactly 100 chars (at max boundary)"
+        ],
+        "actions": [
+          "POST /tasks/ with title of exactly 100 characters"
+        ],
+        "expected": [
+          "HTTP 201 \u2014 title at max_length=100 is accepted",
+          "Response title equals the 100-char string"
+        ],
+        "trace": [
+          "R-TASK-024: BVA at max_length boundary; catches off-by-one mutation on max_length constant"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_post_task_title_at_max_length_accepted():\n    client = TestClient(app)\n    exact_title = \"X\" * 100  # exactly at max_length=100\n    payload = {\"title\": exact_title, \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == exact_title\n    assert len(body[\"title\"]) == 100\n\ntest_startup_post_task_title_at_max_length_accepted()"
+      },
+      {
+        "name": "test_startup_post_task_description_exceeds_500_chars_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "tasks table created at startup",
+          "Invalid payload: description length 510 chars (max is 500)"
+        ],
+        "actions": [
+          "POST /tasks/ with description of 510 characters"
+        ],
+        "expected": [
+          "HTTP 422 \u2014 description exceeds max_length=500"
+        ],
+        "trace": [
+          "R-TASK-024 error pathway: HTTP 4xx on client error; NEG on description max_length"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_post_task_description_exceeds_500_chars_returns_422():\n    client = TestClient(app)\n    long_desc = \"X\" * 510  # max_length=500, so 510 must be rejected\n    payload = {\"title\": \"Fix login bug\", \"description\": long_desc, \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_startup_post_task_description_exceeds_500_chars_returns_422()"
+      },
+      {
+        "name": "test_startup_metadata_create_all_idempotent_second_import",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "app already imported (create_all already called)",
+          "Calling create_all again must not raise"
+        ],
+        "actions": [
+          "Call models.Base.metadata.create_all(bind=engine) a second time explicitly",
+          "Inspect table names again"
+        ],
+        "expected": [
+          "No exception raised",
+          "'tasks' still in table names after second create_all call"
+        ],
+        "trace": [
+          "R-TASK-024: create_all is idempotent; repeated startup must not corrupt schema"
+        ],
+        "executable": "from sqlalchemy import inspect as sa_inspect\nfrom app.database import engine\nfrom app import models\nfrom app.main import app  # first create_all\n\ndef test_startup_metadata_create_all_idempotent_second_import():\n    # Second explicit call must not raise\n    models.Base.metadata.create_all(bind=engine)\n    inspector = sa_inspect(engine)\n    table_names = inspector.get_table_names()\n    assert \"tasks\" in table_names\n    assert table_names.count(\"tasks\") == 1\n\ntest_startup_metadata_create_all_idempotent_second_import()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-024",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7563,
+    "output_tokens": 3790,
+    "latency_ms": 48688,
+    "wall_ms": 48688,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-024\",\n  \"reasoning\": \"R-TASK-024 requires that the tasks table is created via SQLAlchemy metadata at application startup. The key observable behaviour is: (1) after importing the app, the tasks table exists in the database and the root endpoint responds with HTTP 200 and the expected payload (positive/EP); (2) the tasks table is inspectable and contains the 'tasks' table name (positive/STC \u2014 schema state after startup); (3) a GET /tasks/ call immediately after startup returns HTTP 200 with a list (not a 500 from a missing table) \u2014 boundary: zero rows in a fresh in-memory DB (BVA); (4) a POST to /tasks/ with a valid payload succeeds with HTTP 201 proving the table is writable (positive/DT); (5) a POST with a missing required field (title=null) returns HTTP 422 proving schema validation is active (negative/NEG). All tests use an in-memory SQLite engine so they are isolated, deterministic, and idempotent.\",\n  \"tests\": [\n    {\n      \"name\": \"test_startup_root_endpoint_returns_200_and_exact_payload\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable\",\n        \"SQLAlchemy metadata.create_all runs at import time\"\n      ],\n      \"actions\": [\n        \"Import app from app.main\",\n        \"Create TestClient\",\n        \"GET /\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"JSON body contains message, docs, version with exact values\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: schema created at startup enables the app to serve requests\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_startup_root_endpoint_returns_200_and_exact_payload():\\n    client = TestClient(app)\\n    r = client.get(\\\"/\\\")\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body[\\\"message\\\"] == \\\"Welcome to Task Manager API\\\"\\n    assert body[\\\"docs\\\"] == \\\"/docs\\\"\\n    assert body[\\\"version\\\"] == \\\"1.0.0\\\"\\n\\ntest_startup_root_endpoint_returns_200_and_exact_payload()\"\n    },\n    {\n      \"name\": \"test_startup_tasks_table_exists_in_engine\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"app.database.engine is the engine used by the app\",\n        \"models.Base.metadata.create_all has been called at import\"\n      ],\n      \"actions\": [\n        \"Import engine from app.database\",\n        \"Import inspect from sqlalchemy\",\n        \"Call inspect(engine).get_table_names()\"\n      ],\n      \"expected\": [\n        \"'tasks' is in the list of table names\",\n        \"Exactly one table named 'tasks' exists\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: tasks table created via SQLAlchemy metadata at startup\"\n      ],\n      \"executable\": \"from sqlalchemy import inspect as sa_inspect\\nfrom app.database import engine\\nfrom app.main import app  # ensure startup side-effects have run\\n\\ndef test_startup_tasks_table_exists_in_engine():\\n    inspector = sa_inspect(engine)\\n    table_names = inspector.get_table_names()\\n    assert \\\"tasks\\\" in table_names\\n    assert table_names.count(\\\"tasks\\\") == 1\\n\\ntest_startup_tasks_table_exists_in_engine()\"\n    },\n    {\n      \"name\": \"test_startup_tasks_table_columns_match_model\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"app.database.engine is the engine used by the app\",\n        \"models.Base.metadata.create_all has been called at import\"\n      ],\n      \"actions\": [\n        \"Import engine from app.database\",\n        \"Inspect columns of the tasks table\"\n      ],\n      \"expected\": [\n        \"Columns id, title, description, completed, created_at, updated_at all present\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: schema created at startup must match the Task model definition\"\n      ],\n      \"executable\": \"from sqlalchemy import inspect as sa_inspect\\nfrom app.database import engine\\nfrom app.main import app  # trigger startup\\n\\ndef test_startup_tasks_table_columns_match_model():\\n    inspec"
+  }
+}

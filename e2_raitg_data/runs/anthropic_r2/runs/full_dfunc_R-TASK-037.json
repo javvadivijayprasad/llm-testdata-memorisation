@@ -1,0 +1,194 @@
+{
+  "req": {
+    "id": "R-TASK-037",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Task title trimmed of whitespace",
+    "statement": "The system shall trim leading and trailing whitespace from the title on POST /tasks/.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task title trimmed of whitespace"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-037",
+    "reasoning": "R-TASK-037 requires that POST /tasks/ trims leading and trailing whitespace from the task title before persisting it. The test suite covers: (1) EP positive \u2014 a title with leading+trailing spaces is stored trimmed; (2) EP positive \u2014 a title with only internal spaces is NOT trimmed (only leading/trailing); (3) NEG negative \u2014 a title that is only whitespace becomes empty after trimming and should be rejected (4xx); (4) BVA boundary \u2014 a title padded with spaces to exactly max_length (100) after trimming is accepted; (5) BVA boundary \u2014 a title whose trimmed form exceeds max_length is rejected. Each test imports the app in-process, uses TestClient, and asserts exact values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_post_task_trims_leading_and_trailing_whitespace",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is initialised with pre-loaded rows"
+        ],
+        "actions": [
+          "POST /tasks/ with title '   Buy milk   ' (leading and trailing spaces)"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' equals 'Buy milk' (trimmed)"
+        ],
+        "trace": [
+          "R-TASK-037: system shall trim leading and trailing whitespace from title"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, engine\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_post_task_trims_leading_and_trailing_whitespace():\n    payload = {\"title\": \"   Buy milk   \", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == \"Buy milk\"\n\ntest_post_task_trims_leading_and_trailing_whitespace()"
+      },
+      {
+        "name": "test_post_task_preserves_internal_spaces",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is initialised with pre-loaded rows"
+        ],
+        "actions": [
+          "POST /tasks/ with title '  Buy fresh milk  ' which has internal spaces"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' equals 'Buy fresh milk' \u2014 internal spaces preserved, only leading/trailing removed"
+        ],
+        "trace": [
+          "R-TASK-037: trim is limited to leading and trailing whitespace; internal spaces must be preserved"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, engine\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_post_task_preserves_internal_spaces():\n    payload = {\"title\": \"  Buy fresh milk  \", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == \"Buy fresh milk\"\n    assert \"  \" not in body[\"title\"].strip()\n    assert body[\"title\"] == body[\"title\"].strip()\n\ntest_post_task_preserves_internal_spaces()"
+      },
+      {
+        "name": "test_post_task_whitespace_only_title_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is initialised with pre-loaded rows"
+        ],
+        "actions": [
+          "POST /tasks/ with title '     ' (only whitespace characters)"
+        ],
+        "expected": [
+          "HTTP 4xx response (422 Unprocessable Entity) because trimmed title is empty, violating min_length=1"
+        ],
+        "trace": [
+          "R-TASK-037: after trimming, an all-whitespace title becomes empty string which violates min_length=1 constraint in TaskBase schema"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, engine\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_post_task_whitespace_only_title_rejected():\n    payload = {\"title\": \"     \", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_post_task_whitespace_only_title_rejected()"
+      },
+      {
+        "name": "test_post_task_title_trimmed_to_exactly_max_length_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is initialised with pre-loaded rows",
+          "max_length for title is 100 characters"
+        ],
+        "actions": [
+          "POST /tasks/ with title that is 100 'a' characters padded with 3 leading and 3 trailing spaces (total 106 chars raw)"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' is exactly 100 'a' characters (trimmed to max boundary)"
+        ],
+        "trace": [
+          "R-TASK-037: trimming must happen before length validation; BVA at max_length=100 boundary"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, engine\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_post_task_title_trimmed_to_exactly_max_length_accepted():\n    core = \"a\" * 100\n    padded = \"   \" + core + \"   \"\n    assert len(padded) == 106\n    payload = {\"title\": padded, \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == core\n    assert len(body[\"title\"]) == 100\n\ntest_post_task_title_trimmed_to_exactly_max_length_accepted()"
+      },
+      {
+        "name": "test_post_task_title_trimmed_exceeds_max_length_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is initialised with pre-loaded rows",
+          "max_length for title is 100 characters"
+        ],
+        "actions": [
+          "POST /tasks/ with title that is 101 'b' characters padded with spaces (trimmed form is 101 chars, exceeds max_length=100)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity because trimmed title length 101 exceeds max_length=100"
+        ],
+        "trace": [
+          "R-TASK-037: BVA at max_length+1=101; trimming does not rescue an over-length core title"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, engine\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_post_task_title_trimmed_exceeds_max_length_rejected():\n    core = \"b\" * 101\n    padded = \"  \" + core + \"  \"\n    assert len(core) == 101\n    payload = {\"title\": padded, \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_post_task_title_trimmed_exceeds_max_length_rejected()"
+      },
+      {
+        "name": "test_post_task_tab_and_newline_trimmed",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is initialised with pre-loaded rows"
+        ],
+        "actions": [
+          "POST /tasks/ with title '\\tCall the bank\\n' (tab prefix, newline suffix)"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' equals 'Call the bank' \u2014 tab and newline stripped"
+        ],
+        "trace": [
+          "R-TASK-037: whitespace includes tab and newline characters; EP covers non-space whitespace variants"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, engine\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_post_task_tab_and_newline_trimmed():\n    payload = {\"title\": \"\\tCall the bank\\n\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == \"Call the bank\"\n    assert body[\"title\"] == body[\"title\"].strip()\n\ntest_post_task_tab_and_newline_trimmed()"
+      },
+      {
+        "name": "test_post_task_no_whitespace_title_unchanged",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is initialised with pre-loaded rows"
+        ],
+        "actions": [
+          "POST /tasks/ with title 'Fix login bug' (no leading or trailing whitespace)"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' equals exactly 'Fix login bug' \u2014 unchanged by trim"
+        ],
+        "trace": [
+          "R-TASK-037: DT \u2014 when no whitespace is present, trim is a no-op; title must be stored verbatim"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, engine\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_post_task_no_whitespace_title_unchanged():\n    payload = {\"title\": \"Fix login bug\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == \"Fix login bug\"\n    assert len(body[\"title\"]) == 13\n\ntest_post_task_no_whitespace_title_unchanged()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-037",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5654,
+    "output_tokens": 3048,
+    "latency_ms": 38543,
+    "wall_ms": 38543,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-037\",\n  \"reasoning\": \"R-TASK-037 requires that POST /tasks/ trims leading and trailing whitespace from the task title before persisting it. The test suite covers: (1) EP positive \u2014 a title with leading+trailing spaces is stored trimmed; (2) EP positive \u2014 a title with only internal spaces is NOT trimmed (only leading/trailing); (3) NEG negative \u2014 a title that is only whitespace becomes empty after trimming and should be rejected (4xx); (4) BVA boundary \u2014 a title padded with spaces to exactly max_length (100) after trimming is accepted; (5) BVA boundary \u2014 a title whose trimmed form exceeds max_length is rejected. Each test imports the app in-process, uses TestClient, and asserts exact values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_post_task_trims_leading_and_trailing_whitespace\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is initialised with pre-loaded rows\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title '   Buy milk   ' (leading and trailing spaces)\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response JSON field 'title' equals 'Buy milk' (trimmed)\"\n      ],\n      \"trace\": [\n        \"R-TASK-037: system shall trim leading and trailing whitespace from title\"\n      ],\n      \"executable\": \"import os, tempfile\\nfrom fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import Base, engine\\n\\nBase.metadata.create_all(bind=engine)\\nclient = TestClient(app)\\n\\ndef test_post_task_trims_leading_and_trailing_whitespace():\\n    payload = {\\\"title\\\": \\\"   Buy milk   \\\", \\\"completed\\\": False}\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body[\\\"title\\\"] == \\\"Buy milk\\\"\\n\\ntest_post_task_trims_leading_and_trailing_whitespace()\"\n    },\n    {\n      \"name\": \"test_post_task_preserves_internal_spaces\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is initialised with pre-loaded rows\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title '  Buy fresh milk  ' which has internal spaces\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response JSON field 'title' equals 'Buy fresh milk' \u2014 internal spaces preserved, only leading/trailing removed\"\n      ],\n      \"trace\": [\n        \"R-TASK-037: trim is limited to leading and trailing whitespace; internal spaces must be preserved\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import Base, engine\\n\\nBase.metadata.create_all(bind=engine)\\nclient = TestClient(app)\\n\\ndef test_post_task_preserves_internal_spaces():\\n    payload = {\\\"title\\\": \\\"  Buy fresh milk  \\\", \\\"completed\\\": False}\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body[\\\"title\\\"] == \\\"Buy fresh milk\\\"\\n    assert \\\"  \\\" not in body[\\\"title\\\"].strip()\\n    assert body[\\\"title\\\"] == body[\\\"title\\\"].strip()\\n\\ntest_post_task_preserves_internal_spaces()\"\n    },\n    {\n      \"name\": \"test_post_task_whitespace_only_title_rejected\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is initialised with pre-loaded rows\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title '     ' (only whitespace characters)\"\n      ],\n      \"expected\": [\n        \"HTTP 4xx response (422 Unprocessable Entity) because trimmed title is empty, violating min_length=1\"\n      ],\n      \"trace\": [\n        \"R-TASK-037: after trimming, an all-whitespace title becomes empty string which violates min_length=1 constraint in TaskBase schema\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import "
+  }
+}

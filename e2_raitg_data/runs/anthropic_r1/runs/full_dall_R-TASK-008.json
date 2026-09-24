@@ -1,0 +1,200 @@
+{
+  "req": {
+    "id": "R-TASK-008",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Retrieve task by id",
+    "statement": "The system shall respond to GET /tasks/{task_id} with the corresponding task object.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "retrieve task by id"
+    ],
+    "expected_outcomes": [
+      "HTTP 200"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-008",
+    "reasoning": "The suite covers: (1) EP positive \u2014 retrieve a known existing task and assert every field exactly; (2) NEG \u2014 retrieve a non-existent task_id and assert HTTP 404 with exact detail message; (3) BVA \u2014 retrieve task_id=1 (lowest boundary) and task_id=20 (highest boundary) to catch off-by-one mutations in ID filtering; (4) NEG \u2014 supply a non-integer task_id (string) to assert HTTP 422 unprocessable entity; (5) DT \u2014 retrieve a task where completed=true and one where completed=false to assert the boolean field is returned correctly (catches boolean negation mutations); (6) BVA \u2014 request task_id=0 (below minimum valid id) to assert 404, and task_id=21 (above seeded max) to assert 404, catching boundary mutations in the NOT FOUND path. All tests use in-process FastAPI TestClient with a fresh SQLite DB seeded from the fixture data, exact-value assertions on status codes and response body fields.",
+    "tests": [
+      {
+        "name": "test_get_task_existing_returns_200_with_exact_fields",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database seeded with 20 tasks as specified",
+          "Task id=2 exists with title='Book flight tickets', description='Delta willow vertex flux alpha orbit.', completed=true"
+        ],
+        "actions": [
+          "Send GET /tasks/2 via TestClient"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response JSON id==2",
+          "title=='Book flight tickets'",
+          "description=='Delta willow vertex flux alpha orbit.'",
+          "completed==true"
+        ],
+        "trace": [
+          "R-TASK-008: GET /tasks/{task_id} returns corresponding task object"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndb = TestingSessionLocal()\ndb.add(models.Task(id=2, title='Book flight tickets', description='Delta willow vertex flux alpha orbit.', completed=True))\ndb.commit()\ndb.close()\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_existing_returns_200_with_exact_fields():\n    r = client.get('/tasks/2')\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 2\n    assert body['title'] == 'Book flight tickets'\n    assert body['description'] == 'Delta willow vertex flux alpha orbit.'\n    assert body['completed'] == True\n\ntest_get_task_existing_returns_200_with_exact_fields()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_nonexistent_returns_404_with_detail",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database seeded; no task with id=9999 exists"
+        ],
+        "actions": [
+          "Send GET /tasks/9999 via TestClient"
+        ],
+        "expected": [
+          "HTTP 404",
+          "Response JSON detail contains 'Task with id 9999 not found'"
+        ],
+        "trace": [
+          "R-TASK-008: HTTP 4xx on client error (task not found)"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_neg.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_nonexistent_returns_404_with_detail():\n    r = client.get('/tasks/9999')\n    assert r.status_code == 404\n    body = r.json()\n    assert body['detail'] == 'Task with id 9999 not found'\n\ntest_get_task_nonexistent_returns_404_with_detail()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_boundary_id_1_and_20",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database seeded with tasks id=1 (title='Read chapter 5', completed=true) and id=20 (title='Reply to emails', completed=false)"
+        ],
+        "actions": [
+          "Send GET /tasks/1 via TestClient",
+          "Send GET /tasks/20 via TestClient"
+        ],
+        "expected": [
+          "GET /tasks/1 returns HTTP 200, id==1, title=='Read chapter 5', completed==true",
+          "GET /tasks/20 returns HTTP 200, id==20, title=='Reply to emails', completed==false"
+        ],
+        "trace": [
+          "R-TASK-008: boundary task IDs (min=1, max=20 in seed data) must be retrievable"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_bva.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndb = TestingSessionLocal()\ndb.add(models.Task(id=1, title='Read chapter 5', completed=True))\ndb.add(models.Task(id=20, title='Reply to emails', completed=False))\ndb.commit()\ndb.close()\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_boundary_id_1_and_20():\n    r1 = client.get('/tasks/1')\n    assert r1.status_code == 200\n    b1 = r1.json()\n    assert b1['id'] == 1\n    assert b1['title'] == 'Read chapter 5'\n    assert b1['completed'] == True\n    r20 = client.get('/tasks/20')\n    assert r20.status_code == 200\n    b20 = r20.json()\n    assert b20['id'] == 20\n    assert b20['title'] == 'Reply to emails'\n    assert b20['completed'] == False\n\ntest_get_task_boundary_id_1_and_20()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_invalid_string_id_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database available (empty is fine)",
+          "task_id path parameter must be an integer per schema"
+        ],
+        "actions": [
+          "Send GET /tasks/abc via TestClient"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (FastAPI validation error for non-integer path param)"
+        ],
+        "trace": [
+          "R-TASK-008: HTTP 4xx on client error \u2014 invalid type for task_id"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_422.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_invalid_string_id_returns_422():\n    r = client.get('/tasks/abc')\n    assert r.status_code == 422\n\ntest_get_task_invalid_string_id_returns_422()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_completed_true_and_false_boolean_fields",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task id=3 exists with completed=true",
+          "Task id=4 exists with completed=false"
+        ],
+        "actions": [
+          "Send GET /tasks/3 and assert completed==true",
+          "Send GET /tasks/4 and assert completed==false"
+        ],
+        "expected": [
+          "GET /tasks/3 returns completed==true exactly",
+          "GET /tasks/4 returns completed==false exactly"
+        ],
+        "trace": [
+          "R-TASK-008: task object must faithfully reflect completed boolean \u2014 catches boolean negation mutations"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_dt.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndb = TestingSessionLocal()\ndb.add(models.Task(id=3, title='Submit expense report', completed=True))\ndb.add(models.Task(id=4, title='Prepare meeting agenda', completed=False))\ndb.commit()\ndb.close()\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_completed_true_and_false_boolean_fields():\n    r3 = client.get('/tasks/3')\n    assert r3.status_code == 200\n    assert r3.json()['completed'] == True\n    r4 = client.get('/tasks/4')\n    assert r4.status_code == 200\n    assert r4.json()['completed'] == False\n\ntest_get_task_completed_true_and_false_boolean_fields()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_id_zero_and_above_max_return_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database seeded with tasks id 1..20 only",
+          "id=0 does not exist; id=21 does not exist"
+        ],
+        "actions": [
+          "Send GET /tasks/0 via TestClient",
+          "Send GET /tasks/21 via TestClient"
+        ],
+        "expected": [
+          "GET /tasks/0 returns HTTP 404 with detail 'Task with id 0 not found'",
+          "GET /tasks/21 returns HTTP 404 with detail 'Task with id 21 not found'"
+        ],
+        "trace": [
+          "R-TASK-008: boundary below min id and above max seeded id must return 404 \u2014 catches off-by-one mutations in filter"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_bva2.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndb = TestingSessionLocal()\nfor i in range(1, 21):\n    db.add(models.Task(id=i, title=f'Task {i}', completed=False))\ndb.commit()\ndb.close()\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_id_zero_and_above_max_return_404():\n    r0 = client.get('/tasks/0')\n    assert r0.status_code == 404\n    assert r0.json()['detail'] == 'Task with id 0 not found'\n    r21 = client.get('/tasks/21')\n    assert r21.status_code == 404\n    assert r21.json()['detail'] == 'Task with id 21 not found'\n\ntest_get_task_id_zero_and_above_max_return_404()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_task_response_contains_all_schema_fields",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task id=6 exists with title='Run unit tests', description=None (null), completed=false"
+        ],
+        "actions": [
+          "Send GET /tasks/6 via TestClient",
+          "Assert all schema fields present: id, title, description, completed, created_at, updated_at"
+        ],
+        "expected": [
+          "HTTP 200",
+          "id==6, title=='Run unit tests', description==None, completed==False",
+          "created_at is a non-empty string",
+          "updated_at key present in response"
+        ],
+        "trace": [
+          "R-TASK-008: response object must match schemas.Task \u2014 all fields present and typed correctly"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_schema.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndb = TestingSessionLocal()\ndb.add(models.Task(id=6, title='Run unit tests', description=None, completed=False))\ndb.commit()\ndb.close()\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_task_response_contains_all_schema_fields():\n    r = client.get('/tasks/6')\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 6\n    assert body['title'] == 'Run unit tests'\n    assert body['description'] is None\n    assert body['completed'] == False\n    assert 'created_at' in body\n    assert body['created_at'] is not None\n    assert 'updated_at' in body\n\ntest_get_task_response_contains_all_schema_fields()\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-008",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7568,
+    "output_tokens": 4833,
+    "latency_ms": 53692,
+    "wall_ms": 53692,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-008\",\n  \"reasoning\": \"The suite covers: (1) EP positive \u2014 retrieve a known existing task and assert every field exactly; (2) NEG \u2014 retrieve a non-existent task_id and assert HTTP 404 with exact detail message; (3) BVA \u2014 retrieve task_id=1 (lowest boundary) and task_id=20 (highest boundary) to catch off-by-one mutations in ID filtering; (4) NEG \u2014 supply a non-integer task_id (string) to assert HTTP 422 unprocessable entity; (5) DT \u2014 retrieve a task where completed=true and one where completed=false to assert the boolean field is returned correctly (catches boolean negation mutations); (6) BVA \u2014 request task_id=0 (below minimum valid id) to assert 404, and task_id=21 (above seeded max) to assert 404, catching boundary mutations in the NOT FOUND path. All tests use in-process FastAPI TestClient with a fresh SQLite DB seeded from the fixture data, exact-value assertions on status codes and response body fields.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_task_existing_returns_200_with_exact_fields\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database seeded with 20 tasks as specified\",\n        \"Task id=2 exists with title='Book flight tickets', description='Delta willow vertex flux alpha orbit.', completed=true\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/2 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response JSON id==2\",\n        \"title=='Book flight tickets'\",\n        \"description=='Delta willow vertex flux alpha orbit.'\",\n        \"completed==true\"\n      ],\n      \"trace\": [\n        \"R-TASK-008: GET /tasks/{task_id} returns corresponding task object\"\n      ],\n      \"executable\": \"import os, tempfile\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom app.database import get_db\\n\\ntmp = tempfile.mkdtemp()\\ndb_path = os.path.join(tmp, 'test.db')\\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\ndb = TestingSessionLocal()\\ndb.add(models.Task(id=2, title='Book flight tickets', description='Delta willow vertex flux alpha orbit.', completed=True))\\ndb.commit()\\ndb.close()\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_get_task_existing_returns_200_with_exact_fields():\\n    r = client.get('/tasks/2')\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body['id'] == 2\\n    assert body['title'] == 'Book flight tickets'\\n    assert body['description'] == 'Delta willow vertex flux alpha orbit.'\\n    assert body['completed'] == True\\n\\ntest_get_task_existing_returns_200_with_exact_fields()\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_get_task_nonexistent_returns_404_with_detail\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database seeded; no task with id=9999 exists\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/9999 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 404\",\n        \"Response JSON detail contains 'Task with id 9999 not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-008: HTTP 4xx on client error (task not found)\"\n      ],\n      \"executable\": \"import os, tempfile\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom app.database import get_db\\n\\ntmp = tempfile.mkdtemp()\\ndb_path = os.path.join(tmp, 'test_neg.db')\\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\\nTestingSessionLocal = sessionmaker("
+  }
+}

@@ -1,0 +1,165 @@
+{
+  "req": {
+    "id": "R-TASK-024",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "startup",
+    "title": "Create schema on startup",
+    "statement": "The system shall create the tasks table via SQLAlchemy metadata at application startup.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "create schema on startup"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "lifecycle"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-024",
+    "reasoning": "R-TASK-024 requires that the tasks table is created via SQLAlchemy metadata at application startup. The primary observable effect is that the app is reachable (HTTP 2xx on root) and that CRUD endpoints work immediately after startup without manual schema migration. Tests cover: (1) positive \u2014 root endpoint returns 200 with exact payload after startup, confirming the app initialised correctly; (2) positive \u2014 POST /tasks/ returns 201 immediately after startup, proving the tasks table exists; (3) negative \u2014 verifying that a malformed task POST returns 422 (client error), not a 500 that would indicate a missing table or broken schema; (4) boundary \u2014 the tasks table is empty at startup (zero rows), and GET /tasks/ returns an empty list with status 200, not a 500 from a missing table.",
+    "tests": [
+      {
+        "name": "test_startup_root_returns_200_with_exact_payload",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is imported in-process",
+          "models.Base.metadata.create_all runs at module import time"
+        ],
+        "actions": [
+          "Import app from app.main",
+          "Create TestClient",
+          "GET /"
+        ],
+        "expected": [
+          "HTTP 200",
+          "JSON body matches exact welcome payload"
+        ],
+        "trace": [
+          "R-TASK-024: schema created at startup => app is reachable => root returns 200"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_root_returns_200_with_exact_payload():\n    client = TestClient(app)\n    r = client.get(\"/\")\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"message\"] == \"Welcome to Task Manager API\"\n    assert body[\"docs\"] == \"/docs\"\n    assert body[\"version\"] == \"1.0.0\"\n    assert len(body) == 3\n"
+      },
+      {
+        "name": "test_startup_tasks_table_exists_post_returns_201",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created by metadata.create_all at startup"
+        ],
+        "actions": [
+          "Import app from app.main",
+          "Create TestClient",
+          "POST /tasks/ with valid payload immediately after startup"
+        ],
+        "expected": [
+          "HTTP 201 (not 500 from missing table)",
+          "Response JSON contains id, title, description, completed=false, created_at"
+        ],
+        "trace": [
+          "R-TASK-024: tasks table must exist at startup for POST to succeed with 201"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_tasks_table_exists_post_returns_201():\n    client = TestClient(app)\n    payload = {\"title\": \"startup task\", \"description\": \"created at startup\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == \"startup task\"\n    assert body[\"description\"] == \"created at startup\"\n    assert body[\"completed\"] == False\n    assert \"id\" in body\n    assert isinstance(body[\"id\"], int)\n    assert \"created_at\" in body\n    assert body[\"updated_at\"] is None\n"
+      },
+      {
+        "name": "test_startup_empty_table_get_tasks_returns_200_empty_list",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table is empty at startup (zero rows)"
+        ],
+        "actions": [
+          "Import app from app.main",
+          "Create TestClient",
+          "GET /tasks/ immediately after startup with no data inserted"
+        ],
+        "expected": [
+          "HTTP 200 (not 500 from missing table)",
+          "Response JSON is exactly an empty list []"
+        ],
+        "trace": [
+          "R-TASK-024: table exists but is empty => GET returns [] with 200, not 500"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_empty_table_get_tasks_returns_200_empty_list():\n    client = TestClient(app)\n    r = client.get(\"/tasks/\")\n    assert r.status_code == 200\n    body = r.json()\n    assert body == []\n    assert isinstance(body, list)\n    assert len(body) == 0\n"
+      },
+      {
+        "name": "test_startup_malformed_task_returns_422_not_500",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup"
+        ],
+        "actions": [
+          "Import app from app.main",
+          "Create TestClient",
+          "POST /tasks/ with missing required 'title' field"
+        ],
+        "expected": [
+          "HTTP 422 (client validation error, not 500 server error)",
+          "Response body contains 'detail' key"
+        ],
+        "trace": [
+          "R-TASK-024: if table were missing, server would 500; 422 proves schema exists and validation layer is reached"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_malformed_task_returns_422_not_500():\n    client = TestClient(app)\n    r = client.post(\"/tasks/\", json={\"description\": \"no title\"})\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n    assert isinstance(body[\"detail\"], list)\n    assert len(body[\"detail\"]) >= 1\n"
+      },
+      {
+        "name": "test_startup_schema_allows_full_task_roundtrip",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup via metadata.create_all"
+        ],
+        "actions": [
+          "POST a task with all fields",
+          "GET the task by returned id",
+          "Assert all fields match exactly"
+        ],
+        "expected": [
+          "POST returns 201 with correct fields",
+          "GET by id returns 200 with identical field values"
+        ],
+        "trace": [
+          "R-TASK-024: full roundtrip proves table schema (all columns) was created correctly at startup"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_schema_allows_full_task_roundtrip():\n    client = TestClient(app)\n    payload = {\"title\": \"roundtrip\", \"description\": \"desc\", \"completed\": True}\n    r_post = client.post(\"/tasks/\", json=payload)\n    assert r_post.status_code == 201\n    created = r_post.json()\n    task_id = created[\"id\"]\n    assert created[\"title\"] == \"roundtrip\"\n    assert created[\"description\"] == \"desc\"\n    assert created[\"completed\"] == True\n    r_get = client.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 200\n    fetched = r_get.json()\n    assert fetched[\"id\"] == task_id\n    assert fetched[\"title\"] == \"roundtrip\"\n    assert fetched[\"description\"] == \"desc\"\n    assert fetched[\"completed\"] == True\n    assert fetched[\"created_at\"] == created[\"created_at\"]\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-024",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4850,
+    "output_tokens": 2151,
+    "latency_ms": 29003,
+    "wall_ms": 29003,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-024\",\n  \"reasoning\": \"R-TASK-024 requires that the tasks table is created via SQLAlchemy metadata at application startup. The primary observable effect is that the app is reachable (HTTP 2xx on root) and that CRUD endpoints work immediately after startup without manual schema migration. Tests cover: (1) positive \u2014 root endpoint returns 200 with exact payload after startup, confirming the app initialised correctly; (2) positive \u2014 POST /tasks/ returns 201 immediately after startup, proving the tasks table exists; (3) negative \u2014 verifying that a malformed task POST returns 422 (client error), not a 500 that would indicate a missing table or broken schema; (4) boundary \u2014 the tasks table is empty at startup (zero rows), and GET /tasks/ returns an empty list with status 200, not a 500 from a missing table.\",\n  \"tests\": [\n    {\n      \"name\": \"test_startup_root_returns_200_with_exact_payload\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is imported in-process\",\n        \"models.Base.metadata.create_all runs at module import time\"\n      ],\n      \"actions\": [\n        \"Import app from app.main\",\n        \"Create TestClient\",\n        \"GET /\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"JSON body matches exact welcome payload\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: schema created at startup => app is reachable => root returns 200\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_startup_root_returns_200_with_exact_payload():\\n    client = TestClient(app)\\n    r = client.get(\\\"/\\\")\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body[\\\"message\\\"] == \\\"Welcome to Task Manager API\\\"\\n    assert body[\\\"docs\\\"] == \\\"/docs\\\"\\n    assert body[\\\"version\\\"] == \\\"1.0.0\\\"\\n    assert len(body) == 3\\n\"\n    },\n    {\n      \"name\": \"test_startup_tasks_table_exists_post_returns_201\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"FastAPI app imported in-process\",\n        \"tasks table created by metadata.create_all at startup\"\n      ],\n      \"actions\": [\n        \"Import app from app.main\",\n        \"Create TestClient\",\n        \"POST /tasks/ with valid payload immediately after startup\"\n      ],\n      \"expected\": [\n        \"HTTP 201 (not 500 from missing table)\",\n        \"Response JSON contains id, title, description, completed=false, created_at\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: tasks table must exist at startup for POST to succeed with 201\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_startup_tasks_table_exists_post_returns_201():\\n    client = TestClient(app)\\n    payload = {\\\"title\\\": \\\"startup task\\\", \\\"description\\\": \\\"created at startup\\\", \\\"completed\\\": False}\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body[\\\"title\\\"] == \\\"startup task\\\"\\n    assert body[\\\"description\\\"] == \\\"created at startup\\\"\\n    assert body[\\\"completed\\\"] == False\\n    assert \\\"id\\\" in body\\n    assert isinstance(body[\\\"id\\\"], int)\\n    assert \\\"created_at\\\" in body\\n    assert body[\\\"updated_at\\\"] is None\\n\"\n    },\n    {\n      \"name\": \"test_startup_empty_table_get_tasks_returns_200_empty_list\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app imported in-process\",\n        \"tasks table is empty at startup (zero rows)\"\n      ],\n      \"actions\": [\n        \"Import app from app.main\",\n        \"Create TestClient\",\n        \"GET /tasks/ immediately after startup with no data inserted\"\n      ],\n      \"expected\": [\n        \"HTTP 200 (not 500 from missing table)\",\n        \"Response JSON is exactly an empty list []\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: table exists but is empty => GET returns [] with 200, not 500\"\n      ],\n      \"executable\": \"from fastapi.test"
+  }
+}

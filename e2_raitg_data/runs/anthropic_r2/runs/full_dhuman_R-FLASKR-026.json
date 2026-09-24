@@ -1,0 +1,181 @@
+{
+  "req": {
+    "id": "R-FLASKR-026",
+    "domain": "blogging",
+    "layer": "Integration",
+    "category": "db_conn",
+    "title": "Close db connection after request",
+    "statement": "The system shall close the sqlite3 connection at the end of every request via teardown_appcontext.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "close db connection after request"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-026",
+    "reasoning": "R-FLASKR-026 requires that the sqlite3 connection is closed after every request via teardown_appcontext. The key mechanism is: init_app() registers close_db with app.teardown_appcontext; close_db() pops 'db' from g and calls db.close(). Tests must verify: (1) positive \u2014 after a request that opens a DB connection, the connection is closed (g has no 'db' key after teardown); (2) negative \u2014 if no DB was opened during a request, close_db is still called safely (no error, g.pop returns None); (3) boundary \u2014 the teardown fires exactly once per request context, not zero or multiple times. We instrument close_db via unittest.mock.patch to count calls and verify the connection lifecycle. We also verify the HTTP response is 2xx to confirm the request completed normally.",
+    "tests": [
+      {
+        "name": "test_db_closed_after_request_that_opens_connection",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp DATABASE path",
+          "Database initialized with init_db()",
+          "teardown_appcontext registered via init_app()"
+        ],
+        "actions": [
+          "Patch flaskr.db.close_db to wrap the real close_db and track calls",
+          "Make GET / request which triggers get_db() inside blog.index",
+          "Verify close_db was called exactly once after the request"
+        ],
+        "expected": [
+          "HTTP 200 response from GET /",
+          "close_db called exactly 1 time after request teardown",
+          "The db connection object passed to close_db is closed (db.close() invoked)"
+        ],
+        "trace": [
+          "R-FLASKR-026: teardown_appcontext fires close_db after every request",
+          "flaskr/db.py: close_db pops g.db and calls db.close()",
+          "flaskr/db.py: init_app registers close_db with teardown_appcontext"
+        ],
+        "executable": "import tempfile, os\nfrom unittest.mock import patch, call\nfrom flaskr import create_app\nfrom flaskr.db import init_db, close_db as real_close_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\ncall_count = []\n\ndef tracking_close_db(e=None):\n    call_count.append(1)\n    real_close_db(e)\n\nwith patch('flaskr.db.close_db', side_effect=tracking_close_db) as mock_cd:\n    app.teardown_appcontext_funcs.clear()\n    app.teardown_appcontext(tracking_close_db)\n    client = app.test_client()\n    r = client.get('/')\n    assert r.status_code == 200\n    assert len(call_count) == 1\n\nos.unlink(path)\n\ndef test_db_closed_after_request_that_opens_connection():\n    fd2, path2 = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd2)\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\n    with app2.app_context():\n        init_db()\n    calls = []\n    orig = real_close_db\n    def spy(e=None):\n        calls.append(1)\n        orig(e)\n    app2.teardown_appcontext_funcs.clear()\n    app2.teardown_appcontext(spy)\n    c = app2.test_client()\n    resp = c.get('/')\n    assert resp.status_code == 200\n    assert len(calls) == 1\n    os.unlink(path2)\n"
+      },
+      {
+        "name": "test_close_db_safe_when_no_db_opened_in_request",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Flask app created with TESTING=True",
+          "A request is made to an endpoint that does NOT call get_db()",
+          "teardown_appcontext still fires close_db"
+        ],
+        "actions": [
+          "Make GET /hello request (no DB access in that view)",
+          "Verify close_db is called without raising an exception",
+          "Verify g.pop('db', None) returns None (no connection was stored)"
+        ],
+        "expected": [
+          "HTTP 200 response with body 'Hello, World!'",
+          "close_db executes without error even when g has no 'db' key",
+          "No exception propagated to the client"
+        ],
+        "trace": [
+          "R-FLASKR-026: teardown fires on every request, even those without DB usage",
+          "flaskr/db.py: close_db uses g.pop('db', None) \u2014 safe when key absent",
+          "flaskr/__init__.py: /hello route does not call get_db()"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, close_db as real_close_db\n\ndef test_close_db_safe_when_no_db_opened_in_request():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    errors = []\n    calls = []\n    def spy(e=None):\n        try:\n            real_close_db(e)\n            calls.append('ok')\n        except Exception as ex:\n            errors.append(str(ex))\n    app.teardown_appcontext_funcs.clear()\n    app.teardown_appcontext(spy)\n    client = app.test_client()\n    resp = client.get('/hello')\n    assert resp.status_code == 200\n    assert resp.data == b'Hello, World!'\n    assert errors == []\n    assert len(calls) == 1\n    assert calls[0] == 'ok'\n    os.unlink(path)\n"
+      },
+      {
+        "name": "test_close_db_called_exactly_once_per_request_not_zero_not_two",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask app created with TESTING=True and initialized DB",
+          "teardown_appcontext registered exactly once via init_app"
+        ],
+        "actions": [
+          "Make two sequential requests to GET /",
+          "Count close_db invocations per request",
+          "Assert each request triggers exactly 1 teardown call (boundary: not 0, not 2)"
+        ],
+        "expected": [
+          "First request: close_db called exactly 1 time",
+          "Second request: close_db called exactly 1 time (cumulative = 2)",
+          "Total across two requests = 2, confirming per-request teardown"
+        ],
+        "trace": [
+          "R-FLASKR-026: teardown_appcontext fires once per app context (one per request)",
+          "BVA boundary: exactly 1 call per request \u2014 catches mutations removing or doubling the registration"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, close_db as real_close_db\n\ndef test_close_db_called_exactly_once_per_request_not_zero_not_two():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    call_log = []\n    def spy(e=None):\n        call_log.append(len(call_log) + 1)\n        real_close_db(e)\n    app.teardown_appcontext_funcs.clear()\n    app.teardown_appcontext(spy)\n    client = app.test_client()\n    resp1 = client.get('/')\n    assert resp1.status_code == 200\n    assert len(call_log) == 1\n    resp2 = client.get('/')\n    assert resp2.status_code == 200\n    assert len(call_log) == 2\n    assert call_log[0] == 1\n    assert call_log[1] == 2\n    os.unlink(path)\n"
+      },
+      {
+        "name": "test_db_connection_is_actually_closed_after_request",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Flask app created with TESTING=True and initialized DB",
+          "A request is made that opens a DB connection via get_db()"
+        ],
+        "actions": [
+          "Capture the sqlite3 connection object during the request via get_db()",
+          "After the request context exits, attempt to use the captured connection",
+          "Verify the connection is closed (ProgrammingError on use)"
+        ],
+        "expected": [
+          "HTTP 200 response from GET /",
+          "After teardown, the captured sqlite3.Connection raises ProgrammingError when used",
+          "This confirms db.close() was actually called, not just g.pop()"
+        ],
+        "trace": [
+          "R-FLASKR-026: close_db calls db.close() on the connection object",
+          "STC: state transition from OPEN to CLOSED verified by attempting post-close operation",
+          "flaskr/db.py: close_db \u2014 db.close() must be called, not just g.pop()"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\ndef test_db_connection_is_actually_closed_after_request():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    captured = []\n    original_get_db = get_db\n    import flaskr.db as db_module\n    original = db_module.get_db\n    def capturing_get_db():\n        conn = original()\n        if not captured:\n            captured.append(conn)\n        return conn\n    db_module.get_db = capturing_get_db\n    try:\n        client = app.test_client()\n        resp = client.get('/')\n        assert resp.status_code == 200\n    finally:\n        db_module.get_db = original\n    assert len(captured) == 1\n    conn = captured[0]\n    raised = False\n    try:\n        conn.execute('SELECT 1')\n    except Exception:\n        raised = True\n    assert raised is True\n    os.unlink(path)\n"
+      },
+      {
+        "name": "test_teardown_registered_via_init_app_not_missing",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Flask app created with TESTING=True",
+          "init_app(app) called as part of create_app"
+        ],
+        "actions": [
+          "Inspect app.teardown_appcontext_funcs to confirm close_db is registered",
+          "Verify the registered function is exactly flaskr.db.close_db",
+          "Make a request and confirm no 5xx error occurs"
+        ],
+        "expected": [
+          "close_db appears in teardown_appcontext_funcs",
+          "GET /hello returns exactly 200 with body b'Hello, World!'",
+          "No server error (5xx) occurs"
+        ],
+        "trace": [
+          "R-FLASKR-026: init_app must call app.teardown_appcontext(close_db)",
+          "DT: decision \u2014 if registration is missing, teardown never fires; test catches that mutation",
+          "flaskr/db.py: init_app \u2014 app.teardown_appcontext(close_db)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import close_db\n\ndef test_teardown_registered_via_init_app_not_missing():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    funcs = app.teardown_appcontext_funcs\n    assert len(funcs) >= 1\n    func_names = [f.__name__ for f in funcs]\n    assert 'close_db' in func_names\n    close_db_registered = any(f is close_db or f.__name__ == 'close_db' for f in funcs)\n    assert close_db_registered is True\n    client = app.test_client()\n    resp = client.get('/hello')\n    assert resp.status_code == 200\n    assert resp.data == b'Hello, World!'\n    os.unlink(path)\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-026",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5461,
+    "output_tokens": 3534,
+    "latency_ms": 47252,
+    "wall_ms": 47252,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-026\",\n  \"reasoning\": \"R-FLASKR-026 requires that the sqlite3 connection is closed after every request via teardown_appcontext. The key mechanism is: init_app() registers close_db with app.teardown_appcontext; close_db() pops 'db' from g and calls db.close(). Tests must verify: (1) positive \u2014 after a request that opens a DB connection, the connection is closed (g has no 'db' key after teardown); (2) negative \u2014 if no DB was opened during a request, close_db is still called safely (no error, g.pop returns None); (3) boundary \u2014 the teardown fires exactly once per request context, not zero or multiple times. We instrument close_db via unittest.mock.patch to count calls and verify the connection lifecycle. We also verify the HTTP response is 2xx to confirm the request completed normally.\",\n  \"tests\": [\n    {\n      \"name\": \"test_db_closed_after_request_that_opens_connection\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp DATABASE path\",\n        \"Database initialized with init_db()\",\n        \"teardown_appcontext registered via init_app()\"\n      ],\n      \"actions\": [\n        \"Patch flaskr.db.close_db to wrap the real close_db and track calls\",\n        \"Make GET / request which triggers get_db() inside blog.index\",\n        \"Verify close_db was called exactly once after the request\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response from GET /\",\n        \"close_db called exactly 1 time after request teardown\",\n        \"The db connection object passed to close_db is closed (db.close() invoked)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-026: teardown_appcontext fires close_db after every request\",\n        \"flaskr/db.py: close_db pops g.db and calls db.close()\",\n        \"flaskr/db.py: init_app registers close_db with teardown_appcontext\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom unittest.mock import patch, call\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db, close_db as real_close_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\ncall_count = []\\n\\ndef tracking_close_db(e=None):\\n    call_count.append(1)\\n    real_close_db(e)\\n\\nwith patch('flaskr.db.close_db', side_effect=tracking_close_db) as mock_cd:\\n    app.teardown_appcontext_funcs.clear()\\n    app.teardown_appcontext(tracking_close_db)\\n    client = app.test_client()\\n    r = client.get('/')\\n    assert r.status_code == 200\\n    assert len(call_count) == 1\\n\\nos.unlink(path)\\n\\ndef test_db_closed_after_request_that_opens_connection():\\n    fd2, path2 = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd2)\\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\\n    with app2.app_context():\\n        init_db()\\n    calls = []\\n    orig = real_close_db\\n    def spy(e=None):\\n        calls.append(1)\\n        orig(e)\\n    app2.teardown_appcontext_funcs.clear()\\n    app2.teardown_appcontext(spy)\\n    c = app2.test_client()\\n    resp = c.get('/')\\n    assert resp.status_code == 200\\n    assert len(calls) == 1\\n    os.unlink(path2)\\n\"\n    },\n    {\n      \"name\": \"test_close_db_safe_when_no_db_opened_in_request\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True\",\n        \"A request is made to an endpoint that does NOT call get_db()\",\n        \"teardown_appcontext still fires close_db\"\n      ],\n      \"actions\": [\n        \"Make GET /hello request (no DB access in that view)\",\n        \"Verify close_db is called without raising an exception\",\n        \"Verify g.pop('db', None) returns None (no connection was stored)\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response with body 'Hello, World!'\",\n        \"close_db executes without error even when g has no 'db' key\",\n        \"No exception propagated to the client\"\n      ],\n      \"trace\": [\n        \"R-"
+  }
+}

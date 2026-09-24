@@ -1,0 +1,180 @@
+{
+  "req": {
+    "id": "R-FLASKR-020",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "authz",
+    "title": "Delete only by author",
+    "statement": "The system shall respond with HTTP 403 Forbidden when a user attempts to delete a post they did not author.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete only by author"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 403"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /<id>/delete"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-020",
+    "reasoning": "The requirement states that only the author of a post may delete it; any other authenticated user must receive HTTP 403. Three test cases are designed: (1) Positive \u2013 the actual author (user 'test', id=1) deletes post id=1 and receives a 2xx/redirect response; (2) Negative \u2013 a different authenticated user ('other', id=2) attempts to delete post id=1 and must receive exactly HTTP 403; (3) Boundary \u2013 an unauthenticated (anonymous) client attempts to delete post id=1 and must be redirected to login (302), confirming the login_required guard fires before the authz check. Together these cover the EP partition of author vs non-author, the NEG path for the 403 branch, and the STC state of unauthenticated\u2192login redirect as a boundary state transition. Exact status codes are asserted to kill comparison-operator and constant mutations.",
+    "tests": [
+      {
+        "name": "test_author_can_delete_own_post",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains post id=1 authored by user id=1 (username='test')",
+          "User 'test' is authenticated in the session"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/delete"
+        ],
+        "expected": [
+          "HTTP 302 redirect (successful delete redirects to index)",
+          "Location header equals '/'"
+        ],
+        "trace": [
+          "R-FLASKR-020: author is permitted; delete succeeds with redirect"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_author_can_delete_own_post():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    r = client.post('/1/delete')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n\ntest_author_can_delete_own_post()"
+      },
+      {
+        "name": "test_non_author_delete_returns_403",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains post id=1 authored by user id=1 (username='test')",
+          "User 'other' (id=2) is authenticated \u2014 they are NOT the author of post 1"
+        ],
+        "actions": [
+          "POST /auth/login with username='other', password='other'",
+          "POST /1/delete"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden \u2014 exactly 403, not 200, 302, or 404"
+        ],
+        "trace": [
+          "R-FLASKR-020: non-author must receive HTTP 403",
+          "blog.get_post checks post['author_id'] != g.user['id'] and calls abort(403)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_non_author_delete_returns_403():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'other', 'password': 'other'})\n    assert r.status_code == 302\n    r = client.post('/1/delete')\n    assert r.status_code == 403\n\ntest_non_author_delete_returns_403()"
+      },
+      {
+        "name": "test_unauthenticated_delete_redirects_to_login",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database contains post id=1",
+          "No user is logged in (anonymous session)"
+        ],
+        "actions": [
+          "POST /1/delete without any prior login"
+        ],
+        "expected": [
+          "HTTP 302 redirect to /auth/login (login_required guard fires)",
+          "Status code is exactly 302, not 403 or 200"
+        ],
+        "trace": [
+          "R-FLASKR-020: boundary state \u2014 unauthenticated user cannot reach authz check; login_required redirects first"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_unauthenticated_delete_redirects_to_login():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/1/delete')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'\n\ntest_unauthenticated_delete_redirects_to_login()"
+      },
+      {
+        "name": "test_non_author_delete_does_not_delete_post",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database contains post id=1 authored by user id=1",
+          "User 'other' (id=2) is authenticated"
+        ],
+        "actions": [
+          "POST /auth/login with username='other', password='other'",
+          "POST /1/delete",
+          "GET / to verify post still exists in index"
+        ],
+        "expected": [
+          "HTTP 403 on delete attempt",
+          "Post 'test title' still appears in the index page after the failed delete"
+        ],
+        "trace": [
+          "R-FLASKR-020: 403 must also mean the post was NOT deleted \u2014 tests side-effect absence"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_non_author_delete_does_not_delete_post():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'other', 'password': 'other'})\n    assert r.status_code == 302\n    r = client.post('/1/delete')\n    assert r.status_code == 403\n    r = client.get('/')\n    assert r.status_code == 200\n    assert b'test title' in r.data\n\ntest_non_author_delete_does_not_delete_post()"
+      },
+      {
+        "name": "test_author_delete_post_no_longer_in_index",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database contains post id=1 authored by user id=1 (username='test')",
+          "User 'test' is authenticated"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/delete",
+          "GET / to verify post is gone"
+        ],
+        "expected": [
+          "HTTP 302 on delete",
+          "Post 'test title' no longer appears in the index page"
+        ],
+        "trace": [
+          "R-FLASKR-020: successful delete by author removes the post \u2014 confirms 2xx path and side-effect"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_author_delete_post_no_longer_in_index():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    r = client.post('/1/delete')\n    assert r.status_code == 302\n    r = client.get('/')\n    assert r.status_code == 200\n    assert b'test title' not in r.data\n\ntest_author_delete_post_no_longer_in_index()"
+      },
+      {
+        "name": "test_delete_nonexistent_post_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains only post id=1",
+          "User 'test' is authenticated"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /2/delete (post id=2 does not exist)"
+        ],
+        "expected": [
+          "HTTP 404 Not Found \u2014 exactly 404, not 403 or 200"
+        ],
+        "trace": [
+          "R-FLASKR-020: boundary \u2014 id just beyond existing range; get_post aborts 404 before authz check"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_delete_nonexistent_post_returns_404():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    r = client.post('/2/delete')\n    assert r.status_code == 404\n\ntest_delete_nonexistent_post_returns_404()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-020",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5452,
+    "output_tokens": 2811,
+    "latency_ms": 34891,
+    "wall_ms": 34891,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-020\",\n  \"reasoning\": \"The requirement states that only the author of a post may delete it; any other authenticated user must receive HTTP 403. Three test cases are designed: (1) Positive \u2013 the actual author (user 'test', id=1) deletes post id=1 and receives a 2xx/redirect response; (2) Negative \u2013 a different authenticated user ('other', id=2) attempts to delete post id=1 and must receive exactly HTTP 403; (3) Boundary \u2013 an unauthenticated (anonymous) client attempts to delete post id=1 and must be redirected to login (302), confirming the login_required guard fires before the authz check. Together these cover the EP partition of author vs non-author, the NEG path for the 403 branch, and the STC state of unauthenticated\u2192login redirect as a boundary state transition. Exact status codes are asserted to kill comparison-operator and constant mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_author_can_delete_own_post\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains post id=1 authored by user id=1 (username='test')\",\n        \"User 'test' is authenticated in the session\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='test', password='test'\",\n        \"POST /1/delete\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect (successful delete redirects to index)\",\n        \"Location header equals '/'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-020: author is permitted; delete succeeds with redirect\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_author_can_delete_own_post():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\\n    assert r.status_code == 302\\n    r = client.post('/1/delete')\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/'\\n\\ntest_author_can_delete_own_post()\"\n    },\n    {\n      \"name\": \"test_non_author_delete_returns_403\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database contains post id=1 authored by user id=1 (username='test')\",\n        \"User 'other' (id=2) is authenticated \u2014 they are NOT the author of post 1\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='other', password='other'\",\n        \"POST /1/delete\"\n      ],\n      \"expected\": [\n        \"HTTP 403 Forbidden \u2014 exactly 403, not 200, 302, or 404\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-020: non-author must receive HTTP 403\",\n        \"blog.get_post checks post['author_id'] != g.user['id'] and calls abort(403)\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_non_author_delete_returns_403():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'other', 'password': 'other'})\\n    assert r.status_code == 302\\n    r = client.post('/1/delete')\\n    assert r.status_code == 403\\n\\ntest_non_author_delete_returns_403()\"\n    },\n    {\n      \"name\": \"test_unauthenticated_delete_redirects_to_login\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Database contains post id=1\",\n        \"No user is logged in (anonymous session)\"\n      ],\n      \"actions\": [\n        \"POST /1/delete without any prior login\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect to /auth/login (login_required guard fires)\",\n        \"Status code is exactly 302, not 403 or 200\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-020: boundary state \u2014 unauthenticated user cannot reach aut"
+  }
+}

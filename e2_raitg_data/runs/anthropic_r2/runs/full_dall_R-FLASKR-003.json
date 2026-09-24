@@ -1,0 +1,240 @@
+{
+  "req": {
+    "id": "R-FLASKR-003",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Register new user",
+    "statement": "The system shall create a new user with a hashed password when POST /auth/register receives a unique username and non-empty password, then redirect to /auth/login.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "register new user"
+    ],
+    "expected_outcomes": [
+      "302 redirect to /auth/login"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /auth/register"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-003",
+    "reasoning": "The requirement covers POST /auth/register creating a new user with hashed password and redirecting to /auth/login. I designed tests covering: (1) positive EP \u2014 valid unique username+password yields 302 to /auth/login and persists hashed password in DB; (2) negative NEG \u2014 empty username yields error message, no redirect; (3) negative NEG \u2014 empty password yields error message, no redirect; (4) negative DT \u2014 duplicate username yields 'already registered' error; (5) BVA boundary \u2014 single-character username and password (minimum non-empty); (6) STC \u2014 verifying state transition: user absent before register, present after; (7) DT \u2014 both username and password empty yields username error (short-circuit). Each test uses exact assertions to kill comparison, constant, and boolean mutations.",
+    "tests": [
+      {
+        "name": "test_register_valid_unique_user_redirects_to_login",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Fresh database with pre-loaded users (Rahul, Anjali, Ishaan, Diya, James)",
+          "Username 'Kiara' does not exist in the database"
+        ],
+        "actions": [
+          "POST /auth/register with username='Kiara' and password='river'"
+        ],
+        "expected": [
+          "HTTP 302 redirect",
+          "Location header equals '/auth/login'",
+          "User 'Kiara' exists in the database with a hashed password"
+        ],
+        "trace": [
+          "R-FLASKR-003: unique username + non-empty password -> 302 redirect to /auth/login"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nr = client.post('/auth/register', data={'username': 'Kiara', 'password': 'river'})\nassert r.status_code == 302\nassert r.headers['Location'] == '/auth/login'\n\nwith app.app_context():\n    db = get_db()\n    user = db.execute(\"SELECT * FROM user WHERE username = ?\", ('Kiara',)).fetchone()\nassert user is not None\nassert user['username'] == 'Kiara'\nassert user['password'] != 'river'\nassert user['password'].startswith('scrypt:') or user['password'].startswith('pbkdf2:')\nos.unlink(path)"
+      },
+      {
+        "name": "test_register_empty_username_returns_error_not_redirect",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Fresh database initialised"
+        ],
+        "actions": [
+          "POST /auth/register with username='' and password='river'"
+        ],
+        "expected": [
+          "HTTP 200 (no redirect)",
+          "Response body contains 'Username is required.'"
+        ],
+        "trace": [
+          "R-FLASKR-003: empty username -> error pathway, no user created"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nr = client.post('/auth/register', data={'username': '', 'password': 'river'})\nassert r.status_code == 200\nassert b'Username is required.' in r.data\nassert r.headers.get('Location') is None\nos.unlink(path)"
+      },
+      {
+        "name": "test_register_empty_password_returns_error_not_redirect",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Fresh database initialised",
+          "Username 'Vikram' does not exist"
+        ],
+        "actions": [
+          "POST /auth/register with username='Vikram' and password=''"
+        ],
+        "expected": [
+          "HTTP 200 (no redirect)",
+          "Response body contains 'Password is required.'",
+          "No user 'Vikram' created in the database"
+        ],
+        "trace": [
+          "R-FLASKR-003: non-empty username but empty password -> error pathway"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nr = client.post('/auth/register', data={'username': 'Vikram', 'password': ''})\nassert r.status_code == 200\nassert b'Password is required.' in r.data\nassert r.headers.get('Location') is None\n\nwith app.app_context():\n    db = get_db()\n    user = db.execute(\"SELECT * FROM user WHERE username = ?\", ('Vikram',)).fetchone()\nassert user is None\nos.unlink(path)"
+      },
+      {
+        "name": "test_register_duplicate_username_returns_already_registered_error",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Fresh database initialised",
+          "User 'Rahul' already exists in the pre-loaded data"
+        ],
+        "actions": [
+          "POST /auth/register with username='Rahul' and password='newpass'"
+        ],
+        "expected": [
+          "HTTP 200 (no redirect)",
+          "Response body contains 'Rahul is already registered.'"
+        ],
+        "trace": [
+          "R-FLASKR-003: duplicate username -> IntegrityError -> flash error, no redirect"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n    from flaskr.db import get_db\n    db = get_db()\n    from werkzeug.security import generate_password_hash\n    db.execute(\"INSERT INTO user (username, password) VALUES (?, ?)\",\n               ('Rahul', generate_password_hash('stone')))\n    db.commit()\n\nclient = app.test_client()\nr = client.post('/auth/register', data={'username': 'Rahul', 'password': 'newpass'})\nassert r.status_code == 200\nassert b'Rahul is already registered.' in r.data\nassert r.headers.get('Location') is None\nos.unlink(path)"
+      },
+      {
+        "name": "test_register_single_char_username_and_password_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Fresh database initialised",
+          "Single-character username 'A' does not exist"
+        ],
+        "actions": [
+          "POST /auth/register with username='A' and password='B' (minimum non-empty length)"
+        ],
+        "expected": [
+          "HTTP 302 redirect",
+          "Location header equals '/auth/login'",
+          "User 'A' persisted in database with hashed password"
+        ],
+        "trace": [
+          "R-FLASKR-003: BVA minimum non-empty boundary for both fields -> success path"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nr = client.post('/auth/register', data={'username': 'A', 'password': 'B'})\nassert r.status_code == 302\nassert r.headers['Location'] == '/auth/login'\n\nwith app.app_context():\n    db = get_db()\n    user = db.execute(\"SELECT * FROM user WHERE username = ?\", ('A',)).fetchone()\nassert user is not None\nassert user['username'] == 'A'\nassert user['password'] != 'B'\nos.unlink(path)"
+      },
+      {
+        "name": "test_register_state_transition_user_absent_then_present",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Fresh database initialised",
+          "Username 'Vikram' does not exist before registration"
+        ],
+        "actions": [
+          "Verify 'Vikram' absent in DB",
+          "POST /auth/register with username='Vikram' and password='cloud'",
+          "Verify 'Vikram' present in DB with hashed password"
+        ],
+        "expected": [
+          "Before: user row for 'Vikram' is None",
+          "After: HTTP 302, Location='/auth/login', user row exists with hashed password != 'cloud'"
+        ],
+        "trace": [
+          "R-FLASKR-003: state transition from unregistered to registered"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n    db = get_db()\n    before = db.execute(\"SELECT * FROM user WHERE username = ?\", ('Vikram',)).fetchone()\nassert before is None\n\nclient = app.test_client()\nr = client.post('/auth/register', data={'username': 'Vikram', 'password': 'cloud'})\nassert r.status_code == 302\nassert r.headers['Location'] == '/auth/login'\n\nwith app.app_context():\n    db = get_db()\n    after = db.execute(\"SELECT * FROM user WHERE username = ?\", ('Vikram',)).fetchone()\nassert after is not None\nassert after['username'] == 'Vikram'\nassert after['password'] != 'cloud'\nos.unlink(path)"
+      },
+      {
+        "name": "test_register_both_fields_empty_shows_username_error",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Fresh database initialised"
+        ],
+        "actions": [
+          "POST /auth/register with username='' and password='' (both empty)"
+        ],
+        "expected": [
+          "HTTP 200 (no redirect)",
+          "Response body contains 'Username is required.' (username check fires first)",
+          "Response body does NOT contain 'Password is required.'"
+        ],
+        "trace": [
+          "R-FLASKR-003: DT row \u2014 both fields empty; username guard short-circuits before password guard"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nr = client.post('/auth/register', data={'username': '', 'password': ''})\nassert r.status_code == 200\nassert b'Username is required.' in r.data\nassert b'Password is required.' not in r.data\nassert r.headers.get('Location') is None\nos.unlink(path)"
+      },
+      {
+        "name": "test_register_get_request_returns_200_not_redirect",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Fresh database initialised"
+        ],
+        "actions": [
+          "GET /auth/register"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body contains the registration form (no redirect)"
+        ],
+        "trace": [
+          "R-FLASKR-003: GET method should render form, not trigger registration logic"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nr = client.get('/auth/register')\nassert r.status_code == 200\nassert r.headers.get('Location') is None\nassert b'register' in r.data.lower()\nos.unlink(path)"
+      },
+      {
+        "name": "test_register_password_is_hashed_not_plaintext",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Fresh database initialised",
+          "Username 'Ishaan2' does not exist"
+        ],
+        "actions": [
+          "POST /auth/register with username='Ishaan2' and password='flame'",
+          "Query database for stored password"
+        ],
+        "expected": [
+          "HTTP 302",
+          "Stored password != 'flame' (plaintext)",
+          "Stored password can be verified with check_password_hash"
+        ],
+        "trace": [
+          "R-FLASKR-003: password must be hashed, not stored in plaintext"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\nfrom werkzeug.security import check_password_hash\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nr = client.post('/auth/register', data={'username': 'Ishaan2', 'password': 'flame'})\nassert r.status_code == 302\nassert r.headers['Location'] == '/auth/login'\n\nwith app.app_context():\n    db = get_db()\n    user = db.execute(\"SELECT * FROM user WHERE username = ?\", ('Ishaan2',)).fetchone()\nassert user is not None\nassert user['password'] != 'flame'\nassert check_password_hash(user['password'], 'flame') is True\nassert check_password_hash(user['password'], 'wrongpass') is False\nos.unlink(path)"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-003",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8465,
+    "output_tokens": 4125,
+    "latency_ms": 46675,
+    "wall_ms": 46675,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-003\",\n  \"reasoning\": \"The requirement covers POST /auth/register creating a new user with hashed password and redirecting to /auth/login. I designed tests covering: (1) positive EP \u2014 valid unique username+password yields 302 to /auth/login and persists hashed password in DB; (2) negative NEG \u2014 empty username yields error message, no redirect; (3) negative NEG \u2014 empty password yields error message, no redirect; (4) negative DT \u2014 duplicate username yields 'already registered' error; (5) BVA boundary \u2014 single-character username and password (minimum non-empty); (6) STC \u2014 verifying state transition: user absent before register, present after; (7) DT \u2014 both username and password empty yields username error (short-circuit). Each test uses exact assertions to kill comparison, constant, and boolean mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_register_valid_unique_user_redirects_to_login\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Fresh database with pre-loaded users (Rahul, Anjali, Ishaan, Diya, James)\",\n        \"Username 'Kiara' does not exist in the database\"\n      ],\n      \"actions\": [\n        \"POST /auth/register with username='Kiara' and password='river'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect\",\n        \"Location header equals '/auth/login'\",\n        \"User 'Kiara' exists in the database with a hashed password\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-003: unique username + non-empty password -> 302 redirect to /auth/login\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\nr = client.post('/auth/register', data={'username': 'Kiara', 'password': 'river'})\\nassert r.status_code == 302\\nassert r.headers['Location'] == '/auth/login'\\n\\nwith app.app_context():\\n    db = get_db()\\n    user = db.execute(\\\"SELECT * FROM user WHERE username = ?\\\", ('Kiara',)).fetchone()\\nassert user is not None\\nassert user['username'] == 'Kiara'\\nassert user['password'] != 'river'\\nassert user['password'].startswith('scrypt:') or user['password'].startswith('pbkdf2:')\\nos.unlink(path)\"\n    },\n    {\n      \"name\": \"test_register_empty_username_returns_error_not_redirect\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Fresh database initialised\"\n      ],\n      \"actions\": [\n        \"POST /auth/register with username='' and password='river'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 (no redirect)\",\n        \"Response body contains 'Username is required.'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-003: empty username -> error pathway, no user created\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\nr = client.post('/auth/register', data={'username': '', 'password': 'river'})\\nassert r.status_code == 200\\nassert b'Username is required.' in r.data\\nassert r.headers.get('Location') is None\\nos.unlink(path)\"\n    },\n    {\n      \"name\": \"test_register_empty_password_returns_error_not_redirect\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Fresh database initialised\",\n        \"Username 'Vikram' does not exist\"\n      ],\n      \"actions\": [\n        \"POST /auth/register with username='Vikram' and password=''\"\n      ],\n      \"expected\": [\n        \"HTTP 200 (no redirect)\",\n        \"Response body contains 'Password is required.'\",\n        \"No user 'Vikram' created in the database\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-003: non-empty username but"
+  }
+}

@@ -1,0 +1,186 @@
+{
+  "req": {
+    "id": "R-TASK-034",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Task ids are monotonically increasing",
+    "statement": "The system shall assign strictly increasing integer ids to newly created tasks.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task ids are monotonically increasing"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-034",
+    "reasoning": "The requirement states that task ids must be strictly increasing integers. To verify this, we need: (1) a positive test confirming two consecutive creates yield id_n+1 > id_n, (2) a boundary test confirming the first new id is exactly 21 (one above the 20 pre-loaded rows), and (3) a negative/state-transition test confirming that after creating multiple tasks the sequence is strictly monotonic (no ties, no reversals). Additional tests cover exact arithmetic of the increment (+1 each time) and that the id field is an integer, catching arithmetic-mutation and type-mutation operators.",
+    "tests": [
+      {
+        "name": "test_two_consecutive_creates_yield_strictly_increasing_ids",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows (ids 1-20)",
+          "POST /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ with valid payload to create task A",
+          "POST /tasks/ with valid payload to create task B"
+        ],
+        "expected": [
+          "Both responses return HTTP 201",
+          "id of task B is strictly greater than id of task A",
+          "id of task B equals id of task A plus exactly 1"
+        ],
+        "trace": [
+          "R-TASK-034: strictly increasing integer ids"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_two_consecutive_creates_yield_strictly_increasing_ids():\n    payload_a = {\"title\": \"Task Alpha\", \"description\": \"desc a\", \"completed\": False}\n    payload_b = {\"title\": \"Task Beta\", \"description\": \"desc b\", \"completed\": False}\n    r_a = client.post(\"/tasks/\", json=payload_a)\n    assert r_a.status_code == 201\n    r_b = client.post(\"/tasks/\", json=payload_b)\n    assert r_b.status_code == 201\n    id_a = r_a.json()[\"id\"]\n    id_b = r_b.json()[\"id\"]\n    assert isinstance(id_a, int)\n    assert isinstance(id_b, int)\n    assert id_b > id_a\n    assert id_b == id_a + 1\n"
+      },
+      {
+        "name": "test_first_new_task_id_is_exactly_21",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows (ids 1-20)",
+          "No additional tasks have been created in this test"
+        ],
+        "actions": [
+          "POST /tasks/ with a valid payload"
+        ],
+        "expected": [
+          "Response status is exactly 201",
+          "Returned id is exactly 21 (one above the highest pre-loaded id of 20)"
+        ],
+        "trace": [
+          "R-TASK-034: strictly increasing integer ids",
+          "BVA: boundary at max pre-loaded id (20) + 1 = 21"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_first_new_task_id_is_exactly_21():\n    payload = {\"title\": \"Boundary Task\", \"description\": \"boundary\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"id\"] == 21\n    assert body[\"title\"] == \"Boundary Task\"\n"
+      },
+      {
+        "name": "test_sequence_of_five_creates_is_strictly_monotonic",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows (ids 1-20)"
+        ],
+        "actions": [
+          "POST /tasks/ five times in sequence with distinct valid payloads",
+          "Collect all returned ids"
+        ],
+        "expected": [
+          "All five responses return HTTP 201",
+          "Each successive id is exactly 1 greater than the previous",
+          "The ids form the sequence [21, 22, 23, 24, 25]"
+        ],
+        "trace": [
+          "R-TASK-034: strictly increasing integer ids",
+          "STC: state transitions across multiple sequential creates"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_sequence_of_five_creates_is_strictly_monotonic():\n    ids = []\n    for i in range(5):\n        r = client.post(\"/tasks/\", json={\"title\": f\"Seq Task {i}\", \"completed\": False})\n        assert r.status_code == 201\n        ids.append(r.json()[\"id\"])\n    assert ids == [21, 22, 23, 24, 25]\n    for j in range(1, len(ids)):\n        assert ids[j] == ids[j - 1] + 1\n        assert ids[j] > ids[j - 1]\n"
+      },
+      {
+        "name": "test_id_not_reused_after_delete_and_create",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows (ids 1-20)",
+          "Task with id 20 exists"
+        ],
+        "actions": [
+          "DELETE /tasks/20 to remove the highest pre-loaded task",
+          "POST /tasks/ to create a new task"
+        ],
+        "expected": [
+          "DELETE returns HTTP 204",
+          "POST returns HTTP 201",
+          "New task id is 21, NOT 20 (ids are never reused; sequence is strictly increasing)"
+        ],
+        "trace": [
+          "R-TASK-034: strictly increasing integer ids \u2014 no reuse of deleted ids",
+          "NEG: deletion of max id must not cause the next id to regress"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_id_not_reused_after_delete_and_create():\n    r_del = client.delete(\"/tasks/20\")\n    assert r_del.status_code == 204\n    r_new = client.post(\"/tasks/\", json={\"title\": \"Post-Delete Task\", \"completed\": False})\n    assert r_new.status_code == 201\n    new_id = r_new.json()[\"id\"]\n    assert new_id != 20\n    assert new_id == 21\n    assert new_id > 20\n"
+      },
+      {
+        "name": "test_new_id_strictly_greater_than_all_preloaded_ids",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows (ids 1-20)"
+        ],
+        "actions": [
+          "POST /tasks/ with a valid payload",
+          "GET /tasks/ to retrieve all tasks"
+        ],
+        "expected": [
+          "POST returns HTTP 201 with id 21",
+          "GET returns HTTP 200 with exactly 21 tasks",
+          "The new task id is strictly greater than every pre-loaded id (1-20)"
+        ],
+        "trace": [
+          "R-TASK-034: strictly increasing integer ids",
+          "BVA: new id must exceed the boundary of 20 (the max pre-loaded id)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_new_id_strictly_greater_than_all_preloaded_ids():\n    r_before = client.get(\"/tasks/\")\n    assert r_before.status_code == 200\n    before_ids = [t[\"id\"] for t in r_before.json()]\n    assert len(before_ids) == 20\n    assert max(before_ids) == 20\n    r_new = client.post(\"/tasks/\", json={\"title\": \"Greater ID Task\", \"completed\": False})\n    assert r_new.status_code == 201\n    new_id = r_new.json()[\"id\"]\n    assert new_id == 21\n    for existing_id in before_ids:\n        assert new_id > existing_id\n    r_after = client.get(\"/tasks/\")\n    assert r_after.status_code == 200\n    assert len(r_after.json()) == 21\n"
+      },
+      {
+        "name": "test_invalid_payload_returns_4xx_and_no_id_assigned",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows (ids 1-20)"
+        ],
+        "actions": [
+          "POST /tasks/ with missing required 'title' field",
+          "POST /tasks/ with empty string title (violates min_length=1)"
+        ],
+        "expected": [
+          "First POST returns HTTP 422 (client error, not 2xx)",
+          "Second POST returns HTTP 422",
+          "No new task is created; next valid create still gets id 21"
+        ],
+        "trace": [
+          "R-TASK-034: error pathway \u2014 HTTP 4xx on client error",
+          "NEG: failed creates must not consume an id slot"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_invalid_payload_returns_4xx_and_no_id_assigned():\n    r_missing = client.post(\"/tasks/\", json={\"description\": \"no title\", \"completed\": False})\n    assert r_missing.status_code == 422\n    r_empty = client.post(\"/tasks/\", json={\"title\": \"\", \"completed\": False})\n    assert r_empty.status_code == 422\n    r_valid = client.post(\"/tasks/\", json={\"title\": \"Valid After Failures\", \"completed\": False})\n    assert r_valid.status_code == 201\n    assert r_valid.json()[\"id\"] == 21\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-034",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5903,
+    "output_tokens": 2800,
+    "latency_ms": 37070,
+    "wall_ms": 37070,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-034\",\n  \"reasoning\": \"The requirement states that task ids must be strictly increasing integers. To verify this, we need: (1) a positive test confirming two consecutive creates yield id_n+1 > id_n, (2) a boundary test confirming the first new id is exactly 21 (one above the 20 pre-loaded rows), and (3) a negative/state-transition test confirming that after creating multiple tasks the sequence is strictly monotonic (no ties, no reversals). Additional tests cover exact arithmetic of the increment (+1 each time) and that the id field is an integer, catching arithmetic-mutation and type-mutation operators.\",\n  \"tests\": [\n    {\n      \"name\": \"test_two_consecutive_creates_yield_strictly_increasing_ids\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded rows (ids 1-20)\",\n        \"POST /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with valid payload to create task A\",\n        \"POST /tasks/ with valid payload to create task B\"\n      ],\n      \"expected\": [\n        \"Both responses return HTTP 201\",\n        \"id of task B is strictly greater than id of task A\",\n        \"id of task B equals id of task A plus exactly 1\"\n      ],\n      \"trace\": [\n        \"R-TASK-034: strictly increasing integer ids\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_two_consecutive_creates_yield_strictly_increasing_ids():\\n    payload_a = {\\\"title\\\": \\\"Task Alpha\\\", \\\"description\\\": \\\"desc a\\\", \\\"completed\\\": False}\\n    payload_b = {\\\"title\\\": \\\"Task Beta\\\", \\\"description\\\": \\\"desc b\\\", \\\"completed\\\": False}\\n    r_a = client.post(\\\"/tasks/\\\", json=payload_a)\\n    assert r_a.status_code == 201\\n    r_b = client.post(\\\"/tasks/\\\", json=payload_b)\\n    assert r_b.status_code == 201\\n    id_a = r_a.json()[\\\"id\\\"]\\n    id_b = r_b.json()[\\\"id\\\"]\\n    assert isinstance(id_a, int)\\n    assert isinstance(id_b, int)\\n    assert id_b > id_a\\n    assert id_b == id_a + 1\\n\"\n    },\n    {\n      \"name\": \"test_first_new_task_id_is_exactly_21\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded rows (ids 1-20)\",\n        \"No additional tasks have been created in this test\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with a valid payload\"\n      ],\n      \"expected\": [\n        \"Response status is exactly 201\",\n        \"Returned id is exactly 21 (one above the highest pre-loaded id of 20)\"\n      ],\n      \"trace\": [\n        \"R-TASK-034: strictly increasing integer ids\",\n        \"BVA: boundary at max pre-loaded id (20) + 1 = 21\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_first_new_task_id_is_exactly_21():\\n    payload = {\\\"title\\\": \\\"Boundary Task\\\", \\\"description\\\": \\\"boundary\\\", \\\"completed\\\": False}\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body[\\\"id\\\"] == 21\\n    assert body[\\\"title\\\"] == \\\"Boundary Task\\\"\\n\"\n    },\n    {\n      \"name\": \"test_sequence_of_five_creates_is_strictly_monotonic\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded rows (ids 1-20)\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ five times in sequence with distinct valid payloads\",\n        \"Collect all returned ids\"\n      ],\n      \"expected\": [\n        \"All five responses return HTTP 201\",\n        \"Each successive id is exactly 1 greater than the previous\",\n        \"The ids form the sequence [21, 22, 23, 24, 25]\"\n      ],\n      \"trace\": [\n        \"R-TASK-034: strictly increasing integer ids\",\n        \"STC: state transitions across multiple sequential creates\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app"
+  }
+}

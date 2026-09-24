@@ -1,0 +1,130 @@
+{
+  "req": {
+    "id": "R-PLAYER-025",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "functional",
+    "title": "Empty player list returns empty array",
+    "statement": "The system shall respond to GET /players when the table is empty with HTTP 200 and an empty JSON array.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "empty player list returns empty array"
+    ],
+    "expected_outcomes": [
+      "HTTP 200",
+      "[]"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "GET /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-025",
+    "reasoning": "R-PLAYER-025 requires GET /players/ to return HTTP 200 and an empty JSON array when the player table is empty. The database contract states 26 rows are pre-loaded before every test, so a test for the empty-collection case must delete all 26 rows via the API first. Three tests are designed: (1) positive \u2014 after deleting all pre-loaded players, GET /players/ returns 200 and []; (2) negative \u2014 with players present, GET /players/ returns 200 but a non-empty array (proving the empty-array response is state-dependent, not a constant); (3) boundary \u2014 the transition from exactly 1 player remaining to 0 players, verifying the boundary between non-empty and empty. Each test asserts exact status codes and exact body values to kill constant-mutation, comparison-flip, and boolean-negation mutants.",
+    "tests": [
+      {
+        "name": "test_get_players_empty_table_returns_200_and_empty_array",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is pre-loaded with 26 players (squad numbers 1-26)",
+          "All 26 players are deleted via DELETE /players/squadnumber/{n} before the GET"
+        ],
+        "actions": [
+          "Delete all 26 pre-loaded players via DELETE /players/squadnumber/{squad_number}",
+          "Send GET /players/"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is exactly []",
+          "Response Content-Type is application/json"
+        ],
+        "trace": [
+          "R-PLAYER-025: system shall respond with HTTP 200 and empty JSON array when table is empty"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_get_players_empty_table_returns_200_and_empty_array():\n    squad_numbers = list(range(1, 27))\n    for sn in squad_numbers:\n        del_resp = client.delete(f'/players/squadnumber/{sn}')\n        assert del_resp.status_code == 204\n\n    response = client.get('/players/')\n    assert response.status_code == 200\n    body = response.json()\n    assert body == []\n    assert len(body) == 0\n    assert isinstance(body, list)\n    assert response.headers['content-type'].startswith('application/json')\n"
+      },
+      {
+        "name": "test_get_players_non_empty_table_returns_200_and_non_empty_array",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is pre-loaded with exactly 26 players (squad numbers 1-26)"
+        ],
+        "actions": [
+          "Send GET /players/ without deleting any players"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a JSON array with exactly 26 items (not empty)",
+          "Response body is NOT []"
+        ],
+        "trace": [
+          "R-PLAYER-025: empty array is only returned when table is empty; non-empty table must not return []",
+          "Catches constant-mutation where endpoint always returns [] regardless of state"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_get_players_non_empty_table_returns_200_and_non_empty_array():\n    response = client.get('/players/')\n    assert response.status_code == 200\n    body = response.json()\n    assert isinstance(body, list)\n    assert body != []\n    assert len(body) == 26\n    squad_numbers = [p['squadNumber'] for p in body]\n    assert 1 in squad_numbers\n    assert 26 in squad_numbers\n"
+      },
+      {
+        "name": "test_get_players_last_player_deleted_returns_empty_array",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is pre-loaded with 26 players",
+          "25 players are deleted, leaving exactly 1 player",
+          "GET /players/ with 1 player returns a list of length 1 (not empty)",
+          "The final player is then deleted",
+          "GET /players/ with 0 players returns []"
+        ],
+        "actions": [
+          "Delete players with squad numbers 1-25 (leaving squad number 26)",
+          "Assert GET /players/ returns exactly 1 item (boundary: non-empty side)",
+          "Delete player with squad number 26",
+          "Assert GET /players/ returns exactly [] (boundary: empty side)"
+        ],
+        "expected": [
+          "After 25 deletions: HTTP 200, array length == 1",
+          "After 26th deletion: HTTP 200, body == []",
+          "Transition from length 1 to length 0 is the exact boundary"
+        ],
+        "trace": [
+          "R-PLAYER-025: BVA on collection size \u2014 boundary between 1 item and 0 items",
+          "Catches off-by-one mutations in empty-check logic (len > 0 vs len >= 0, etc.)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\nclient = TestClient(app)\n\ndef test_get_players_last_player_deleted_returns_empty_array():\n    for sn in range(1, 26):\n        del_resp = client.delete(f'/players/squadnumber/{sn}')\n        assert del_resp.status_code == 204\n\n    resp_one = client.get('/players/')\n    assert resp_one.status_code == 200\n    body_one = resp_one.json()\n    assert isinstance(body_one, list)\n    assert len(body_one) == 1\n    assert body_one != []\n    assert body_one[0]['squadNumber'] == 26\n\n    del_last = client.delete('/players/squadnumber/26')\n    assert del_last.status_code == 204\n\n    resp_empty = client.get('/players/')\n    assert resp_empty.status_code == 200\n    body_empty = resp_empty.json()\n    assert body_empty == []\n    assert len(body_empty) == 0\n    assert isinstance(body_empty, list)\n"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-025",
+  "domain": "sports_players",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11432,
+    "output_tokens": 1739,
+    "latency_ms": 25921,
+    "wall_ms": 25921,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-025\",\n  \"reasoning\": \"R-PLAYER-025 requires GET /players/ to return HTTP 200 and an empty JSON array when the player table is empty. The database contract states 26 rows are pre-loaded before every test, so a test for the empty-collection case must delete all 26 rows via the API first. Three tests are designed: (1) positive \u2014 after deleting all pre-loaded players, GET /players/ returns 200 and []; (2) negative \u2014 with players present, GET /players/ returns 200 but a non-empty array (proving the empty-array response is state-dependent, not a constant); (3) boundary \u2014 the transition from exactly 1 player remaining to 0 players, verifying the boundary between non-empty and empty. Each test asserts exact status codes and exact body values to kill constant-mutation, comparison-flip, and boolean-negation mutants.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_players_empty_table_returns_200_and_empty_array\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is pre-loaded with 26 players (squad numbers 1-26)\",\n        \"All 26 players are deleted via DELETE /players/squadnumber/{n} before the GET\"\n      ],\n      \"actions\": [\n        \"Delete all 26 pre-loaded players via DELETE /players/squadnumber/{squad_number}\",\n        \"Send GET /players/\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body is exactly []\",\n        \"Response Content-Type is application/json\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-025: system shall respond with HTTP 200 and empty JSON array when table is empty\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom main import app\\n\\nclient = TestClient(app)\\n\\ndef test_get_players_empty_table_returns_200_and_empty_array():\\n    squad_numbers = list(range(1, 27))\\n    for sn in squad_numbers:\\n        del_resp = client.delete(f'/players/squadnumber/{sn}')\\n        assert del_resp.status_code == 204\\n\\n    response = client.get('/players/')\\n    assert response.status_code == 200\\n    body = response.json()\\n    assert body == []\\n    assert len(body) == 0\\n    assert isinstance(body, list)\\n    assert response.headers['content-type'].startswith('application/json')\\n\"\n    },\n    {\n      \"name\": \"test_get_players_non_empty_table_returns_200_and_non_empty_array\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is pre-loaded with exactly 26 players (squad numbers 1-26)\"\n      ],\n      \"actions\": [\n        \"Send GET /players/ without deleting any players\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body is a JSON array with exactly 26 items (not empty)\",\n        \"Response body is NOT []\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-025: empty array is only returned when table is empty; non-empty table must not return []\",\n        \"Catches constant-mutation where endpoint always returns [] regardless of state\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom main import app\\n\\nclient = TestClient(app)\\n\\ndef test_get_players_non_empty_table_returns_200_and_non_empty_array():\\n    response = client.get('/players/')\\n    assert response.status_code == 200\\n    body = response.json()\\n    assert isinstance(body, list)\\n    assert body != []\\n    assert len(body) == 26\\n    squad_numbers = [p['squadNumber'] for p in body]\\n    assert 1 in squad_numbers\\n    assert 26 in squad_numbers\\n\"\n    },\n    {\n      \"name\": \"test_get_players_last_player_deleted_returns_empty_array\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is pre-loaded with 26 players\",\n        \"25 players are deleted, leaving exactly 1 player\",\n        \"GET /players/ with 1 player returns a list of length 1 (not empty)\",\n        \"The final player is th"
+  }
+}

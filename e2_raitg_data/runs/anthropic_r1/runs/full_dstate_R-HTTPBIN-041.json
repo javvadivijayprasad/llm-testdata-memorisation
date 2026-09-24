@@ -1,0 +1,218 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-041",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Basic-auth handles special characters",
+    "statement": "The system shall URL-decode <user> and <passwd> path segments before comparing against the supplied Basic credentials.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "basic-auth handles special characters"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /basic-auth/<user>/<passwd>"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-041",
+    "reasoning": "The requirement states that /basic-auth/<user>/<passwd> must URL-decode path segments before comparing against Basic credentials. I need to test: (1) positive case with URL-encoded special chars in path that match decoded credentials, (2) negative case where credentials don't match after decoding, (3) boundary case with minimally encoded chars (e.g., space as %20), (4) decision table covering both user and passwd encoding, (5) negative path where wrong decoded value is supplied. The check_basic_auth function compares auth.username == user and auth.password == passwd, so the route handler receives the decoded path segments from Flask/Werkzeug and compares them directly. I must assert exact status codes (200 vs 401) and exact JSON payload fields to kill comparison-mutation and constant-mutation operators.",
+    "tests": [
+      {
+        "name": "test_basic_auth_url_encoded_special_chars_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Client sends Basic credentials matching URL-decoded path segments"
+        ],
+        "actions": [
+          "URL-encode special characters in user and passwd path segments",
+          "Send GET /basic-auth/<encoded_user>/<encoded_passwd> with matching Basic auth header"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON body contains authenticated=true and user equal to decoded username"
+        ],
+        "trace": [
+          "R-HTTPBIN-041: system shall URL-decode path segments before comparing"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\nclient = app.test_client()\n\nuser = 'user@example'\npasswd = 'p@ss!word'\nencoded_user = 'user%40example'\nencoded_passwd = 'p%40ss%21word'\n\ncredentials = base64.b64encode(f'{user}:{passwd}'.encode()).decode()\nheaders = {'Authorization': f'Basic {credentials}'}\n\ndef test_basic_auth_url_encoded_special_chars_positive():\n    r = client.get(f'/basic-auth/{encoded_user}/{encoded_passwd}', headers=headers)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data['authenticated'] == True\n    assert data['user'] == user\n"
+      },
+      {
+        "name": "test_basic_auth_wrong_credentials_after_decoding_negative",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Client sends Basic credentials that do NOT match URL-decoded path segments"
+        ],
+        "actions": [
+          "URL-encode special characters in path segments",
+          "Send GET with Basic auth credentials that differ from decoded path values"
+        ],
+        "expected": [
+          "HTTP 401 response",
+          "WWW-Authenticate header present"
+        ],
+        "trace": [
+          "R-HTTPBIN-041: mismatch after decoding must yield 401"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\nclient = app.test_client()\n\nencoded_user = 'user%40example'\nencoded_passwd = 'p%40ss%21word'\n\nwrong_user = 'user@example'\nwrong_passwd = 'wrongpassword'\ncredentials = base64.b64encode(f'{wrong_user}:{wrong_passwd}'.encode()).decode()\nheaders = {'Authorization': f'Basic {credentials}'}\n\ndef test_basic_auth_wrong_credentials_after_decoding_negative():\n    r = client.get(f'/basic-auth/{encoded_user}/{encoded_passwd}', headers=headers)\n    assert r.status_code == 401\n    assert 'WWW-Authenticate' in r.headers\n"
+      },
+      {
+        "name": "test_basic_auth_space_encoded_as_percent20_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Space character is a minimal boundary for URL encoding (%20)"
+        ],
+        "actions": [
+          "Use space in user and passwd, encoded as %20 in path",
+          "Send matching Basic auth credentials with literal space"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON authenticated=true, user equals string with space"
+        ],
+        "trace": [
+          "R-HTTPBIN-041: %20 is the boundary encoding for space; must decode correctly"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\nclient = app.test_client()\n\nuser = 'my user'\npasswd = 'my pass'\nencoded_user = 'my%20user'\nencoded_passwd = 'my%20pass'\n\ncredentials = base64.b64encode(f'{user}:{passwd}'.encode()).decode()\nheaders = {'Authorization': f'Basic {credentials}'}\n\ndef test_basic_auth_space_encoded_as_percent20_boundary():\n    r = client.get(f'/basic-auth/{encoded_user}/{encoded_passwd}', headers=headers)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data['authenticated'] == True\n    assert data['user'] == 'my user'\n"
+      },
+      {
+        "name": "test_basic_auth_no_credentials_returns_401",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "No Authorization header is sent"
+        ],
+        "actions": [
+          "Send GET /basic-auth/user/passwd with no Authorization header"
+        ],
+        "expected": [
+          "HTTP 401 response",
+          "WWW-Authenticate header present in response"
+        ],
+        "trace": [
+          "R-HTTPBIN-041: missing credentials must yield 401 (check_basic_auth returns falsy when auth is None)"
+        ],
+        "executable": "from httpbin.core import app\n\nclient = app.test_client()\n\ndef test_basic_auth_no_credentials_returns_401():\n    r = client.get('/basic-auth/user/passwd')\n    assert r.status_code == 401\n    assert 'WWW-Authenticate' in r.headers\n    data = r.get_json()\n    assert data is None or 'authenticated' not in (data or {})\n"
+      },
+      {
+        "name": "test_basic_auth_encoded_at_sign_user_mismatch_decision_table",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "User sends literal encoded string as credentials instead of decoded value"
+        ],
+        "actions": [
+          "Path has %40 for @; client sends literal 'user%40example' as username (not decoded)",
+          "This tests that comparison is against decoded value, not raw encoded string"
+        ],
+        "expected": [
+          "HTTP 401 response because credentials contain literal %40 not @"
+        ],
+        "trace": [
+          "R-HTTPBIN-041: comparison must be against decoded path, so literal %40 != @"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\nclient = app.test_client()\n\nencoded_user = 'user%40example'\nencoded_passwd = 'p%40ss'\n\nliteral_user = 'user%40example'\nliteral_passwd = 'p%40ss'\ncredentials = base64.b64encode(f'{literal_user}:{literal_passwd}'.encode()).decode()\nheaders = {'Authorization': f'Basic {credentials}'}\n\ndef test_basic_auth_encoded_at_sign_user_mismatch_decision_table():\n    r = client.get(f'/basic-auth/{encoded_user}/{encoded_passwd}', headers=headers)\n    assert r.status_code == 401\n"
+      },
+      {
+        "name": "test_basic_auth_plain_ascii_no_encoding_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Plain ASCII credentials with no special chars (baseline equivalence partition)"
+        ],
+        "actions": [
+          "Send GET /basic-auth/user/passwd with matching Basic auth for plain ASCII"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON body: authenticated=true, user='user'"
+        ],
+        "trace": [
+          "R-HTTPBIN-041: plain ASCII is a valid equivalence class; no encoding needed"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\nclient = app.test_client()\n\nuser = 'user'\npasswd = 'passwd'\ncredentials = base64.b64encode(f'{user}:{passwd}'.encode()).decode()\nheaders = {'Authorization': f'Basic {credentials}'}\n\ndef test_basic_auth_plain_ascii_no_encoding_positive():\n    r = client.get('/basic-auth/user/passwd', headers=headers)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data['authenticated'] == True\n    assert data['user'] == 'user'\n    assert set(data.keys()) == {'authenticated', 'user'}\n"
+      },
+      {
+        "name": "test_basic_auth_correct_user_wrong_passwd_returns_401",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Username matches but password does not"
+        ],
+        "actions": [
+          "Send GET /basic-auth/user%40host/secret with correct decoded user but wrong password"
+        ],
+        "expected": [
+          "HTTP 401 response (both user AND passwd must match)"
+        ],
+        "trace": [
+          "R-HTTPBIN-041: check_basic_auth uses AND logic; wrong passwd alone triggers 401"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\nclient = app.test_client()\n\nencoded_user = 'user%40host'\nencoded_passwd = 'secret'\n\ncorrect_user = 'user@host'\nwrong_passwd = 'wrongsecret'\ncredentials = base64.b64encode(f'{correct_user}:{wrong_passwd}'.encode()).decode()\nheaders = {'Authorization': f'Basic {credentials}'}\n\ndef test_basic_auth_correct_user_wrong_passwd_returns_401():\n    r = client.get(f'/basic-auth/{encoded_user}/{encoded_passwd}', headers=headers)\n    assert r.status_code == 401\n"
+      },
+      {
+        "name": "test_basic_auth_multiple_encoded_chars_positive",
+        "kind": "positive",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Multiple special characters encoded in both user and passwd segments"
+        ],
+        "actions": [
+          "Encode user='a:b' as 'a%3Ab' and passwd='x/y' as 'x%2Fy' in path",
+          "Send matching Basic auth with decoded values"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON authenticated=true, user='a:b'"
+        ],
+        "trace": [
+          "R-HTTPBIN-041: colon and slash are boundary chars for URL encoding"
+        ],
+        "executable": "import base64\nfrom httpbin.core import app\n\nclient = app.test_client()\n\nuser = 'a:b'\npasswd = 'x/y'\nencoded_user = 'a%3Ab'\nencoded_passwd = 'x%2Fy'\n\ncredentials = base64.b64encode(f'{user}:{passwd}'.encode()).decode()\nheaders = {'Authorization': f'Basic {credentials}'}\n\ndef test_basic_auth_multiple_encoded_chars_positive():\n    r = client.get(f'/basic-auth/{encoded_user}/{encoded_passwd}', headers=headers)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data['authenticated'] == True\n    assert data['user'] == 'a:b'\n"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-041",
+  "domain": "http_utilities",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9476,
+    "output_tokens": 3309,
+    "latency_ms": 43044,
+    "wall_ms": 43044,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-041\",\n  \"reasoning\": \"The requirement states that /basic-auth/<user>/<passwd> must URL-decode path segments before comparing against Basic credentials. I need to test: (1) positive case with URL-encoded special chars in path that match decoded credentials, (2) negative case where credentials don't match after decoding, (3) boundary case with minimally encoded chars (e.g., space as %20), (4) decision table covering both user and passwd encoding, (5) negative path where wrong decoded value is supplied. The check_basic_auth function compares auth.username == user and auth.password == passwd, so the route handler receives the decoded path segments from Flask/Werkzeug and compares them directly. I must assert exact status codes (200 vs 401) and exact JSON payload fields to kill comparison-mutation and constant-mutation operators.\",\n  \"tests\": [\n    {\n      \"name\": \"test_basic_auth_url_encoded_special_chars_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"Client sends Basic credentials matching URL-decoded path segments\"\n      ],\n      \"actions\": [\n        \"URL-encode special characters in user and passwd path segments\",\n        \"Send GET /basic-auth/<encoded_user>/<encoded_passwd> with matching Basic auth header\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"JSON body contains authenticated=true and user equal to decoded username\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-041: system shall URL-decode path segments before comparing\"\n      ],\n      \"executable\": \"import base64\\nfrom httpbin.core import app\\n\\nclient = app.test_client()\\n\\nuser = 'user@example'\\npasswd = 'p@ss!word'\\nencoded_user = 'user%40example'\\nencoded_passwd = 'p%40ss%21word'\\n\\ncredentials = base64.b64encode(f'{user}:{passwd}'.encode()).decode()\\nheaders = {'Authorization': f'Basic {credentials}'}\\n\\ndef test_basic_auth_url_encoded_special_chars_positive():\\n    r = client.get(f'/basic-auth/{encoded_user}/{encoded_passwd}', headers=headers)\\n    assert r.status_code == 200\\n    data = r.get_json()\\n    assert data['authenticated'] == True\\n    assert data['user'] == user\\n\"\n    },\n    {\n      \"name\": \"test_basic_auth_wrong_credentials_after_decoding_negative\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"Client sends Basic credentials that do NOT match URL-decoded path segments\"\n      ],\n      \"actions\": [\n        \"URL-encode special characters in path segments\",\n        \"Send GET with Basic auth credentials that differ from decoded path values\"\n      ],\n      \"expected\": [\n        \"HTTP 401 response\",\n        \"WWW-Authenticate header present\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-041: mismatch after decoding must yield 401\"\n      ],\n      \"executable\": \"import base64\\nfrom httpbin.core import app\\n\\nclient = app.test_client()\\n\\nencoded_user = 'user%40example'\\nencoded_passwd = 'p%40ss%21word'\\n\\nwrong_user = 'user@example'\\nwrong_passwd = 'wrongpassword'\\ncredentials = base64.b64encode(f'{wrong_user}:{wrong_passwd}'.encode()).decode()\\nheaders = {'Authorization': f'Basic {credentials}'}\\n\\ndef test_basic_auth_wrong_credentials_after_decoding_negative():\\n    r = client.get(f'/basic-auth/{encoded_user}/{encoded_passwd}', headers=headers)\\n    assert r.status_code == 401\\n    assert 'WWW-Authenticate' in r.headers\\n\"\n    },\n    {\n      \"name\": \"test_basic_auth_space_encoded_as_percent20_boundary\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"Space character is a minimal boundary for URL encoding (%20)\"\n      ],\n      \"actions\": [\n        \"Use space in user and passwd, encoded as %20 in path\",\n        \"Send matching Basic auth credentials with literal space\"\n      ],\n      \"expected\": [\n        \"HTTP 200 r"
+  }
+}

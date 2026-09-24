@@ -1,0 +1,180 @@
+{
+  "req": {
+    "id": "R-FLASKR-001",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Show index page",
+    "statement": "The system shall respond to GET / with an HTML page listing all posts ordered by created descending.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "show index page"
+    ],
+    "expected_outcomes": [
+      "HTTP 200",
+      "HTML with post titles"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-001",
+    "reasoning": "The requirement mandates GET / returns HTTP 200 with HTML listing all posts ordered by created DESC. Tests cover: (1) positive EP \u2014 normal GET / with pre-loaded fixture data returns 200 and contains the known post title; (2) negative NEG \u2014 verifying that a non-existent route returns 404, not 200, confirming the status-code check is meaningful; (3) boundary BVA \u2014 empty database (no posts) still returns 200 with valid HTML but no post titles; (4) DT \u2014 multiple posts are ordered newest-first (DESC), catching ORDER BY direction mutations; (5) STC \u2014 unauthenticated vs authenticated client both see the index at 200, confirming no login gate on GET /.",
+    "tests": [
+      {
+        "name": "test_index_returns_200_and_contains_fixture_post_title",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database initialised with fixture data (1 post: 'test title' by user 'test')",
+          "No user session active"
+        ],
+        "actions": [
+          "Send GET / with the Flask test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response Content-Type contains 'text/html'",
+          "Response body contains b'test title'"
+        ],
+        "trace": [
+          "R-FLASKR-001: HTTP 200; HTML with post titles"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\ndef test_index_returns_200_and_contains_fixture_post_title():\n    r = client.get('/')\n    assert r.status_code == 200\n    assert b'text/html' in r.content_type.encode()\n    assert b'test title' in r.data\n"
+      },
+      {
+        "name": "test_nonexistent_route_returns_404_not_200",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Application running with fixture database"
+        ],
+        "actions": [
+          "Send GET /nonexistent_path_xyz with the Flask test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 404",
+          "Status code is NOT 200"
+        ],
+        "trace": [
+          "R-FLASKR-001: HTTP 4xx on client error",
+          "Validates that status-code 200 assertion is meaningful and not trivially true"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\ndef test_nonexistent_route_returns_404_not_200():\n    r = client.get('/nonexistent_path_xyz')\n    assert r.status_code == 404\n    assert r.status_code != 200\n"
+      },
+      {
+        "name": "test_index_with_empty_database_returns_200_no_posts",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database initialised with schema but NO post rows inserted (zero posts boundary)"
+        ],
+        "actions": [
+          "Send GET / with the Flask test client against an empty-posts database"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body does NOT contain b'test title'",
+          "Response body is non-empty HTML"
+        ],
+        "trace": [
+          "R-FLASKR-001: boundary \u2014 zero posts; page still renders with HTTP 200"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    from flaskr.db import get_db\n    db = get_db()\n    db.execute('DELETE FROM post')\n    db.commit()\n\nclient = app.test_client()\n\ndef test_index_with_empty_database_returns_200_no_posts():\n    r = client.get('/')\n    assert r.status_code == 200\n    assert b'test title' not in r.data\n    assert len(r.data) > 0\n"
+      },
+      {
+        "name": "test_index_posts_ordered_newest_first",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database initialised with fixture data",
+          "A second post with a later created timestamp is inserted"
+        ],
+        "actions": [
+          "Insert a newer post with title 'newer post title'",
+          "Send GET / with the Flask test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "b'newer post title' appears before b'test title' in the response body",
+          "Both post titles are present in the response"
+        ],
+        "trace": [
+          "R-FLASKR-001: posts ordered by created DESC \u2014 catches ORDER BY ASC mutation"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    from flaskr.db import get_db\n    db = get_db()\n    db.execute(\n        \"INSERT INTO post (title, body, author_id, created) VALUES (?, ?, ?, ?)\",\n        ('newer post title', 'body2', 1, '2025-06-01 12:00:00')\n    )\n    db.commit()\n\nclient = app.test_client()\n\ndef test_index_posts_ordered_newest_first():\n    r = client.get('/')\n    assert r.status_code == 200\n    body = r.data\n    assert b'newer post title' in body\n    assert b'test title' in body\n    idx_newer = body.find(b'newer post title')\n    idx_older = body.find(b'test title')\n    assert idx_newer < idx_older\n"
+      },
+      {
+        "name": "test_index_accessible_without_authentication",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database initialised with fixture data",
+          "No session cookie present (unauthenticated state)"
+        ],
+        "actions": [
+          "Send GET / with a fresh test client (no login)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "No redirect (status is not 302)",
+          "Response body contains b'test title'"
+        ],
+        "trace": [
+          "R-FLASKR-001: unauthenticated client can view index \u2014 catches accidental login_required guard mutation"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\ndef test_index_accessible_without_authentication():\n    r = client.get('/', follow_redirects=False)\n    assert r.status_code == 200\n    assert r.status_code != 302\n    assert b'test title' in r.data\n"
+      },
+      {
+        "name": "test_index_response_content_type_is_html",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database initialised with fixture data"
+        ],
+        "actions": [
+          "Send GET / with the Flask test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Content-Type header starts with 'text/html'",
+          "Response body contains opening HTML tag"
+        ],
+        "trace": [
+          "R-FLASKR-001: response must be HTML \u2014 catches mutation that changes render_template to return JSON or plain text"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n\nclient = app.test_client()\n\ndef test_index_response_content_type_is_html():\n    r = client.get('/')\n    assert r.status_code == 200\n    assert r.content_type.startswith('text/html')\n    assert b'<html' in r.data.lower() or b'<!doctype' in r.data.lower()\n    assert b'test title' in r.data\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-001",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5453,
+    "output_tokens": 2595,
+    "latency_ms": 33816,
+    "wall_ms": 33816,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-001\",\n  \"reasoning\": \"The requirement mandates GET / returns HTTP 200 with HTML listing all posts ordered by created DESC. Tests cover: (1) positive EP \u2014 normal GET / with pre-loaded fixture data returns 200 and contains the known post title; (2) negative NEG \u2014 verifying that a non-existent route returns 404, not 200, confirming the status-code check is meaningful; (3) boundary BVA \u2014 empty database (no posts) still returns 200 with valid HTML but no post titles; (4) DT \u2014 multiple posts are ordered newest-first (DESC), catching ORDER BY direction mutations; (5) STC \u2014 unauthenticated vs authenticated client both see the index at 200, confirming no login gate on GET /.\",\n  \"tests\": [\n    {\n      \"name\": \"test_index_returns_200_and_contains_fixture_post_title\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database initialised with fixture data (1 post: 'test title' by user 'test')\",\n        \"No user session active\"\n      ],\n      \"actions\": [\n        \"Send GET / with the Flask test client\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response Content-Type contains 'text/html'\",\n        \"Response body contains b'test title'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-001: HTTP 200; HTML with post titles\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\n\\ndef test_index_returns_200_and_contains_fixture_post_title():\\n    r = client.get('/')\\n    assert r.status_code == 200\\n    assert b'text/html' in r.content_type.encode()\\n    assert b'test title' in r.data\\n\"\n    },\n    {\n      \"name\": \"test_nonexistent_route_returns_404_not_200\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Application running with fixture database\"\n      ],\n      \"actions\": [\n        \"Send GET /nonexistent_path_xyz with the Flask test client\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 404\",\n        \"Status code is NOT 200\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-001: HTTP 4xx on client error\",\n        \"Validates that status-code 200 assertion is meaningful and not trivially true\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n\\nclient = app.test_client()\\n\\ndef test_nonexistent_route_returns_404_not_200():\\n    r = client.get('/nonexistent_path_xyz')\\n    assert r.status_code == 404\\n    assert r.status_code != 200\\n\"\n    },\n    {\n      \"name\": \"test_index_with_empty_database_returns_200_no_posts\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database initialised with schema but NO post rows inserted (zero posts boundary)\"\n      ],\n      \"actions\": [\n        \"Send GET / with the Flask test client against an empty-posts database\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body does NOT contain b'test title'\",\n        \"Response body is non-empty HTML\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-001: boundary \u2014 zero posts; page still renders with HTTP 200\"\n      ],\n      \"executable\": \"import tempfile, os, sqlite3\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n    from flaskr.db import get_db\\n    db = get_db()\\n    db.execute('DELETE FROM post')\\n    db.commit()\\n\\nclient = app.test_client()\\n\\ndef test_index_with_empty_database_returns_200_no_posts():\\n    r = client.get('/')\\n    assert r.status"
+  }
+}

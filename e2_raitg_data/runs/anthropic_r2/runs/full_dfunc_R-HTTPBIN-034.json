@@ -1,0 +1,281 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-034",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "observability",
+    "title": "Include origin IP in echoed metadata",
+    "statement": "The system shall include the client origin (X-Forwarded-For if present, else remote_addr) in the 'origin' field of all echo endpoints.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "include origin ip in echoed metadata"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "/get /post /put /patch /delete"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-034",
+    "reasoning": "The requirement states that all echo endpoints (/get, /post, /put, /patch, /delete) must include the client origin IP in the 'origin' field, preferring X-Forwarded-For header over remote_addr. The key logic in helpers.py is: `origin=request.headers.get('X-Forwarded-For', request.remote_addr)`. Tests must cover: (1) positive - remote_addr used when no X-Forwarded-For present, (2) positive - X-Forwarded-For header takes precedence, (3) negative - absence of origin field would be caught, (4) boundary - X-Forwarded-For present but empty string vs absent, (5) decision table covering all five endpoints, (6) exact value assertions to kill mutations that change field name, header lookup order, or fallback logic.",
+    "tests": [
+      {
+        "name": "test_get_origin_uses_remote_addr_when_no_xff",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask test client is initialized",
+          "No X-Forwarded-For header is sent"
+        ],
+        "actions": [
+          "Send GET /get without X-Forwarded-For header",
+          "Parse JSON response",
+          "Check 'origin' field equals remote_addr (127.0.0.1)"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON contains 'origin' key",
+          "origin value equals '127.0.0.1' (Flask test client remote_addr)"
+        ],
+        "trace": [
+          "R-HTTPBIN-034: origin field must fall back to remote_addr when X-Forwarded-For absent",
+          "helpers.py: origin=request.headers.get('X-Forwarded-For', request.remote_addr)"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_get_origin_uses_remote_addr_when_no_xff():\n    r = client.get('/get')\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'origin' in data\n    assert data['origin'] == '127.0.0.1'\n\ntest_get_origin_uses_remote_addr_when_no_xff()"
+      },
+      {
+        "name": "test_get_origin_uses_xff_when_present",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Flask test client is initialized",
+          "X-Forwarded-For header is set to a specific IP"
+        ],
+        "actions": [
+          "Send GET /get with X-Forwarded-For: 203.0.113.42",
+          "Parse JSON response",
+          "Assert 'origin' equals '203.0.113.42'"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "origin field equals '203.0.113.42' exactly",
+          "X-Forwarded-For value takes precedence over remote_addr"
+        ],
+        "trace": [
+          "R-HTTPBIN-034: X-Forwarded-For must be preferred over remote_addr",
+          "helpers.py: request.headers.get('X-Forwarded-For', request.remote_addr)"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_get_origin_uses_xff_when_present():\n    r = client.get('/get', headers={'X-Forwarded-For': '203.0.113.42'})\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'origin' in data\n    assert data['origin'] == '203.0.113.42'\n    assert data['origin'] != '127.0.0.1'\n\ntest_get_origin_uses_xff_when_present()"
+      },
+      {
+        "name": "test_post_origin_uses_xff_when_present",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask test client is initialized",
+          "X-Forwarded-For header is set"
+        ],
+        "actions": [
+          "Send POST /post with X-Forwarded-For: 198.51.100.7",
+          "Parse JSON response",
+          "Assert 'origin' equals '198.51.100.7'"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "origin field equals '198.51.100.7'"
+        ],
+        "trace": [
+          "R-HTTPBIN-034: /post endpoint must include origin",
+          "core.py view_post: get_dict includes 'origin'"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_post_origin_uses_xff_when_present():\n    r = client.post('/post', headers={'X-Forwarded-For': '198.51.100.7'})\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'origin' in data\n    assert data['origin'] == '198.51.100.7'\n\ntest_post_origin_uses_xff_when_present()"
+      },
+      {
+        "name": "test_put_patch_delete_origin_field_present",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask test client is initialized"
+        ],
+        "actions": [
+          "Send PUT /put with X-Forwarded-For: 10.0.0.1",
+          "Send PATCH /patch with X-Forwarded-For: 10.0.0.2",
+          "Send DELETE /delete with X-Forwarded-For: 10.0.0.3",
+          "Assert each response has correct origin"
+        ],
+        "expected": [
+          "HTTP 200 for all three endpoints",
+          "origin field matches X-Forwarded-For value for each"
+        ],
+        "trace": [
+          "R-HTTPBIN-034: /put /patch /delete must all include origin",
+          "core.py view_put/view_patch/view_delete: get_dict includes 'origin'"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_put_patch_delete_origin_field_present():\n    r = client.put('/put', headers={'X-Forwarded-For': '10.0.0.1'})\n    assert r.status_code == 200\n    assert r.get_json()['origin'] == '10.0.0.1'\n\n    r = client.patch('/patch', headers={'X-Forwarded-For': '10.0.0.2'})\n    assert r.status_code == 200\n    assert r.get_json()['origin'] == '10.0.0.2'\n\n    r = client.delete('/delete', headers={'X-Forwarded-For': '10.0.0.3'})\n    assert r.status_code == 200\n    assert r.get_json()['origin'] == '10.0.0.3'\n\ntest_put_patch_delete_origin_field_present()"
+      },
+      {
+        "name": "test_origin_field_absent_without_xff_falls_back_not_none",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Flask test client is initialized",
+          "No X-Forwarded-For header sent"
+        ],
+        "actions": [
+          "Send GET /get without any X-Forwarded-For",
+          "Assert origin is not None and not empty string"
+        ],
+        "expected": [
+          "HTTP 200",
+          "origin is a non-empty string (remote_addr fallback)",
+          "origin is not None"
+        ],
+        "trace": [
+          "R-HTTPBIN-034: origin must always be present; fallback to remote_addr",
+          "NEG: verifies fallback is not suppressed or returns None"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_origin_field_absent_without_xff_falls_back_not_none():\n    r = client.get('/get')\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data.get('origin') is not None\n    assert data['origin'] != ''\n    assert isinstance(data['origin'], str)\n\ntest_origin_field_absent_without_xff_falls_back_not_none()"
+      },
+      {
+        "name": "test_xff_with_multiple_ips_preserved_exactly",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask test client is initialized",
+          "X-Forwarded-For contains a comma-separated list of IPs (proxy chain)"
+        ],
+        "actions": [
+          "Send GET /get with X-Forwarded-For: 1.2.3.4, 5.6.7.8",
+          "Assert origin equals exactly '1.2.3.4, 5.6.7.8'"
+        ],
+        "expected": [
+          "HTTP 200",
+          "origin equals '1.2.3.4, 5.6.7.8' verbatim (no truncation or splitting)"
+        ],
+        "trace": [
+          "R-HTTPBIN-034: X-Forwarded-For value is used as-is",
+          "BVA: boundary between single IP and multi-IP XFF header"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_xff_with_multiple_ips_preserved_exactly():\n    xff_value = '1.2.3.4, 5.6.7.8'\n    r = client.get('/get', headers={'X-Forwarded-For': xff_value})\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'origin' in data\n    assert data['origin'] == xff_value\n    assert data['origin'] != '1.2.3.4'\n    assert data['origin'] != '5.6.7.8'\n\ntest_xff_with_multiple_ips_preserved_exactly()"
+      },
+      {
+        "name": "test_origin_not_present_in_headers_only_endpoint",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Flask test client is initialized"
+        ],
+        "actions": [
+          "Send GET /headers (not an echo endpoint)",
+          "Assert response does NOT contain 'origin' key at top level"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response JSON has 'headers' key but no 'origin' key at top level"
+        ],
+        "trace": [
+          "R-HTTPBIN-034: only echo endpoints include origin; /headers does not",
+          "NEG: confirms origin is not leaked into non-echo endpoints"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_origin_not_present_in_headers_only_endpoint():\n    r = client.get('/headers')\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    assert 'origin' not in data\n\ntest_origin_not_present_in_headers_only_endpoint()"
+      },
+      {
+        "name": "test_xff_takes_precedence_over_remote_addr_decision_table",
+        "kind": "boundary",
+        "heuristic": "DT",
+        "preconditions": [
+          "Flask test client is initialized"
+        ],
+        "actions": [
+          "Send GET /get WITH X-Forwarded-For: 9.9.9.9 and verify origin == '9.9.9.9'",
+          "Send GET /get WITHOUT X-Forwarded-For and verify origin == '127.0.0.1'",
+          "Confirm the two results differ"
+        ],
+        "expected": [
+          "With XFF: origin == '9.9.9.9'",
+          "Without XFF: origin == '127.0.0.1'",
+          "The two values are not equal"
+        ],
+        "trace": [
+          "R-HTTPBIN-034: decision table - XFF present vs absent",
+          "DT + BVA: catches mutations that swap or ignore the header lookup"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_xff_takes_precedence_over_remote_addr_decision_table():\n    r_with = client.get('/get', headers={'X-Forwarded-For': '9.9.9.9'})\n    assert r_with.status_code == 200\n    origin_with = r_with.get_json()['origin']\n    assert origin_with == '9.9.9.9'\n\n    r_without = client.get('/get')\n    assert r_without.status_code == 200\n    origin_without = r_without.get_json()['origin']\n    assert origin_without == '127.0.0.1'\n\n    assert origin_with != origin_without\n\ntest_xff_takes_precedence_over_remote_addr_decision_table()"
+      },
+      {
+        "name": "test_post_no_xff_origin_is_remote_addr",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask test client is initialized",
+          "No X-Forwarded-For header"
+        ],
+        "actions": [
+          "Send POST /post without X-Forwarded-For",
+          "Assert origin == '127.0.0.1'"
+        ],
+        "expected": [
+          "HTTP 200",
+          "origin == '127.0.0.1'"
+        ],
+        "trace": [
+          "R-HTTPBIN-034: /post must fall back to remote_addr",
+          "EP: equivalence class - no XFF header on POST"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_post_no_xff_origin_is_remote_addr():\n    r = client.post('/post', data={})\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'origin' in data\n    assert data['origin'] == '127.0.0.1'\n\ntest_post_no_xff_origin_is_remote_addr()"
+      },
+      {
+        "name": "test_all_echo_endpoints_contain_origin_key",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask test client is initialized"
+        ],
+        "actions": [
+          "Send requests to /get /post /put /patch /delete",
+          "Assert each response JSON contains 'origin' key"
+        ],
+        "expected": [
+          "All five endpoints return HTTP 200",
+          "All five responses contain 'origin' key in JSON"
+        ],
+        "trace": [
+          "R-HTTPBIN-034: all echo endpoints must include origin",
+          "EP: covers all five endpoints as equivalence class"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_all_echo_endpoints_contain_origin_key():\n    endpoints = [\n        ('GET', '/get'),\n        ('POST', '/post'),\n        ('PUT', '/put'),\n        ('PATCH', '/patch'),\n        ('DELETE', '/delete'),\n    ]\n    for method, path in endpoints:\n        r = client.open(path, method=method)\n        assert r.status_code == 200, f\"{method} {path} returned {r.status_code}\"\n        data = r.get_json()\n        assert 'origin' in data, f\"'origin' missing from {method} {path}\"\n        assert data['origin'] is not None, f\"origin is None for {method} {path}\"\n\ntest_all_echo_endpoints_contain_origin_key()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-034",
+  "domain": "http_utilities",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9490,
+    "output_tokens": 4247,
+    "latency_ms": 50571,
+    "wall_ms": 50571,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-034\",\n  \"reasoning\": \"The requirement states that all echo endpoints (/get, /post, /put, /patch, /delete) must include the client origin IP in the 'origin' field, preferring X-Forwarded-For header over remote_addr. The key logic in helpers.py is: `origin=request.headers.get('X-Forwarded-For', request.remote_addr)`. Tests must cover: (1) positive - remote_addr used when no X-Forwarded-For present, (2) positive - X-Forwarded-For header takes precedence, (3) negative - absence of origin field would be caught, (4) boundary - X-Forwarded-For present but empty string vs absent, (5) decision table covering all five endpoints, (6) exact value assertions to kill mutations that change field name, header lookup order, or fallback logic.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_origin_uses_remote_addr_when_no_xff\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Flask test client is initialized\",\n        \"No X-Forwarded-For header is sent\"\n      ],\n      \"actions\": [\n        \"Send GET /get without X-Forwarded-For header\",\n        \"Parse JSON response\",\n        \"Check 'origin' field equals remote_addr (127.0.0.1)\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response JSON contains 'origin' key\",\n        \"origin value equals '127.0.0.1' (Flask test client remote_addr)\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-034: origin field must fall back to remote_addr when X-Forwarded-For absent\",\n        \"helpers.py: origin=request.headers.get('X-Forwarded-For', request.remote_addr)\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_get_origin_uses_remote_addr_when_no_xff():\\n    r = client.get('/get')\\n    assert r.status_code == 200\\n    data = r.get_json()\\n    assert 'origin' in data\\n    assert data['origin'] == '127.0.0.1'\\n\\ntest_get_origin_uses_remote_addr_when_no_xff()\"\n    },\n    {\n      \"name\": \"test_get_origin_uses_xff_when_present\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"DT\",\n      \"preconditions\": [\n        \"Flask test client is initialized\",\n        \"X-Forwarded-For header is set to a specific IP\"\n      ],\n      \"actions\": [\n        \"Send GET /get with X-Forwarded-For: 203.0.113.42\",\n        \"Parse JSON response\",\n        \"Assert 'origin' equals '203.0.113.42'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"origin field equals '203.0.113.42' exactly\",\n        \"X-Forwarded-For value takes precedence over remote_addr\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-034: X-Forwarded-For must be preferred over remote_addr\",\n        \"helpers.py: request.headers.get('X-Forwarded-For', request.remote_addr)\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_get_origin_uses_xff_when_present():\\n    r = client.get('/get', headers={'X-Forwarded-For': '203.0.113.42'})\\n    assert r.status_code == 200\\n    data = r.get_json()\\n    assert 'origin' in data\\n    assert data['origin'] == '203.0.113.42'\\n    assert data['origin'] != '127.0.0.1'\\n\\ntest_get_origin_uses_xff_when_present()\"\n    },\n    {\n      \"name\": \"test_post_origin_uses_xff_when_present\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Flask test client is initialized\",\n        \"X-Forwarded-For header is set\"\n      ],\n      \"actions\": [\n        \"Send POST /post with X-Forwarded-For: 198.51.100.7\",\n        \"Parse JSON response\",\n        \"Assert 'origin' equals '198.51.100.7'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"origin field equals '198.51.100.7'\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-034: /post endpoint must include origin\",\n        \"core.py view_post: get_dict includes 'origin'\"\n      ],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_post_origin_uses_xff_when_present():\\n    r = client.post('/post', headers={'X-Forwarded-For': '198.51.100.7'})\\n "
+  }
+}

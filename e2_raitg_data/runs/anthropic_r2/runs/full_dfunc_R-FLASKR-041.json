@@ -1,0 +1,213 @@
+{
+  "req": {
+    "id": "R-FLASKR-041",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "persistence",
+    "title": "Flaskr uses sqlite as backing store",
+    "statement": "The system shall persist users and posts in a sqlite3 database file named flaskr.sqlite by default.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "flaskr uses sqlite as backing store"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-041",
+    "reasoning": "R-FLASKR-041 requires that flaskr persists users and posts in a sqlite3 database file named flaskr.sqlite by default. Tests must verify: (1) the default DATABASE config path ends with 'flaskr.sqlite' (positive/EP), (2) a custom DATABASE path overrides the default and data is actually persisted there (positive/STC), (3) the database file is created on disk and is a valid sqlite3 file (boundary/BVA), (4) using a non-existent/invalid DB path causes failure (negative/NEG), and (5) user and post data written via the app can be read back from the sqlite file directly (positive/DT). All tests use in-process imports, exact assertions, and pre-loaded fixture data where applicable.",
+    "tests": [
+      {
+        "name": "test_default_database_config_path_ends_with_flaskr_sqlite",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "flaskr app created with no test_config (default config)"
+        ],
+        "actions": [
+          "Call create_app() with no arguments",
+          "Read app.config['DATABASE']"
+        ],
+        "expected": [
+          "app.config['DATABASE'] ends exactly with 'flaskr.sqlite'",
+          "The path separator before 'flaskr.sqlite' is os.sep or '/'"
+        ],
+        "trace": [
+          "R-FLASKR-041: system shall persist in sqlite3 file named flaskr.sqlite by default"
+        ],
+        "executable": "import os\nfrom flaskr import create_app\n\ndef test_default_database_config_path_ends_with_flaskr_sqlite():\n    app = create_app()\n    db_path = app.config['DATABASE']\n    assert isinstance(db_path, str)\n    assert db_path.endswith('flaskr.sqlite'), f\"Expected path ending with 'flaskr.sqlite', got: {db_path}\"\n    basename = os.path.basename(db_path)\n    assert basename == 'flaskr.sqlite', f\"Expected basename 'flaskr.sqlite', got: {basename}\"\n\ntest_default_database_config_path_ends_with_flaskr_sqlite()"
+      },
+      {
+        "name": "test_custom_database_path_overrides_default_and_persists_user",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "A temporary file path is created for the test database",
+          "App is created with TESTING=True and custom DATABASE path"
+        ],
+        "actions": [
+          "Create app with custom DATABASE path",
+          "Initialize the database via init_db()",
+          "Register a new user via POST /auth/register",
+          "Query the sqlite file directly to verify user row exists"
+        ],
+        "expected": [
+          "POST /auth/register returns HTTP 302",
+          "Redirect location is '/auth/login'",
+          "sqlite3 query on the custom DB file returns exactly one user row with username 'testuser'"
+        ],
+        "trace": [
+          "R-FLASKR-041: users persisted in sqlite3 database file"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_custom_database_path_overrides_default_and_persists_user():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n        client = app.test_client()\n        r = client.post('/auth/register', data={'username': 'testuser', 'password': 'testpass'})\n        assert r.status_code == 302, f\"Expected 302, got {r.status_code}\"\n        assert r.headers['Location'] == '/auth/login'\n        conn = sqlite3.connect(path)\n        rows = conn.execute(\"SELECT username FROM user WHERE username = 'testuser'\").fetchall()\n        conn.close()\n        assert len(rows) == 1, f\"Expected 1 user row, got {len(rows)}\"\n        assert rows[0][0] == 'testuser'\n    finally:\n        if os.path.exists(path):\n            os.unlink(path)\n\ntest_custom_database_path_overrides_default_and_persists_user()"
+      },
+      {
+        "name": "test_sqlite_file_created_on_disk_and_is_valid_sqlite3",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "A temporary directory is used so the DB file does not pre-exist",
+          "App is created with TESTING=True and DATABASE pointing to a new file path"
+        ],
+        "actions": [
+          "Create app with DATABASE path that does not yet exist",
+          "Call init_db() to create the schema",
+          "Check that the file exists on disk",
+          "Verify the file starts with the SQLite magic header bytes"
+        ],
+        "expected": [
+          "File exists at the configured DATABASE path after init_db()",
+          "File size > 0 bytes",
+          "First 6 bytes of file equal b'SQLite' (sqlite3 magic header)"
+        ],
+        "trace": [
+          "R-FLASKR-041: sqlite3 database file named flaskr.sqlite by default"
+        ],
+        "executable": "import os, tempfile\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_sqlite_file_created_on_disk_and_is_valid_sqlite3():\n    tmpdir = tempfile.mkdtemp()\n    db_path = os.path.join(tmpdir, 'flaskr.sqlite')\n    assert not os.path.exists(db_path) or os.path.getsize(db_path) == 0\n    app = create_app({'TESTING': True, 'DATABASE': db_path})\n    with app.app_context():\n        init_db()\n    assert os.path.exists(db_path), \"Database file was not created on disk\"\n    file_size = os.path.getsize(db_path)\n    assert file_size > 0, f\"Database file is empty (size={file_size})\"\n    with open(db_path, 'rb') as f:\n        header = f.read(16)\n    assert header[:6] == b'SQLite', f\"File does not start with SQLite magic header: {header[:6]!r}\"\n    if os.path.exists(db_path):\n        os.unlink(db_path)\n    os.rmdir(tmpdir)\n\ntest_sqlite_file_created_on_disk_and_is_valid_sqlite3()"
+      },
+      {
+        "name": "test_post_persisted_in_sqlite_and_readable_directly",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App initialized with TESTING=True and a fresh temp database",
+          "Database schema initialized via init_db()",
+          "User 'Rahul' registered and logged in"
+        ],
+        "actions": [
+          "Register user 'Rahul' with password 'stone'",
+          "Login as 'Rahul'",
+          "POST /create with title='Test Title' and body='Test Body'",
+          "Query the sqlite file directly for the post row"
+        ],
+        "expected": [
+          "POST /create returns HTTP 302",
+          "sqlite3 direct query returns exactly one post with title='Test Title' and body='Test Body'",
+          "author_id in the post row matches the user id for 'Rahul'"
+        ],
+        "trace": [
+          "R-FLASKR-041: posts persisted in sqlite3 database file"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_post_persisted_in_sqlite_and_readable_directly():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n        client = app.test_client()\n        client.post('/auth/register', data={'username': 'Rahul', 'password': 'stone'})\n        client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n        r = client.post('/create', data={'title': 'Test Title', 'body': 'Test Body'})\n        assert r.status_code == 302, f\"Expected 302, got {r.status_code}\"\n        conn = sqlite3.connect(path)\n        posts = conn.execute(\"SELECT title, body, author_id FROM post WHERE title = 'Test Title'\").fetchall()\n        users = conn.execute(\"SELECT id FROM user WHERE username = 'Rahul'\").fetchall()\n        conn.close()\n        assert len(posts) == 1, f\"Expected 1 post, got {len(posts)}\"\n        assert posts[0][0] == 'Test Title'\n        assert posts[0][1] == 'Test Body'\n        assert len(users) == 1\n        assert posts[0][2] == users[0][0]\n    finally:\n        if os.path.exists(path):\n            os.unlink(path)\n\ntest_post_persisted_in_sqlite_and_readable_directly()"
+      },
+      {
+        "name": "test_invalid_database_path_raises_error_on_db_access",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App configured with a DATABASE path in a non-existent directory"
+        ],
+        "actions": [
+          "Create app with DATABASE pointing to '/nonexistent_dir_xyz/flaskr.sqlite'",
+          "Attempt to call init_db() inside app context"
+        ],
+        "expected": [
+          "An exception is raised (OperationalError or OSError) when trying to connect to the invalid path",
+          "The exception is NOT silently swallowed"
+        ],
+        "trace": [
+          "R-FLASKR-041: error pathway \u2014 invalid DB path causes failure, not silent success"
+        ],
+        "executable": "import sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_invalid_database_path_raises_error_on_db_access():\n    bad_path = '/nonexistent_dir_xyz_abc_123/flaskr.sqlite'\n    app = create_app({'TESTING': True, 'DATABASE': bad_path})\n    raised = False\n    try:\n        with app.app_context():\n            init_db()\n    except (sqlite3.OperationalError, OSError, Exception) as e:\n        raised = True\n        err_str = str(e).lower()\n        assert any(kw in err_str for kw in ['unable to open', 'no such file', 'cannot open', 'operationalerror', 'permission']), \\\n            f\"Unexpected error message: {e}\"\n    assert raised is True, \"Expected an exception for invalid DB path, but none was raised\"\n\ntest_invalid_database_path_raises_error_on_db_access()"
+      },
+      {
+        "name": "test_default_config_database_name_is_exactly_flaskr_sqlite_not_variant",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App created with no test_config"
+        ],
+        "actions": [
+          "Create app with no arguments",
+          "Read app.config['DATABASE'] basename",
+          "Assert it is exactly 'flaskr.sqlite' and NOT 'flaskr.db', 'flaskr.sqlite3', or 'flask.sqlite'"
+        ],
+        "expected": [
+          "Basename is exactly 'flaskr.sqlite'",
+          "Basename is NOT 'flaskr.db'",
+          "Basename is NOT 'flaskr.sqlite3'",
+          "Basename is NOT 'flask.sqlite'"
+        ],
+        "trace": [
+          "R-FLASKR-041: file named flaskr.sqlite \u2014 exact name boundary check"
+        ],
+        "executable": "import os\nfrom flaskr import create_app\n\ndef test_default_config_database_name_is_exactly_flaskr_sqlite_not_variant():\n    app = create_app()\n    db_path = app.config['DATABASE']\n    basename = os.path.basename(db_path)\n    assert basename == 'flaskr.sqlite', f\"Expected exactly 'flaskr.sqlite', got '{basename}'\"\n    assert basename != 'flaskr.db', \"Database name must not be 'flaskr.db'\"\n    assert basename != 'flaskr.sqlite3', \"Database name must not be 'flaskr.sqlite3'\"\n    assert basename != 'flask.sqlite', \"Database name must not be 'flask.sqlite'\"\n    assert basename != 'flaskr_sqlite', \"Database name must not be 'flaskr_sqlite'\"\n    assert 'flaskr' in basename, \"Database name must contain 'flaskr'\"\n    assert basename.endswith('.sqlite'), \"Database name must end with '.sqlite'\"\n\ntest_default_config_database_name_is_exactly_flaskr_sqlite_not_variant()"
+      },
+      {
+        "name": "test_user_data_survives_across_separate_requests_via_sqlite",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App initialized with TESTING=True and fresh temp database",
+          "Database schema initialized"
+        ],
+        "actions": [
+          "Register user 'Anjali' with password 'cloud'",
+          "In a separate client request, login as 'Anjali'",
+          "Assert login redirects to index (HTTP 302 to '/') confirming persistence across requests"
+        ],
+        "expected": [
+          "Registration returns HTTP 302 to '/auth/login'",
+          "Login with same credentials returns HTTP 302 to '/'",
+          "User data persisted in sqlite between two separate HTTP requests"
+        ],
+        "trace": [
+          "R-FLASKR-041: users persisted in sqlite3 \u2014 data survives across requests (state transition)"
+        ],
+        "executable": "import os, tempfile\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_user_data_survives_across_separate_requests_via_sqlite():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': path})\n        with app.app_context():\n            init_db()\n        client = app.test_client()\n        r1 = client.post('/auth/register', data={'username': 'Anjali', 'password': 'cloud'})\n        assert r1.status_code == 302, f\"Register expected 302, got {r1.status_code}\"\n        assert r1.headers['Location'] == '/auth/login'\n        r2 = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\n        assert r2.status_code == 302, f\"Login expected 302, got {r2.status_code}\"\n        assert r2.headers['Location'] == '/'\n        r3 = client.post('/auth/login', data={'username': 'Anjali', 'password': 'wrongpass'})\n        assert r3.status_code == 200, f\"Bad login expected 200, got {r3.status_code}\"\n        assert b'Incorrect password.' in r3.data\n    finally:\n        if os.path.exists(path):\n            os.unlink(path)\n\ntest_user_data_survives_across_separate_requests_via_sqlite()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-041",
+  "domain": "blogging",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6324,
+    "output_tokens": 4242,
+    "latency_ms": 52998,
+    "wall_ms": 52998,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-041\",\n  \"reasoning\": \"R-FLASKR-041 requires that flaskr persists users and posts in a sqlite3 database file named flaskr.sqlite by default. Tests must verify: (1) the default DATABASE config path ends with 'flaskr.sqlite' (positive/EP), (2) a custom DATABASE path overrides the default and data is actually persisted there (positive/STC), (3) the database file is created on disk and is a valid sqlite3 file (boundary/BVA), (4) using a non-existent/invalid DB path causes failure (negative/NEG), and (5) user and post data written via the app can be read back from the sqlite file directly (positive/DT). All tests use in-process imports, exact assertions, and pre-loaded fixture data where applicable.\",\n  \"tests\": [\n    {\n      \"name\": \"test_default_database_config_path_ends_with_flaskr_sqlite\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"flaskr app created with no test_config (default config)\"\n      ],\n      \"actions\": [\n        \"Call create_app() with no arguments\",\n        \"Read app.config['DATABASE']\"\n      ],\n      \"expected\": [\n        \"app.config['DATABASE'] ends exactly with 'flaskr.sqlite'\",\n        \"The path separator before 'flaskr.sqlite' is os.sep or '/'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-041: system shall persist in sqlite3 file named flaskr.sqlite by default\"\n      ],\n      \"executable\": \"import os\\nfrom flaskr import create_app\\n\\ndef test_default_database_config_path_ends_with_flaskr_sqlite():\\n    app = create_app()\\n    db_path = app.config['DATABASE']\\n    assert isinstance(db_path, str)\\n    assert db_path.endswith('flaskr.sqlite'), f\\\"Expected path ending with 'flaskr.sqlite', got: {db_path}\\\"\\n    basename = os.path.basename(db_path)\\n    assert basename == 'flaskr.sqlite', f\\\"Expected basename 'flaskr.sqlite', got: {basename}\\\"\\n\\ntest_default_database_config_path_ends_with_flaskr_sqlite()\"\n    },\n    {\n      \"name\": \"test_custom_database_path_overrides_default_and_persists_user\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"A temporary file path is created for the test database\",\n        \"App is created with TESTING=True and custom DATABASE path\"\n      ],\n      \"actions\": [\n        \"Create app with custom DATABASE path\",\n        \"Initialize the database via init_db()\",\n        \"Register a new user via POST /auth/register\",\n        \"Query the sqlite file directly to verify user row exists\"\n      ],\n      \"expected\": [\n        \"POST /auth/register returns HTTP 302\",\n        \"Redirect location is '/auth/login'\",\n        \"sqlite3 query on the custom DB file returns exactly one user row with username 'testuser'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-041: users persisted in sqlite3 database file\"\n      ],\n      \"executable\": \"import os, tempfile, sqlite3\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\ndef test_custom_database_path_overrides_default_and_persists_user():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    try:\\n        app = create_app({'TESTING': True, 'DATABASE': path})\\n        with app.app_context():\\n            init_db()\\n        client = app.test_client()\\n        r = client.post('/auth/register', data={'username': 'testuser', 'password': 'testpass'})\\n        assert r.status_code == 302, f\\\"Expected 302, got {r.status_code}\\\"\\n        assert r.headers['Location'] == '/auth/login'\\n        conn = sqlite3.connect(path)\\n        rows = conn.execute(\\\"SELECT username FROM user WHERE username = 'testuser'\\\").fetchall()\\n        conn.close()\\n        assert len(rows) == 1, f\\\"Expected 1 user row, got {len(rows)}\\\"\\n        assert rows[0][0] == 'testuser'\\n    finally:\\n        if os.path.exists(path):\\n            os.unlink(path)\\n\\ntest_custom_database_path_overrides_default_and_persists_user()\"\n    },\n    {\n      \"name\": \"test_sqlite_file_created_on_disk_and_is_valid_sqlite3\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"B"
+  }
+}

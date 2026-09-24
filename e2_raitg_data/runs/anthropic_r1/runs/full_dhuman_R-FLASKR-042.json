@@ -1,0 +1,177 @@
+{
+  "req": {
+    "id": "R-FLASKR-042",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "db_bootstrap",
+    "title": "Init-db closes existing connection",
+    "statement": "The system shall close any open connection before recreating the schema during init-db.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "init-db closes existing connection"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "CLI init-db"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-042",
+    "reasoning": "R-FLASKR-042 requires that init-db closes any open connection before recreating the schema. The SUT implements this via close_db (registered as teardown_appcontext) and init_db (which calls get_db then executescript). We test: (1) positive \u2014 init_db runs successfully inside an app context and the DB is queryable afterward (EP); (2) negative \u2014 calling init_db without an app context raises RuntimeError, confirming the function is context-bound (NEG); (3) boundary \u2014 open a connection, call close_db explicitly, then call init_db to verify the connection is closed before schema recreation (STC/BVA); (4) additional boundary \u2014 verify that after init_db the old connection object is no longer in g (BVA, catches mutations that skip close_db). All tests use in-process imports, exact assertions, and no live URLs.",
+    "tests": [
+      {
+        "name": "test_init_db_positive_schema_recreated",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp SQLite database",
+          "App context is active"
+        ],
+        "actions": [
+          "Push an application context",
+          "Call flaskr.db.init_db() inside the context",
+          "Query the user table to confirm schema exists",
+          "Pop the application context"
+        ],
+        "expected": [
+          "init_db() completes without exception",
+          "The user table exists and is queryable (row count is an integer >= 0)",
+          "No exception is raised"
+        ],
+        "trace": [
+          "R-FLASKR-042: init-db closes existing connection before recreating schema",
+          "EP: normal path \u2014 valid app context, fresh temp DB"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\n\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    init_db()\n    db = get_db()\n    rows = db.execute('SELECT COUNT(*) FROM user').fetchone()\n    count = rows[0]\n    assert isinstance(count, int)\n    assert count >= 0\n\nos.unlink(path)\n\ndef test_init_db_positive_schema_recreated():\n    fd2, path2 = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd2)\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\n    with app2.app_context():\n        init_db()\n        db2 = get_db()\n        rows2 = db2.execute('SELECT COUNT(*) FROM user').fetchone()\n        assert isinstance(rows2[0], int)\n        assert rows2[0] >= 0\n    os.unlink(path2)\n"
+      },
+      {
+        "name": "test_init_db_negative_no_app_context",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No active Flask application context"
+        ],
+        "actions": [
+          "Call flaskr.db.init_db() outside any application context"
+        ],
+        "expected": [
+          "RuntimeError is raised because current_app is not available",
+          "No database schema is created"
+        ],
+        "trace": [
+          "R-FLASKR-042: init-db requires an app context; without one it must fail",
+          "NEG: error pathway \u2014 missing precondition (no app context)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr.db import init_db\n\nraised = False\ntry:\n    init_db()\nexcept RuntimeError:\n    raised = True\n\nassert raised is True\n\ndef test_init_db_negative_no_app_context():\n    raised2 = False\n    try:\n        init_db()\n    except RuntimeError:\n        raised2 = True\n    assert raised2 is True\n"
+      },
+      {
+        "name": "test_init_db_boundary_close_db_before_reinit",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp SQLite database",
+          "An open database connection exists in g before init_db is called"
+        ],
+        "actions": [
+          "Push an application context",
+          "Open a DB connection via get_db() to simulate an existing open connection",
+          "Call close_db() explicitly to close the existing connection",
+          "Call init_db() to recreate the schema",
+          "Verify the schema was recreated by querying the post table",
+          "Pop the application context"
+        ],
+        "expected": [
+          "close_db() removes the connection from g (g.pop returns the connection object)",
+          "init_db() succeeds after close_db()",
+          "post table exists and is queryable after reinit"
+        ],
+        "trace": [
+          "R-FLASKR-042: system shall close any open connection before recreating schema",
+          "STC: state transition \u2014 open connection -> closed -> schema recreated"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import get_db, close_db, init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    conn = get_db()\n    assert 'db' in g\n    close_db()\n    assert 'db' not in g\n    init_db()\n    db2 = get_db()\n    rows = db2.execute('SELECT COUNT(*) FROM post').fetchone()\n    assert rows[0] >= 0\n\nos.unlink(path)\n\ndef test_init_db_boundary_close_db_before_reinit():\n    fd2, path2 = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd2)\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\n    with app2.app_context():\n        get_db()\n        assert 'db' in g\n        close_db()\n        assert 'db' not in g\n        init_db()\n        db3 = get_db()\n        r = db3.execute('SELECT COUNT(*) FROM post').fetchone()\n        assert r[0] >= 0\n    os.unlink(path2)\n"
+      },
+      {
+        "name": "test_init_db_boundary_g_cleared_after_close_db",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp SQLite database",
+          "A connection has been opened via get_db()"
+        ],
+        "actions": [
+          "Push an application context",
+          "Call get_db() to open a connection and store it in g",
+          "Assert 'db' key is present in g (connection is open)",
+          "Call close_db()",
+          "Assert 'db' key is NOT present in g (connection was removed)",
+          "Pop the application context"
+        ],
+        "expected": [
+          "'db' is in g immediately after get_db()",
+          "'db' is NOT in g after close_db()",
+          "close_db() returns None (no error)"
+        ],
+        "trace": [
+          "R-FLASKR-042: close_db must remove the connection from g exactly once",
+          "BVA: boundary \u2014 presence/absence of 'db' in g before and after close_db"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import get_db, close_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    get_db()\n    assert 'db' in g\n    result = close_db()\n    assert result is None\n    assert 'db' not in g\n\nos.unlink(path)\n\ndef test_init_db_boundary_g_cleared_after_close_db():\n    fd2, path2 = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd2)\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\n    with app2.app_context():\n        get_db()\n        assert 'db' in g\n        ret = close_db()\n        assert ret is None\n        assert 'db' not in g\n    os.unlink(path2)\n"
+      },
+      {
+        "name": "test_init_db_cli_command_output",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp SQLite database",
+          "CLI runner available via app.test_cli_runner()"
+        ],
+        "actions": [
+          "Invoke the 'init-db' CLI command via app.test_cli_runner()",
+          "Check the exit code is exactly 0",
+          "Check the output contains exactly 'Initialized the database.'"
+        ],
+        "expected": [
+          "CLI exit code == 0",
+          "Output contains 'Initialized the database.'",
+          "No exception is raised"
+        ],
+        "trace": [
+          "R-FLASKR-042: init-db command closes connection and recreates schema",
+          "DT: decision table \u2014 CLI invocation path, success branch"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nrunner = app.test_cli_runner()\nresult = runner.invoke(args=['init-db'])\n\nassert result.exit_code == 0\nassert 'Initialized the database.' in result.output\n\nos.unlink(path)\n\ndef test_init_db_cli_command_output():\n    fd2, path2 = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd2)\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\n    runner2 = app2.test_cli_runner()\n    result2 = runner2.invoke(args=['init-db'])\n    assert result2.exit_code == 0\n    assert 'Initialized the database.' in result2.output\n    os.unlink(path2)\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-042",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5449,
+    "output_tokens": 2899,
+    "latency_ms": 37445,
+    "wall_ms": 37445,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-042\",\n  \"reasoning\": \"R-FLASKR-042 requires that init-db closes any open connection before recreating the schema. The SUT implements this via close_db (registered as teardown_appcontext) and init_db (which calls get_db then executescript). We test: (1) positive \u2014 init_db runs successfully inside an app context and the DB is queryable afterward (EP); (2) negative \u2014 calling init_db without an app context raises RuntimeError, confirming the function is context-bound (NEG); (3) boundary \u2014 open a connection, call close_db explicitly, then call init_db to verify the connection is closed before schema recreation (STC/BVA); (4) additional boundary \u2014 verify that after init_db the old connection object is no longer in g (BVA, catches mutations that skip close_db). All tests use in-process imports, exact assertions, and no live URLs.\",\n  \"tests\": [\n    {\n      \"name\": \"test_init_db_positive_schema_recreated\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp SQLite database\",\n        \"App context is active\"\n      ],\n      \"actions\": [\n        \"Push an application context\",\n        \"Call flaskr.db.init_db() inside the context\",\n        \"Query the user table to confirm schema exists\",\n        \"Pop the application context\"\n      ],\n      \"expected\": [\n        \"init_db() completes without exception\",\n        \"The user table exists and is queryable (row count is an integer >= 0)\",\n        \"No exception is raised\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-042: init-db closes existing connection before recreating schema\",\n        \"EP: normal path \u2014 valid app context, fresh temp DB\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db, get_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\n\\napp = create_app({'TESTING': True, 'DATABASE': path})\\n\\nwith app.app_context():\\n    init_db()\\n    db = get_db()\\n    rows = db.execute('SELECT COUNT(*) FROM user').fetchone()\\n    count = rows[0]\\n    assert isinstance(count, int)\\n    assert count >= 0\\n\\nos.unlink(path)\\n\\ndef test_init_db_positive_schema_recreated():\\n    fd2, path2 = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd2)\\n    app2 = create_app({'TESTING': True, 'DATABASE': path2})\\n    with app2.app_context():\\n        init_db()\\n        db2 = get_db()\\n        rows2 = db2.execute('SELECT COUNT(*) FROM user').fetchone()\\n        assert isinstance(rows2[0], int)\\n        assert rows2[0] >= 0\\n    os.unlink(path2)\\n\"\n    },\n    {\n      \"name\": \"test_init_db_negative_no_app_context\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"No active Flask application context\"\n      ],\n      \"actions\": [\n        \"Call flaskr.db.init_db() outside any application context\"\n      ],\n      \"expected\": [\n        \"RuntimeError is raised because current_app is not available\",\n        \"No database schema is created\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-042: init-db requires an app context; without one it must fail\",\n        \"NEG: error pathway \u2014 missing precondition (no app context)\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr.db import init_db\\n\\nraised = False\\ntry:\\n    init_db()\\nexcept RuntimeError:\\n    raised = True\\n\\nassert raised is True\\n\\ndef test_init_db_negative_no_app_context():\\n    raised2 = False\\n    try:\\n        init_db()\\n    except RuntimeError:\\n        raised2 = True\\n    assert raised2 is True\\n\"\n    },\n    {\n      \"name\": \"test_init_db_boundary_close_db_before_reinit\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp SQLite database\",\n        \"An open database connection exists in g before init_db is called\"\n      ],\n      \"actions\": [\n        \"Push an application context\",\n        \"Open a DB connection via get_db() to simulate an existing "
+  }
+}

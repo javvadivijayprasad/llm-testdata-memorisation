@@ -1,0 +1,348 @@
+{
+  "req": {
+    "id": "R-FLASKR-041",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "persistence",
+    "title": "Flaskr uses sqlite as backing store",
+    "statement": "The system shall persist users and posts in a sqlite3 database file named flaskr.sqlite by default.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "flaskr uses sqlite as backing store"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-041",
+    "reasoning": "R-FLASKR-041 requires that Flaskr persists users and posts in a sqlite3 database file named flaskr.sqlite by default. Tests must verify: (1) the default DATABASE config points to a path ending in 'flaskr.sqlite', (2) user registration data is actually persisted to the sqlite file and survives across separate connections, (3) post creation data is persisted and retrievable, (4) the database file is a valid sqlite3 file (magic bytes), (5) boundary conditions like single-char titles/bodies are accepted, and (6) negative cases like missing required fields are rejected. All tests use in-process app factory with a temp database, init_db() to set up schema, and direct sqlite3 queries to verify persistence independent of the HTTP layer.",
+    "tests": [
+      {
+        "name": "test_default_database_path_ends_with_flaskr_sqlite",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App created with no test_config (default config)"
+        ],
+        "actions": [
+          "Call create_app() with no arguments",
+          "Read app.config['DATABASE']"
+        ],
+        "expected": [
+          "DATABASE config value ends with 'flaskr.sqlite'",
+          "Path uses os.path.join with instance_path"
+        ],
+        "trace": [
+          "R-FLASKR-041: system shall persist in sqlite3 file named flaskr.sqlite by default"
+        ],
+        "executable": "import os\nfrom flaskr import create_app\n\ndef test_default_database_path_ends_with_flaskr_sqlite():\n    app = create_app()\n    db_path = app.config['DATABASE']\n    assert os.path.basename(db_path) == 'flaskr.sqlite'\n    assert db_path == os.path.join(app.instance_path, 'flaskr.sqlite')\n\ntest_default_database_path_ends_with_flaskr_sqlite()"
+      },
+      {
+        "name": "test_user_registration_persisted_to_sqlite_file",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Temp sqlite file created",
+          "App initialized with temp DATABASE",
+          "Schema initialized via init_db()"
+        ],
+        "actions": [
+          "POST /auth/register with username='Rahul' password='stone'",
+          "Open sqlite3 connection directly to the file",
+          "Query user table for the registered username"
+        ],
+        "expected": [
+          "POST returns 302 redirect to /auth/login",
+          "Direct sqlite3 query finds exactly 1 row with username='Rahul'",
+          "Password field is not plain text (hashed)"
+        ],
+        "trace": [
+          "R-FLASKR-041: users persisted in sqlite3 database"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_user_registration_persisted_to_sqlite_file():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/register', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'\n    conn = sqlite3.connect(path)\n    rows = conn.execute(\"SELECT username, password FROM user WHERE username = 'Rahul'\").fetchall()\n    conn.close()\n    assert len(rows) == 1\n    assert rows[0][0] == 'Rahul'\n    assert rows[0][1] != 'stone'\n    os.unlink(path)\n\ntest_user_registration_persisted_to_sqlite_file()"
+      },
+      {
+        "name": "test_post_creation_persisted_to_sqlite_file",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Temp sqlite file created",
+          "App initialized with temp DATABASE",
+          "Schema initialized",
+          "User 'Rahul' registered and logged in"
+        ],
+        "actions": [
+          "POST /create with title='Pulse ember signal' body='Alpha delta willow'",
+          "Open sqlite3 connection directly to the file",
+          "Query post table for the created title"
+        ],
+        "expected": [
+          "POST returns 302 redirect to /",
+          "Direct sqlite3 query finds exactly 1 post with matching title",
+          "author_id matches the registered user's id"
+        ],
+        "trace": [
+          "R-FLASKR-041: posts persisted in sqlite3 database"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_post_creation_persisted_to_sqlite_file():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    client.post('/auth/register', data={'username': 'Rahul', 'password': 'stone'})\n    client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    r = client.post('/create', data={'title': 'Pulse ember signal', 'body': 'Alpha delta willow'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    conn = sqlite3.connect(path)\n    rows = conn.execute(\"SELECT title, body, author_id FROM post WHERE title = 'Pulse ember signal'\").fetchall()\n    uid = conn.execute(\"SELECT id FROM user WHERE username = 'Rahul'\").fetchone()[0]\n    conn.close()\n    assert len(rows) == 1\n    assert rows[0][0] == 'Pulse ember signal'\n    assert rows[0][1] == 'Alpha delta willow'\n    assert rows[0][2] == uid\n    os.unlink(path)\n\ntest_post_creation_persisted_to_sqlite_file()"
+      },
+      {
+        "name": "test_sqlite_file_has_valid_sqlite3_magic_bytes",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Temp sqlite file created",
+          "App initialized with temp DATABASE",
+          "Schema initialized via init_db()"
+        ],
+        "actions": [
+          "Read first 16 bytes of the database file after init_db()"
+        ],
+        "expected": [
+          "First 16 bytes equal the SQLite3 magic header 'SQLite format 3\\x00'"
+        ],
+        "trace": [
+          "R-FLASKR-041: backing store is sqlite3"
+        ],
+        "executable": "import os, tempfile\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_sqlite_file_has_valid_sqlite3_magic_bytes():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    with open(path, 'rb') as f:\n        magic = f.read(16)\n    assert magic == b'SQLite format 3\\x00'\n    os.unlink(path)\n\ntest_sqlite_file_has_valid_sqlite3_magic_bytes()"
+      },
+      {
+        "name": "test_persistence_survives_separate_app_context",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Temp sqlite file created",
+          "App initialized with temp DATABASE",
+          "Schema initialized",
+          "User registered in first app context"
+        ],
+        "actions": [
+          "Register user in first client session",
+          "Create second app instance pointing to same file",
+          "Query user table via second app context"
+        ],
+        "expected": [
+          "User registered in first session is found via second app context's get_db()",
+          "username matches exactly 'Anjali'"
+        ],
+        "trace": [
+          "R-FLASKR-041: data persisted across connections (sqlite file is durable)"
+        ],
+        "executable": "import os, tempfile\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\ndef test_persistence_survives_separate_app_context():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app1 = create_app({'TESTING': True, 'DATABASE': path})\n    with app1.app_context():\n        init_db()\n    client1 = app1.test_client()\n    r = client1.post('/auth/register', data={'username': 'Anjali', 'password': 'cloud'})\n    assert r.status_code == 302\n    app2 = create_app({'TESTING': True, 'DATABASE': path})\n    with app2.app_context():\n        db = get_db()\n        row = db.execute(\"SELECT username FROM user WHERE username = 'Anjali'\").fetchone()\n        assert row is not None\n        assert row['username'] == 'Anjali'\n    os.unlink(path)\n\ntest_persistence_survives_separate_app_context()"
+      },
+      {
+        "name": "test_boundary_single_char_title_and_body_post_persisted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Temp sqlite file created",
+          "Schema initialized",
+          "User logged in"
+        ],
+        "actions": [
+          "POST /create with title='A' (1 char, minimum) and body='A' (1 char, minimum)",
+          "Query sqlite directly for the post"
+        ],
+        "expected": [
+          "POST returns 302",
+          "Post with title='A' and body='A' found in sqlite file",
+          "Exactly 1 such row exists"
+        ],
+        "trace": [
+          "R-FLASKR-041: boundary-valid post (min-length title/body) persisted; BVA boundary-mutation catch"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_boundary_single_char_title_and_body_post_persisted():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    client.post('/auth/register', data={'username': 'Ishaan', 'password': 'stone'})\n    client.post('/auth/login', data={'username': 'Ishaan', 'password': 'stone'})\n    r = client.post('/create', data={'title': 'A', 'body': 'A'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    conn = sqlite3.connect(path)\n    rows = conn.execute(\"SELECT title, body FROM post WHERE title = 'A' AND body = 'A'\").fetchall()\n    conn.close()\n    assert len(rows) == 1\n    assert rows[0][0] == 'A'\n    assert rows[0][1] == 'A'\n    os.unlink(path)\n\ntest_boundary_single_char_title_and_body_post_persisted()"
+      },
+      {
+        "name": "test_boundary_empty_title_post_rejected_not_persisted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Temp sqlite file created",
+          "Schema initialized",
+          "User logged in"
+        ],
+        "actions": [
+          "POST /create with title='' (zero chars, below minimum) and body='some body'",
+          "Query sqlite directly for any post with empty title"
+        ],
+        "expected": [
+          "POST returns 200 (form re-rendered with error, not redirect)",
+          "No post with empty title exists in sqlite file",
+          "Error message 'Title is required.' present in response"
+        ],
+        "trace": [
+          "R-FLASKR-041: boundary-invalid post (empty title) must NOT be persisted; BVA off-by-one mutation catch"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_boundary_empty_title_post_rejected_not_persisted():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    client.post('/auth/register', data={'username': 'Diya', 'password': 'cloud'})\n    client.post('/auth/login', data={'username': 'Diya', 'password': 'cloud'})\n    r = client.post('/create', data={'title': '', 'body': 'some body'})\n    assert r.status_code == 200\n    assert b'Title is required.' in r.data\n    conn = sqlite3.connect(path)\n    rows = conn.execute(\"SELECT id FROM post WHERE title = ''\").fetchall()\n    conn.close()\n    assert len(rows) == 0\n    os.unlink(path)\n\ntest_boundary_empty_title_post_rejected_not_persisted()"
+      },
+      {
+        "name": "test_negative_duplicate_username_not_persisted_twice",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Temp sqlite file created",
+          "Schema initialized",
+          "User 'Rahul' already registered"
+        ],
+        "actions": [
+          "Register 'Rahul' a second time with same username",
+          "Query sqlite for count of rows with username='Rahul'"
+        ],
+        "expected": [
+          "Second registration returns 200 (error page, not redirect)",
+          "Response contains 'already registered'",
+          "Exactly 1 row with username='Rahul' in sqlite (no duplicate)"
+        ],
+        "trace": [
+          "R-FLASKR-041: sqlite UNIQUE constraint on username prevents duplicate user persistence; NEG + comparison-mutation catch"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_negative_duplicate_username_not_persisted_twice():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r1 = client.post('/auth/register', data={'username': 'Rahul', 'password': 'stone'})\n    assert r1.status_code == 302\n    r2 = client.post('/auth/register', data={'username': 'Rahul', 'password': 'stone'})\n    assert r2.status_code == 200\n    assert b'already registered' in r2.data\n    conn = sqlite3.connect(path)\n    count = conn.execute(\"SELECT COUNT(*) FROM user WHERE username = 'Rahul'\").fetchone()[0]\n    conn.close()\n    assert count == 1\n    os.unlink(path)\n\ntest_negative_duplicate_username_not_persisted_twice()"
+      },
+      {
+        "name": "test_negative_missing_username_registration_not_persisted",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Temp sqlite file created",
+          "Schema initialized"
+        ],
+        "actions": [
+          "POST /auth/register with username='' and password='stone'",
+          "Query sqlite user table for total row count"
+        ],
+        "expected": [
+          "POST returns 200 (error, not redirect)",
+          "Response contains 'Username is required.'",
+          "user table remains empty (0 rows)"
+        ],
+        "trace": [
+          "R-FLASKR-041: invalid user data must not be persisted to sqlite; NEG + boolean-mutation catch"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_negative_missing_username_registration_not_persisted():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/register', data={'username': '', 'password': 'stone'})\n    assert r.status_code == 200\n    assert b'Username is required.' in r.data\n    conn = sqlite3.connect(path)\n    count = conn.execute('SELECT COUNT(*) FROM user').fetchone()[0]\n    conn.close()\n    assert count == 0\n    os.unlink(path)\n\ntest_negative_missing_username_registration_not_persisted()"
+      },
+      {
+        "name": "test_negative_missing_password_registration_not_persisted",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Temp sqlite file created",
+          "Schema initialized"
+        ],
+        "actions": [
+          "POST /auth/register with username='James' and password=''",
+          "Query sqlite user table for total row count"
+        ],
+        "expected": [
+          "POST returns 200 (error, not redirect)",
+          "Response contains 'Password is required.'",
+          "user table remains empty (0 rows)"
+        ],
+        "trace": [
+          "R-FLASKR-041: invalid user data (missing password) must not be persisted; NEG + boolean-mutation catch"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_negative_missing_password_registration_not_persisted():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/register', data={'username': 'James', 'password': ''})\n    assert r.status_code == 200\n    assert b'Password is required.' in r.data\n    conn = sqlite3.connect(path)\n    count = conn.execute('SELECT COUNT(*) FROM user').fetchone()[0]\n    conn.close()\n    assert count == 0\n    os.unlink(path)\n\ntest_negative_missing_password_registration_not_persisted()"
+      },
+      {
+        "name": "test_database_tables_user_and_post_exist_after_init_db",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Temp sqlite file created",
+          "App initialized with temp DATABASE",
+          "init_db() called"
+        ],
+        "actions": [
+          "Query sqlite_master for table names after init_db()",
+          "Check both 'user' and 'post' tables exist"
+        ],
+        "expected": [
+          "Table 'user' exists in sqlite_master",
+          "Table 'post' exists in sqlite_master",
+          "Exactly these 2 tables present"
+        ],
+        "trace": [
+          "R-FLASKR-041: sqlite backing store must contain user and post tables after initialization"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_database_tables_user_and_post_exist_after_init_db():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    conn = sqlite3.connect(path)\n    tables = {row[0] for row in conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()}\n    conn.close()\n    assert 'user' in tables\n    assert 'post' in tables\n    os.unlink(path)\n\ntest_database_tables_user_and_post_exist_after_init_db()"
+      },
+      {
+        "name": "test_custom_database_path_overrides_default",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Two temp sqlite files created at distinct paths"
+        ],
+        "actions": [
+          "Create app with custom DATABASE path (not ending in flaskr.sqlite)",
+          "Read app.config['DATABASE']"
+        ],
+        "expected": [
+          "app.config['DATABASE'] equals the custom path exactly",
+          "Custom path does NOT end with 'flaskr.sqlite'"
+        ],
+        "trace": [
+          "R-FLASKR-041: default is flaskr.sqlite but test_config overrides it; DT covers config branch"
+        ],
+        "executable": "import os, tempfile\nfrom flaskr import create_app\n\ndef test_custom_database_path_overrides_default():\n    fd, path = tempfile.mkstemp(suffix='.db')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    assert app.config['DATABASE'] == path\n    assert not app.config['DATABASE'].endswith('flaskr.sqlite')\n    os.unlink(path)\n\ntest_custom_database_path_overrides_default()"
+      },
+      {
+        "name": "test_post_delete_removes_row_from_sqlite",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Temp sqlite file created",
+          "Schema initialized",
+          "User registered and logged in",
+          "Post created"
+        ],
+        "actions": [
+          "Create a post",
+          "Record its id from sqlite",
+          "POST /<id>/delete",
+          "Query sqlite for that post id"
+        ],
+        "expected": [
+          "Delete returns 302 to /",
+          "Post row no longer exists in sqlite (0 rows for that id)"
+        ],
+        "trace": [
+          "R-FLASKR-041: delete operation removes post from sqlite persistence layer; STC state transition"
+        ],
+        "executable": "import os, tempfile, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_post_delete_removes_row_from_sqlite():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    client.post('/auth/register', data={'username': 'Rahul', 'password': 'stone'})\n    client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    client.post('/create', data={'title': 'ToDelete', 'body': 'body text'})\n    conn = sqlite3.connect(path)\n    post_id = conn.execute(\"SELECT id FROM post WHERE title = 'ToDelete'\").fetchone()[0]\n    conn.close()\n    r = client.post(f'/{post_id}/delete')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    conn = sqlite3.connect(path)\n    row = conn.execute('SELECT id FROM post WHERE id = ?', (post_id,)).fetchone()\n    conn.close()\n    assert row is None\n    os.unlink(path)\n\ntest_post_delete_removes_row_from_sqlite()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-041",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8447,
+    "output_tokens": 6165,
+    "latency_ms": 71559,
+    "wall_ms": 71559,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-041\",\n  \"reasoning\": \"R-FLASKR-041 requires that Flaskr persists users and posts in a sqlite3 database file named flaskr.sqlite by default. Tests must verify: (1) the default DATABASE config points to a path ending in 'flaskr.sqlite', (2) user registration data is actually persisted to the sqlite file and survives across separate connections, (3) post creation data is persisted and retrievable, (4) the database file is a valid sqlite3 file (magic bytes), (5) boundary conditions like single-char titles/bodies are accepted, and (6) negative cases like missing required fields are rejected. All tests use in-process app factory with a temp database, init_db() to set up schema, and direct sqlite3 queries to verify persistence independent of the HTTP layer.\",\n  \"tests\": [\n    {\n      \"name\": \"test_default_database_path_ends_with_flaskr_sqlite\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\"App created with no test_config (default config)\"],\n      \"actions\": [\"Call create_app() with no arguments\", \"Read app.config['DATABASE']\"],\n      \"expected\": [\"DATABASE config value ends with 'flaskr.sqlite'\", \"Path uses os.path.join with instance_path\"],\n      \"trace\": [\"R-FLASKR-041: system shall persist in sqlite3 file named flaskr.sqlite by default\"],\n      \"executable\": \"import os\\nfrom flaskr import create_app\\n\\ndef test_default_database_path_ends_with_flaskr_sqlite():\\n    app = create_app()\\n    db_path = app.config['DATABASE']\\n    assert os.path.basename(db_path) == 'flaskr.sqlite'\\n    assert db_path == os.path.join(app.instance_path, 'flaskr.sqlite')\\n\\ntest_default_database_path_ends_with_flaskr_sqlite()\"\n    },\n    {\n      \"name\": \"test_user_registration_persisted_to_sqlite_file\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\"Temp sqlite file created\", \"App initialized with temp DATABASE\", \"Schema initialized via init_db()\"],\n      \"actions\": [\"POST /auth/register with username='Rahul' password='stone'\", \"Open sqlite3 connection directly to the file\", \"Query user table for the registered username\"],\n      \"expected\": [\"POST returns 302 redirect to /auth/login\", \"Direct sqlite3 query finds exactly 1 row with username='Rahul'\", \"Password field is not plain text (hashed)\"],\n      \"trace\": [\"R-FLASKR-041: users persisted in sqlite3 database\"],\n      \"executable\": \"import os, tempfile, sqlite3\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\ndef test_user_registration_persisted_to_sqlite_file():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/register', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/auth/login'\\n    conn = sqlite3.connect(path)\\n    rows = conn.execute(\\\"SELECT username, password FROM user WHERE username = 'Rahul'\\\").fetchall()\\n    conn.close()\\n    assert len(rows) == 1\\n    assert rows[0][0] == 'Rahul'\\n    assert rows[0][1] != 'stone'\\n    os.unlink(path)\\n\\ntest_user_registration_persisted_to_sqlite_file()\"\n    },\n    {\n      \"name\": \"test_post_creation_persisted_to_sqlite_file\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\"Temp sqlite file created\", \"App initialized with temp DATABASE\", \"Schema initialized\", \"User 'Rahul' registered and logged in\"],\n      \"actions\": [\"POST /create with title='Pulse ember signal' body='Alpha delta willow'\", \"Open sqlite3 connection directly to the file\", \"Query post table for the created title\"],\n      \"expected\": [\"POST returns 302 redirect to /\", \"Direct sqlite3 query finds exactly 1 post with matching title\", \"author_id matches the registered user's id\"],\n      \"trace\": [\"R-FLASKR-041: posts persisted in sqlite3 database\"],\n      \"executable\": \"import os, tempfile, sqlite3\\nfrom"
+  }
+}

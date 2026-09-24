@@ -1,0 +1,165 @@
+{
+  "req": {
+    "id": "R-TASK-015",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Mark task complete",
+    "statement": "The system shall set completed=true when a PUT payload includes {\"completed\": true}.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "mark task complete"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-015",
+    "reasoning": "R-TASK-015 requires that PUT /tasks/{task_id} with {\"completed\": true} sets completed=true and returns HTTP 2xx. I design: (1) a positive EP test that creates a task with completed=false then PUTs completed=true and asserts the exact response fields; (2) a negative NEG test that PUTs to a non-existent task_id and asserts HTTP 404 with exact detail; (3) a boundary STC test that verifies the state transition completed=true -> completed=false (round-trip), catching boolean-negation and assignment mutations; (4) a DT test that sends only the completed field (partial update) and asserts other fields are unchanged; (5) a BVA test that sends completed=false to a completed=true task, asserting the exact false value is stored, catching mutations that always set true.",
+    "tests": [
+      {
+        "name": "test_put_mark_task_complete_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty before test",
+          "A task is created via POST with completed=false"
+        ],
+        "actions": [
+          "POST /tasks/ with {\"title\": \"ep task\", \"completed\": false}",
+          "PUT /tasks/{task_id} with {\"completed\": true}"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON has completed == true",
+          "Response JSON id matches created task id",
+          "Response JSON title matches original title"
+        ],
+        "trace": [
+          "R-TASK-015: system shall set completed=true when PUT payload includes {\"completed\": true}"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_ep_complete.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_put_mark_task_complete_positive():\n    r_create = client.post(\"/tasks/\", json={\"title\": \"ep task\", \"completed\": False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()[\"id\"]\n    assert r_create.json()[\"completed\"] == False\n\n    r_put = client.put(f\"/tasks/{task_id}\", json={\"completed\": True})\n    assert r_put.status_code == 200\n    body = r_put.json()\n    assert body[\"completed\"] == True\n    assert body[\"id\"] == task_id\n    assert body[\"title\"] == \"ep task\"\n"
+      },
+      {
+        "name": "test_put_mark_complete_nonexistent_task_negative",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty before test",
+          "No task with id 99999 exists"
+        ],
+        "actions": [
+          "PUT /tasks/99999 with {\"completed\": true}"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response JSON detail contains 'not found'"
+        ],
+        "trace": [
+          "R-TASK-015 error pathway: HTTP 4xx on client error (task not found)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_neg_complete.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_put_mark_complete_nonexistent_task_negative():\n    r = client.put(\"/tasks/99999\", json={\"completed\": True})\n    assert r.status_code == 404\n    body = r.json()\n    assert \"detail\" in body\n    assert \"not found\" in body[\"detail\"].lower()\n    assert \"99999\" in body[\"detail\"]\n"
+      },
+      {
+        "name": "test_put_mark_complete_state_transition_true_to_false",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database is empty before test",
+          "A task is created with completed=true"
+        ],
+        "actions": [
+          "POST /tasks/ with {\"title\": \"stc task\", \"completed\": true}",
+          "PUT /tasks/{task_id} with {\"completed\": false}"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON completed == false (not true)",
+          "State transition from true to false is persisted"
+        ],
+        "trace": [
+          "R-TASK-015: state transition coverage \u2014 completed can transition both directions; catches boolean-negation mutations"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_stc_complete.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_put_mark_complete_state_transition_true_to_false():\n    r_create = client.post(\"/tasks/\", json={\"title\": \"stc task\", \"completed\": True})\n    assert r_create.status_code == 201\n    task_id = r_create.json()[\"id\"]\n    assert r_create.json()[\"completed\"] == True\n\n    r_put = client.put(f\"/tasks/{task_id}\", json={\"completed\": False})\n    assert r_put.status_code == 200\n    body = r_put.json()\n    assert body[\"completed\"] == False\n    assert body[\"completed\"] is not True\n    assert body[\"id\"] == task_id\n\n    r_get = client.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 200\n    assert r_get.json()[\"completed\"] == False\n"
+      },
+      {
+        "name": "test_put_mark_complete_partial_update_preserves_other_fields",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty before test",
+          "A task is created with a specific title and description"
+        ],
+        "actions": [
+          "POST /tasks/ with {\"title\": \"dt task\", \"description\": \"dt desc\", \"completed\": false}",
+          "PUT /tasks/{task_id} with only {\"completed\": true}"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "completed == true",
+          "title unchanged == \"dt task\"",
+          "description unchanged == \"dt desc\""
+        ],
+        "trace": [
+          "R-TASK-015: partial PUT with only completed=true must not alter other fields; catches mutations in update_data loop"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_dt_complete.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_put_mark_complete_partial_update_preserves_other_fields():\n    r_create = client.post(\"/tasks/\", json={\"title\": \"dt task\", \"description\": \"dt desc\", \"completed\": False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()[\"id\"]\n\n    r_put = client.put(f\"/tasks/{task_id}\", json={\"completed\": True})\n    assert r_put.status_code == 200\n    body = r_put.json()\n    assert body[\"completed\"] == True\n    assert body[\"title\"] == \"dt task\"\n    assert body[\"description\"] == \"dt desc\"\n    assert body[\"id\"] == task_id\n"
+      },
+      {
+        "name": "test_put_mark_complete_false_on_already_false_task",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty before test",
+          "A task is created with completed=false"
+        ],
+        "actions": [
+          "POST /tasks/ with {\"title\": \"bva task\", \"completed\": false}",
+          "PUT /tasks/{task_id} with {\"completed\": false}"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "completed remains exactly false (not true)",
+          "No mutation of completed to true"
+        ],
+        "trace": [
+          "R-TASK-015 BVA: boundary at boolean false \u2014 catches mutations that always set completed=true regardless of payload"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nimport sqlalchemy, app.database as _db, app.models as _m\n\n_db.SQLALCHEMY_DATABASE_URL = \"sqlite:///./test_bva_complete.db\"\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n_m.Base.metadata.drop_all(bind=_db.engine)\n_m.Base.metadata.create_all(bind=_db.engine)\n\nclient = TestClient(app)\n\ndef test_put_mark_complete_false_on_already_false_task():\n    r_create = client.post(\"/tasks/\", json={\"title\": \"bva task\", \"completed\": False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()[\"id\"]\n    assert r_create.json()[\"completed\"] == False\n\n    r_put = client.put(f\"/tasks/{task_id}\", json={\"completed\": False})\n    assert r_put.status_code == 200\n    body = r_put.json()\n    assert body[\"completed\"] == False\n    assert body[\"completed\"] is not True\n    assert body[\"id\"] == task_id\n\n    r_get = client.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 200\n    assert r_get.json()[\"completed\"] == False\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-015",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4855,
+    "output_tokens": 3272,
+    "latency_ms": 36974,
+    "wall_ms": 36974,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-015\",\n  \"reasoning\": \"R-TASK-015 requires that PUT /tasks/{task_id} with {\\\"completed\\\": true} sets completed=true and returns HTTP 2xx. I design: (1) a positive EP test that creates a task with completed=false then PUTs completed=true and asserts the exact response fields; (2) a negative NEG test that PUTs to a non-existent task_id and asserts HTTP 404 with exact detail; (3) a boundary STC test that verifies the state transition completed=true -> completed=false (round-trip), catching boolean-negation and assignment mutations; (4) a DT test that sends only the completed field (partial update) and asserts other fields are unchanged; (5) a BVA test that sends completed=false to a completed=true task, asserting the exact false value is stored, catching mutations that always set true.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_mark_task_complete_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty before test\",\n        \"A task is created via POST with completed=false\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with {\\\"title\\\": \\\"ep task\\\", \\\"completed\\\": false}\",\n        \"PUT /tasks/{task_id} with {\\\"completed\\\": true}\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response JSON has completed == true\",\n        \"Response JSON id matches created task id\",\n        \"Response JSON title matches original title\"\n      ],\n      \"trace\": [\n        \"R-TASK-015: system shall set completed=true when PUT payload includes {\\\"completed\\\": true}\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nimport sqlalchemy, app.database as _db, app.models as _m\\n\\n_db.SQLALCHEMY_DATABASE_URL = \\\"sqlite:///./test_ep_complete.db\\\"\\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\\\"check_same_thread\\\": False})\\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\\n_m.Base.metadata.drop_all(bind=_db.engine)\\n_m.Base.metadata.create_all(bind=_db.engine)\\n\\nclient = TestClient(app)\\n\\ndef test_put_mark_task_complete_positive():\\n    r_create = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"ep task\\\", \\\"completed\\\": False})\\n    assert r_create.status_code == 201\\n    task_id = r_create.json()[\\\"id\\\"]\\n    assert r_create.json()[\\\"completed\\\"] == False\\n\\n    r_put = client.put(f\\\"/tasks/{task_id}\\\", json={\\\"completed\\\": True})\\n    assert r_put.status_code == 200\\n    body = r_put.json()\\n    assert body[\\\"completed\\\"] == True\\n    assert body[\\\"id\\\"] == task_id\\n    assert body[\\\"title\\\"] == \\\"ep task\\\"\\n\"\n    },\n    {\n      \"name\": \"test_put_mark_complete_nonexistent_task_negative\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty before test\",\n        \"No task with id 99999 exists\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/99999 with {\\\"completed\\\": true}\"\n      ],\n      \"expected\": [\n        \"HTTP 404 response\",\n        \"Response JSON detail contains 'not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-015 error pathway: HTTP 4xx on client error (task not found)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nimport sqlalchemy, app.database as _db, app.models as _m\\n\\n_db.SQLALCHEMY_DATABASE_URL = \\\"sqlite:///./test_neg_complete.db\\\"\\n_db.engine = sqlalchemy.create_engine(_db.SQLALCHEMY_DATABASE_URL, connect_args={\\\"check_same_thread\\\": False})\\n_db.SessionLocal = sqlalchemy.orm.sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\\n_m.Base.metadata.drop_all(bind=_db.engine)\\n_m.Base.metadata.create_all(bind=_db.engine)\\n\\nclient = TestClient(app)\\n\\ndef test_put_mark_complete_nonexistent_task_negative():\\n    r = client.put(\\\"/tasks/99999\\\", json={\\\"completed\\\": True})\\n    assert r.status_code == 404\\n    body = r.json()\\n    assert \\\"detail\\\" in body\\n    assert \\\"not found\\\" in bo"
+  }
+}

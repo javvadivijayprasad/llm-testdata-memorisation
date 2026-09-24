@@ -1,0 +1,165 @@
+{
+  "req": {
+    "id": "R-FLASKR-043",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "security",
+    "title": "Session cookie has HttpOnly attribute",
+    "statement": "The system shall set HttpOnly on the session cookie.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "session cookie has httponly attribute"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "Set-Cookie"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-043",
+    "reasoning": "The requirement mandates that the session cookie carries the HttpOnly attribute. To test this we must trigger session-cookie creation (via POST /auth/login with valid credentials), then inspect the Set-Cookie response header. Three angles are needed: (1) positive \u2013 valid login produces a session cookie with HttpOnly; (2) negative \u2013 a page that does NOT set a session cookie (e.g. GET /auth/login) should not emit a session cookie at all, confirming the attribute is tied to actual session creation; (3) boundary \u2013 immediately after logout the session cookie is cleared/expired and the replacement cookie must still carry HttpOnly. All tests use exact string matching to catch mutations that remove or rename the attribute.",
+    "tests": [
+      {
+        "name": "test_session_cookie_has_httponly_on_login",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh database",
+          "User 'Rahul' with password 'stone' exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul and password=stone",
+          "Inspect the Set-Cookie header of the response"
+        ],
+        "expected": [
+          "HTTP 302 redirect response",
+          "Set-Cookie header is present",
+          "Cookie value contains 'HttpOnly' attribute (case-insensitive)",
+          "Cookie name is 'session'"
+        ],
+        "trace": [
+          "R-FLASKR-043: session cookie must have HttpOnly attribute"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_session_cookie_has_httponly_on_login():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    set_cookie = r.headers.get('Set-Cookie', '')\n    assert set_cookie != '', 'Set-Cookie header must be present after login'\n    assert 'session' in set_cookie, 'Cookie name must be session'\n    assert 'HttpOnly' in set_cookie, 'HttpOnly attribute must appear in Set-Cookie'\n\ntest_session_cookie_has_httponly_on_login()"
+      },
+      {
+        "name": "test_no_session_cookie_on_unauthenticated_get",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh database",
+          "No login action is performed"
+        ],
+        "actions": [
+          "GET /auth/login (no credentials submitted)",
+          "Inspect the Set-Cookie header of the response"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "No Set-Cookie header that sets a new session cookie with HttpOnly is emitted for a plain GET that does not create a session"
+        ],
+        "trace": [
+          "R-FLASKR-043: HttpOnly is only relevant when a session cookie is actually set; a plain GET must not create a spurious session cookie"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_no_session_cookie_on_unauthenticated_get():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.get('/auth/login')\n    assert r.status_code == 200\n    set_cookie = r.headers.get('Set-Cookie', '')\n    # A plain GET to the login page must not set a session cookie\n    # (no user_id stored, so no session write occurs)\n    if set_cookie:\n        # If a cookie IS set it must still carry HttpOnly\n        assert 'HttpOnly' in set_cookie, (\n            'Any cookie set must carry HttpOnly; found: ' + set_cookie\n        )\n\ntest_no_session_cookie_on_unauthenticated_get()"
+      },
+      {
+        "name": "test_session_cookie_httponly_persists_after_logout",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh database",
+          "User 'Anjali' with password 'cloud' exists in the database",
+          "User has already logged in (session cookie exists)"
+        ],
+        "actions": [
+          "POST /auth/login with username=Anjali and password=cloud",
+          "Assert login Set-Cookie carries HttpOnly",
+          "GET /auth/logout",
+          "Assert the logout Set-Cookie (session deletion) also carries HttpOnly"
+        ],
+        "expected": [
+          "Login response: HTTP 302, Set-Cookie contains HttpOnly",
+          "Logout response: HTTP 302, Set-Cookie contains HttpOnly (cookie deletion still uses HttpOnly)"
+        ],
+        "trace": [
+          "R-FLASKR-043: HttpOnly must be present on the session cookie at every state transition including deletion"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_session_cookie_httponly_persists_after_logout():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    # Step 1: login\n    r_login = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\n    assert r_login.status_code == 302\n    login_cookie = r_login.headers.get('Set-Cookie', '')\n    assert 'session' in login_cookie, 'session cookie must be set on login'\n    assert 'HttpOnly' in login_cookie, 'HttpOnly must be present on login Set-Cookie'\n    # Step 2: logout\n    r_logout = client.get('/auth/logout')\n    assert r_logout.status_code == 302\n    logout_cookie = r_logout.headers.get('Set-Cookie', '')\n    if logout_cookie and 'session' in logout_cookie:\n        assert 'HttpOnly' in logout_cookie, (\n            'HttpOnly must be present on logout Set-Cookie; found: ' + logout_cookie\n        )\n\ntest_session_cookie_httponly_persists_after_logout()"
+      },
+      {
+        "name": "test_session_cookie_httponly_exact_attribute_spelling",
+        "kind": "positive",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh database",
+          "User 'Ishaan' with password 'stone' exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with username=Ishaan and password=stone",
+          "Split the Set-Cookie header on semicolons",
+          "Check that exactly the token 'HttpOnly' (stripped) appears as one of the directives"
+        ],
+        "expected": [
+          "HTTP 302 response",
+          "One of the semicolon-delimited cookie directives equals 'HttpOnly' exactly (catches case mutations and substring false-positives)"
+        ],
+        "trace": [
+          "R-FLASKR-043: exact spelling and presence of HttpOnly directive"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_session_cookie_httponly_exact_attribute_spelling():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Ishaan', 'password': 'stone'})\n    assert r.status_code == 302\n    set_cookie = r.headers.get('Set-Cookie', '')\n    assert set_cookie != ''\n    directives = [part.strip() for part in set_cookie.split(';')]\n    httponly_present = any(d == 'HttpOnly' for d in directives)\n    assert httponly_present, (\n        'Expected directive HttpOnly (exact) in: ' + set_cookie\n    )\n\ntest_session_cookie_httponly_exact_attribute_spelling()"
+      },
+      {
+        "name": "test_session_cookie_httponly_with_wrong_credentials_no_cookie",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh database",
+          "Login attempt uses incorrect password"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul and password=wrongpassword",
+          "Inspect response status and Set-Cookie header"
+        ],
+        "expected": [
+          "HTTP 200 response (login page re-rendered with error)",
+          "No session cookie is set (failed login must not create a session)"
+        ],
+        "trace": [
+          "R-FLASKR-043: HttpOnly attribute is only relevant when a session is actually created; failed login must not create a session cookie"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_session_cookie_httponly_with_wrong_credentials_no_cookie():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'wrongpassword'})\n    assert r.status_code == 200\n    set_cookie = r.headers.get('Set-Cookie', '')\n    # A failed login must not set a session cookie containing a user_id\n    # If any cookie is set it must NOT be a valid session with HttpOnly\n    # (the session should remain empty / not written)\n    assert b'Incorrect password' in r.data or b'Incorrect' in r.data\n    # Confirm no redirect happened (no session created)\n    assert r.status_code != 302\n\ntest_session_cookie_httponly_with_wrong_credentials_no_cookie()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-043",
+  "domain": "blogging",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6309,
+    "output_tokens": 2906,
+    "latency_ms": 39612,
+    "wall_ms": 39612,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-043\",\n  \"reasoning\": \"The requirement mandates that the session cookie carries the HttpOnly attribute. To test this we must trigger session-cookie creation (via POST /auth/login with valid credentials), then inspect the Set-Cookie response header. Three angles are needed: (1) positive \u2013 valid login produces a session cookie with HttpOnly; (2) negative \u2013 a page that does NOT set a session cookie (e.g. GET /auth/login) should not emit a session cookie at all, confirming the attribute is tied to actual session creation; (3) boundary \u2013 immediately after logout the session cookie is cleared/expired and the replacement cookie must still carry HttpOnly. All tests use exact string matching to catch mutations that remove or rename the attribute.\",\n  \"tests\": [\n    {\n      \"name\": \"test_session_cookie_has_httponly_on_login\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App is initialised with TESTING=True and a fresh database\",\n        \"User 'Rahul' with password 'stone' exists in the database\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul and password=stone\",\n        \"Inspect the Set-Cookie header of the response\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect response\",\n        \"Set-Cookie header is present\",\n        \"Cookie value contains 'HttpOnly' attribute (case-insensitive)\",\n        \"Cookie name is 'session'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-043: session cookie must have HttpOnly attribute\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_session_cookie_has_httponly_on_login():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302\\n    set_cookie = r.headers.get('Set-Cookie', '')\\n    assert set_cookie != '', 'Set-Cookie header must be present after login'\\n    assert 'session' in set_cookie, 'Cookie name must be session'\\n    assert 'HttpOnly' in set_cookie, 'HttpOnly attribute must appear in Set-Cookie'\\n\\ntest_session_cookie_has_httponly_on_login()\"\n    },\n    {\n      \"name\": \"test_no_session_cookie_on_unauthenticated_get\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is initialised with TESTING=True and a fresh database\",\n        \"No login action is performed\"\n      ],\n      \"actions\": [\n        \"GET /auth/login (no credentials submitted)\",\n        \"Inspect the Set-Cookie header of the response\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"No Set-Cookie header that sets a new session cookie with HttpOnly is emitted for a plain GET that does not create a session\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-043: HttpOnly is only relevant when a session cookie is actually set; a plain GET must not create a spurious session cookie\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_no_session_cookie_on_unauthenticated_get():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.get('/auth/login')\\n    assert r.status_code == 200\\n    set_cookie = r.headers.get('Set-Cookie', '')\\n    # A plain GET to the login page must not set a session cookie\\n    # (no user_id stored, so no session write occurs)\\n    if set_cookie:\\n        # If a cookie IS set it must still carry HttpOnly\\n        assert 'HttpOnly' in set_cookie, (\\n            'Any cookie set must carry HttpOnly; found: ' + set_cookie\\n        )\\n\\ntest_no_session_cookie_on_unauthenticated_get()\"\n    },\n    {\n      \"name"
+  }
+}

@@ -1,0 +1,178 @@
+{
+  "req": {
+    "id": "R-FLASKR-042",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "db_bootstrap",
+    "title": "Init-db closes existing connection",
+    "statement": "The system shall close any open connection before recreating the schema during init-db.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "init-db closes existing connection"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "CLI init-db"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-042",
+    "reasoning": "R-FLASKR-042 requires that init-db closes any open connection before recreating the schema. The key behaviour lives in close_db (called via teardown) and init_db (which calls get_db then executescript). We test: (1) positive \u2014 init_db runs successfully inside an app context, the DB is re-initialised and the schema tables exist afterwards; (2) negative \u2014 calling close_db explicitly before init_db does not leave a dangling connection that causes an error; (3) boundary \u2014 opening a connection, then running init_db_command via the CLI runner, verifying the command echoes 'Initialized the database.' and the connection is properly closed/replaced. We also add a state-transition test that verifies the connection object present before init_db is different from (or absent after) the teardown cycle, catching mutations that skip close_db.",
+    "tests": [
+      {
+        "name": "test_init_db_positive_schema_recreated",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp SQLite path",
+          "App context is active"
+        ],
+        "actions": [
+          "Push an application context",
+          "Call flaskr.db.init_db() inside the context",
+          "Query sqlite_master for table names",
+          "Pop the context"
+        ],
+        "expected": [
+          "init_db() completes without raising an exception",
+          "Tables 'user' and 'post' exist in the database after init_db"
+        ],
+        "trace": [
+          "R-FLASKR-042: schema is recreated; connection must have been closed and reopened cleanly"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite'); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\ndef test_init_db_positive_schema_recreated():\n    with app.app_context():\n        init_db()\n        db = get_db()\n        tables = db.execute(\n            \"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\"\n        ).fetchall()\n        table_names = {row[0] for row in tables}\n        assert 'user' in table_names\n        assert 'post' in table_names\n"
+      },
+      {
+        "name": "test_init_db_closes_existing_connection_before_reinit",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp SQLite path",
+          "An open DB connection exists in g before init_db is called"
+        ],
+        "actions": [
+          "Push an application context",
+          "Call get_db() to open a connection and store a reference",
+          "Call close_db() explicitly (simulating teardown)",
+          "Call init_db() to reinitialise the schema",
+          "Verify the old connection is closed (calling execute on it raises ProgrammingError)",
+          "Verify new connection works correctly"
+        ],
+        "expected": [
+          "The old connection object raises sqlite3.ProgrammingError when used after close_db",
+          "init_db() succeeds and new get_db() returns a working connection"
+        ],
+        "trace": [
+          "R-FLASKR-042: existing connection must be closed before schema recreation"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import get_db, close_db, init_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite'); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\ndef test_init_db_closes_existing_connection_before_reinit():\n    with app.app_context():\n        init_db()\n        old_conn = get_db()\n        close_db()\n        raised = False\n        try:\n            old_conn.execute(\"SELECT 1\")\n        except Exception:\n            raised = True\n        assert raised is True\n        init_db()\n        new_conn = get_db()\n        result = new_conn.execute(\"SELECT 1\").fetchone()\n        assert result[0] == 1\n"
+      },
+      {
+        "name": "test_init_db_command_closes_connection_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp SQLite path",
+          "A connection is opened exactly once before the CLI command runs"
+        ],
+        "actions": [
+          "Push an application context",
+          "Open a DB connection via get_db() to establish exactly one open connection",
+          "Invoke init_db_command via Flask CLI test runner",
+          "Check the CLI output contains exactly 'Initialized the database.'",
+          "Verify the connection stored in g before the command is no longer usable"
+        ],
+        "expected": [
+          "CLI exit code is 0",
+          "Output is exactly 'Initialized the database.\\n'",
+          "The pre-existing connection is closed (raises on use)"
+        ],
+        "trace": [
+          "R-FLASKR-042: boundary \u2014 exactly one open connection exists; init-db must close it"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\nfrom click.testing import CliRunner\nfrom flaskr.db import init_db_command\n\nfd, path = tempfile.mkstemp(suffix='.sqlite'); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\ndef test_init_db_command_closes_connection_boundary():\n    with app.app_context():\n        init_db()\n        old_conn = get_db()\n        old_conn_ref = old_conn\n    runner = CliRunner()\n    with app.app_context():\n        result = runner.invoke(init_db_command, catch_exceptions=False)\n    assert result.exit_code == 0\n    assert result.output == 'Initialized the database.\\n'\n    raised = False\n    try:\n        old_conn_ref.execute(\"SELECT 1\")\n    except Exception:\n        raised = True\n    assert raised is True\n"
+      },
+      {
+        "name": "test_init_db_state_transition_connection_replaced",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp SQLite path",
+          "No prior connection exists in g"
+        ],
+        "actions": [
+          "Push an application context",
+          "Call init_db() \u2014 state: schema created, connection open in g",
+          "Record the id() of the current connection",
+          "Pop the context (triggers teardown/close_db)",
+          "Push a new application context",
+          "Call init_db() again \u2014 state: schema recreated, fresh connection",
+          "Record the id() of the new connection",
+          "Assert the two connection ids differ"
+        ],
+        "expected": [
+          "Second init_db() succeeds without error",
+          "Connection object after second init_db is a different Python object than the first"
+        ],
+        "trace": [
+          "R-FLASKR-042: state transition \u2014 open -> closed -> open; each init-db cycle uses a fresh connection"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite'); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\ndef test_init_db_state_transition_connection_replaced():\n    with app.app_context():\n        init_db()\n        conn_id_first = id(get_db())\n    with app.app_context():\n        init_db()\n        conn_id_second = id(get_db())\n    assert conn_id_first != conn_id_second\n    with app.app_context():\n        db = get_db()\n        tables = db.execute(\n            \"SELECT name FROM sqlite_master WHERE type='table'\"\n        ).fetchall()\n        names = {r[0] for r in tables}\n        assert 'user' in names\n        assert 'post' in names\n"
+      },
+      {
+        "name": "test_init_db_idempotent_double_call",
+        "kind": "boundary",
+        "heuristic": "DT",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp SQLite path",
+          "App context is active"
+        ],
+        "actions": [
+          "Push an application context",
+          "Call init_db() a first time",
+          "Call init_db() a second time within the same context (connection already open)",
+          "Verify schema tables still exist and are queryable"
+        ],
+        "expected": [
+          "Both calls to init_db() succeed without raising",
+          "Tables 'user' and 'post' exist after both calls",
+          "Querying user table returns 0 rows (schema wiped by second init_db)"
+        ],
+        "trace": [
+          "R-FLASKR-042: decision table \u2014 connection open before second init_db; must handle gracefully"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite'); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\n\ndef test_init_db_idempotent_double_call():\n    with app.app_context():\n        init_db()\n        init_db()\n        db = get_db()\n        tables = db.execute(\n            \"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\"\n        ).fetchall()\n        names = {r[0] for r in tables}\n        assert 'user' in names\n        assert 'post' in names\n        user_count = db.execute(\"SELECT COUNT(*) FROM user\").fetchone()[0]\n        assert user_count == 0\n        post_count = db.execute(\"SELECT COUNT(*) FROM post\").fetchone()[0]\n        assert post_count == 0\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-042",
+  "domain": "blogging",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6573,
+    "output_tokens": 2784,
+    "latency_ms": 38763,
+    "wall_ms": 38763,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-042\",\n  \"reasoning\": \"R-FLASKR-042 requires that init-db closes any open connection before recreating the schema. The key behaviour lives in close_db (called via teardown) and init_db (which calls get_db then executescript). We test: (1) positive \u2014 init_db runs successfully inside an app context, the DB is re-initialised and the schema tables exist afterwards; (2) negative \u2014 calling close_db explicitly before init_db does not leave a dangling connection that causes an error; (3) boundary \u2014 opening a connection, then running init_db_command via the CLI runner, verifying the command echoes 'Initialized the database.' and the connection is properly closed/replaced. We also add a state-transition test that verifies the connection object present before init_db is different from (or absent after) the teardown cycle, catching mutations that skip close_db.\",\n  \"tests\": [\n    {\n      \"name\": \"test_init_db_positive_schema_recreated\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp SQLite path\",\n        \"App context is active\"\n      ],\n      \"actions\": [\n        \"Push an application context\",\n        \"Call flaskr.db.init_db() inside the context\",\n        \"Query sqlite_master for table names\",\n        \"Pop the context\"\n      ],\n      \"expected\": [\n        \"init_db() completes without raising an exception\",\n        \"Tables 'user' and 'post' exist in the database after init_db\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-042: schema is recreated; connection must have been closed and reopened cleanly\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db, get_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite'); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\n\\ndef test_init_db_positive_schema_recreated():\\n    with app.app_context():\\n        init_db()\\n        db = get_db()\\n        tables = db.execute(\\n            \\\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\\\"\\n        ).fetchall()\\n        table_names = {row[0] for row in tables}\\n        assert 'user' in table_names\\n        assert 'post' in table_names\\n\"\n    },\n    {\n      \"name\": \"test_init_db_closes_existing_connection_before_reinit\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp SQLite path\",\n        \"An open DB connection exists in g before init_db is called\"\n      ],\n      \"actions\": [\n        \"Push an application context\",\n        \"Call get_db() to open a connection and store a reference\",\n        \"Call close_db() explicitly (simulating teardown)\",\n        \"Call init_db() to reinitialise the schema\",\n        \"Verify the old connection is closed (calling execute on it raises ProgrammingError)\",\n        \"Verify new connection works correctly\"\n      ],\n      \"expected\": [\n        \"The old connection object raises sqlite3.ProgrammingError when used after close_db\",\n        \"init_db() succeeds and new get_db() returns a working connection\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-042: existing connection must be closed before schema recreation\"\n      ],\n      \"executable\": \"import tempfile, os, sqlite3\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, close_db, init_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite'); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\n\\ndef test_init_db_closes_existing_connection_before_reinit():\\n    with app.app_context():\\n        init_db()\\n        old_conn = get_db()\\n        close_db()\\n        raised = False\\n        try:\\n            old_conn.execute(\\\"SELECT 1\\\")\\n        except Exception:\\n            raised = True\\n        assert raised is True\\n        init_db()\\n        new_conn = get_db()\\n        result = new_conn.execute(\\\"SELECT 1\\\").fetchone()\\n        assert result[0] == 1\\n\"\n    },\n    {\n     "
+  }
+}

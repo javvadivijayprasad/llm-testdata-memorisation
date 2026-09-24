@@ -1,0 +1,189 @@
+{
+  "req": {
+    "id": "R-FLASKR-028",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Session persists across requests",
+    "statement": "The system shall keep session['user_id'] populated across requests until logout for authenticated users.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "session persists across requests"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-028",
+    "reasoning": "R-FLASKR-028 requires that session['user_id'] persists across multiple requests after login and is cleared only on logout. Tests must cover: (1) positive \u2014 session persists across several authenticated requests; (2) negative \u2014 session is absent before login and after logout; (3) boundary \u2014 session state at the exact transition points (login \u2192 first request, logout \u2192 next request). Mutation resilience is achieved by asserting exact status codes, exact redirect locations, exact session key presence/absence, and exact response content markers. State Transition Coverage drives the login\u2192persist\u2192logout arc; NEG covers the unauthenticated and post-logout states; BVA covers the boundary transitions.",
+    "tests": [
+      {
+        "name": "test_session_persists_across_multiple_authenticated_requests",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "User Rahul (id=1, password=stone) exists in the database",
+          "Client has not yet logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "GET / (index) \u2014 first subsequent request",
+          "GET /create \u2014 second subsequent request (login_required route)",
+          "GET / (index) \u2014 third subsequent request"
+        ],
+        "expected": [
+          "Login POST returns 302 redirect to /",
+          "All subsequent GET requests return 200",
+          "Session cookie is present and consistent across all requests",
+          "Protected route /create returns 200 (not redirect to login)"
+        ],
+        "trace": [
+          "R-FLASKR-028: session['user_id'] populated across requests until logout"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\ndef test_session_persists_across_multiple_authenticated_requests():\n    client = app.test_client()\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess\n    r_login = client.post('/auth/login',\n                          data={'username': 'Rahul', 'password': 'stone'},\n                          follow_redirects=False)\n    assert r_login.status_code == 302\n    assert r_login.headers['Location'] == '/'\n    with client.session_transaction() as sess:\n        assert sess['user_id'] == 1\n    r1 = client.get('/')\n    assert r1.status_code == 200\n    with client.session_transaction() as sess:\n        assert sess['user_id'] == 1\n    r2 = client.get('/create')\n    assert r2.status_code == 200\n    with client.session_transaction() as sess:\n        assert sess['user_id'] == 1\n    r3 = client.get('/')\n    assert r3.status_code == 200\n    with client.session_transaction() as sess:\n        assert sess['user_id'] == 1\n\ntest_session_persists_across_multiple_authenticated_requests()"
+      },
+      {
+        "name": "test_session_absent_before_login_and_cleared_after_logout",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "User Anjali (id=2, password=cloud) exists in the database",
+          "Client has not yet logged in"
+        ],
+        "actions": [
+          "Inspect session before any login \u2014 user_id must be absent",
+          "POST /auth/login with username=Anjali, password=cloud",
+          "Verify session['user_id'] == 2 after login",
+          "GET /auth/logout",
+          "Inspect session after logout \u2014 user_id must be absent",
+          "GET /create \u2014 must redirect to login (not 200)"
+        ],
+        "expected": [
+          "Before login: session has no user_id key",
+          "After login: session['user_id'] == 2 exactly",
+          "Logout returns 302 redirect to /",
+          "After logout: session has no user_id key",
+          "GET /create after logout returns 302 to /auth/login"
+        ],
+        "trace": [
+          "R-FLASKR-028: session cleared on logout; unauthenticated state has no user_id"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\ndef test_session_absent_before_login_and_cleared_after_logout():\n    client = app.test_client()\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess\n    r_login = client.post('/auth/login',\n                          data={'username': 'Anjali', 'password': 'cloud'},\n                          follow_redirects=False)\n    assert r_login.status_code == 302\n    with client.session_transaction() as sess:\n        assert 'user_id' in sess\n        assert sess['user_id'] == 2\n    r_logout = client.get('/auth/logout', follow_redirects=False)\n    assert r_logout.status_code == 302\n    assert r_logout.headers['Location'] == '/'\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess\n    r_create = client.get('/create', follow_redirects=False)\n    assert r_create.status_code == 302\n    assert r_create.headers['Location'] == '/auth/login'\n\ntest_session_absent_before_login_and_cleared_after_logout()"
+      },
+      {
+        "name": "test_session_boundary_at_login_and_immediately_after_logout",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "User Ishaan (id=3, password=stone) exists in the database",
+          "Client has not yet logged in"
+        ],
+        "actions": [
+          "Confirm session has no user_id immediately before login POST",
+          "POST /auth/login \u2014 boundary: the exact moment session is set",
+          "Confirm session['user_id'] == 3 on the very first request after login",
+          "GET /auth/logout \u2014 boundary: the exact moment session is cleared",
+          "Confirm session has no user_id on the very first request after logout"
+        ],
+        "expected": [
+          "Immediately before login: 'user_id' not in session",
+          "Immediately after login POST: session['user_id'] == 3 (exact value)",
+          "First GET after login returns 200 and session still has user_id == 3",
+          "Immediately after logout GET: 'user_id' not in session",
+          "First GET after logout to protected route returns 302 to /auth/login"
+        ],
+        "trace": [
+          "R-FLASKR-028: boundary at login transition (no session \u2192 session) and logout transition (session \u2192 no session)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\ndef test_session_boundary_at_login_and_immediately_after_logout():\n    client = app.test_client()\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess\n    r_login = client.post('/auth/login',\n                          data={'username': 'Ishaan', 'password': 'stone'},\n                          follow_redirects=False)\n    assert r_login.status_code == 302\n    with client.session_transaction() as sess:\n        assert 'user_id' in sess\n        assert sess['user_id'] == 3\n    r_first = client.get('/')\n    assert r_first.status_code == 200\n    with client.session_transaction() as sess:\n        assert sess['user_id'] == 3\n    r_logout = client.get('/auth/logout', follow_redirects=False)\n    assert r_logout.status_code == 302\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess\n    r_after = client.get('/create', follow_redirects=False)\n    assert r_after.status_code == 302\n    assert r_after.headers['Location'] == '/auth/login'\n\ntest_session_boundary_at_login_and_immediately_after_logout()"
+      },
+      {
+        "name": "test_session_user_id_exact_value_per_user",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "Users Rahul (id=1), Anjali (id=2), Diya (id=4) exist in the database"
+        ],
+        "actions": [
+          "Login as Rahul \u2014 assert session['user_id'] == 1 exactly",
+          "Logout",
+          "Login as Anjali \u2014 assert session['user_id'] == 2 exactly",
+          "Logout",
+          "Login as Diya \u2014 assert session['user_id'] == 4 exactly"
+        ],
+        "expected": [
+          "session['user_id'] == 1 for Rahul (not 2, not 0, not None)",
+          "session['user_id'] == 2 for Anjali (not 1, not 3)",
+          "session['user_id'] == 4 for Diya (not 3, not 5)"
+        ],
+        "trace": [
+          "R-FLASKR-028: session['user_id'] must hold the correct user id for each authenticated user"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\ndef test_session_user_id_exact_value_per_user():\n    client = app.test_client()\n    client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    with client.session_transaction() as sess:\n        assert sess['user_id'] == 1\n        assert sess['user_id'] != 2\n    client.get('/auth/logout')\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess\n    client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\n    with client.session_transaction() as sess:\n        assert sess['user_id'] == 2\n        assert sess['user_id'] != 1\n    client.get('/auth/logout')\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess\n    client.post('/auth/login', data={'username': 'Diya', 'password': 'cloud'})\n    with client.session_transaction() as sess:\n        assert sess['user_id'] == 4\n        assert sess['user_id'] != 3\n        assert sess['user_id'] != 5\n\ntest_session_user_id_exact_value_per_user()"
+      },
+      {
+        "name": "test_session_not_set_on_failed_login",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "App initialised with TESTING=True and a fresh temp database",
+          "User James (id=5, password=river) exists in the database"
+        ],
+        "actions": [
+          "POST /auth/login with correct username but wrong password",
+          "Assert session has no user_id",
+          "POST /auth/login with wrong username",
+          "Assert session has no user_id",
+          "POST /auth/login with correct credentials",
+          "Assert session['user_id'] == 5"
+        ],
+        "expected": [
+          "Wrong password: login returns 200 (re-renders form), session has no user_id",
+          "Wrong username: login returns 200, session has no user_id",
+          "Correct credentials: session['user_id'] == 5 exactly"
+        ],
+        "trace": [
+          "R-FLASKR-028: session must NOT be populated on failed authentication attempts"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\ndef test_session_not_set_on_failed_login():\n    client = app.test_client()\n    r_bad_pw = client.post('/auth/login',\n                           data={'username': 'James', 'password': 'wrongpass'},\n                           follow_redirects=False)\n    assert r_bad_pw.status_code == 200\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess\n    assert b'Incorrect password.' in r_bad_pw.data\n    r_bad_user = client.post('/auth/login',\n                             data={'username': 'NoSuchUser', 'password': 'river'},\n                             follow_redirects=False)\n    assert r_bad_user.status_code == 200\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess\n    assert b'Incorrect username.' in r_bad_user.data\n    r_ok = client.post('/auth/login',\n                       data={'username': 'James', 'password': 'river'},\n                       follow_redirects=False)\n    assert r_ok.status_code == 302\n    with client.session_transaction() as sess:\n        assert sess['user_id'] == 5\n\ntest_session_not_set_on_failed_login()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-028",
+  "domain": "blogging",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6579,
+    "output_tokens": 3878,
+    "latency_ms": 46087,
+    "wall_ms": 46087,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-028\",\n  \"reasoning\": \"R-FLASKR-028 requires that session['user_id'] persists across multiple requests after login and is cleared only on logout. Tests must cover: (1) positive \u2014 session persists across several authenticated requests; (2) negative \u2014 session is absent before login and after logout; (3) boundary \u2014 session state at the exact transition points (login \u2192 first request, logout \u2192 next request). Mutation resilience is achieved by asserting exact status codes, exact redirect locations, exact session key presence/absence, and exact response content markers. State Transition Coverage drives the login\u2192persist\u2192logout arc; NEG covers the unauthenticated and post-logout states; BVA covers the boundary transitions.\",\n  \"tests\": [\n    {\n      \"name\": \"test_session_persists_across_multiple_authenticated_requests\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"App initialised with TESTING=True and a fresh temp database\",\n        \"User Rahul (id=1, password=stone) exists in the database\",\n        \"Client has not yet logged in\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul, password=stone\",\n        \"GET / (index) \u2014 first subsequent request\",\n        \"GET /create \u2014 second subsequent request (login_required route)\",\n        \"GET / (index) \u2014 third subsequent request\"\n      ],\n      \"expected\": [\n        \"Login POST returns 302 redirect to /\",\n        \"All subsequent GET requests return 200\",\n        \"Session cookie is present and consistent across all requests\",\n        \"Protected route /create returns 200 (not redirect to login)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-028: session['user_id'] populated across requests until logout\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\ndef test_session_persists_across_multiple_authenticated_requests():\\n    client = app.test_client()\\n    with client.session_transaction() as sess:\\n        assert 'user_id' not in sess\\n    r_login = client.post('/auth/login',\\n                          data={'username': 'Rahul', 'password': 'stone'},\\n                          follow_redirects=False)\\n    assert r_login.status_code == 302\\n    assert r_login.headers['Location'] == '/'\\n    with client.session_transaction() as sess:\\n        assert sess['user_id'] == 1\\n    r1 = client.get('/')\\n    assert r1.status_code == 200\\n    with client.session_transaction() as sess:\\n        assert sess['user_id'] == 1\\n    r2 = client.get('/create')\\n    assert r2.status_code == 200\\n    with client.session_transaction() as sess:\\n        assert sess['user_id'] == 1\\n    r3 = client.get('/')\\n    assert r3.status_code == 200\\n    with client.session_transaction() as sess:\\n        assert sess['user_id'] == 1\\n\\ntest_session_persists_across_multiple_authenticated_requests()\"\n    },\n    {\n      \"name\": \"test_session_absent_before_login_and_cleared_after_logout\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App initialised with TESTING=True and a fresh temp database\",\n        \"User Anjali (id=2, password=cloud) exists in the database\",\n        \"Client has not yet logged in\"\n      ],\n      \"actions\": [\n        \"Inspect session before any login \u2014 user_id must be absent\",\n        \"POST /auth/login with username=Anjali, password=cloud\",\n        \"Verify session['user_id'] == 2 after login\",\n        \"GET /auth/logout\",\n        \"Inspect session after logout \u2014 user_id must be absent\",\n        \"GET /create \u2014 must redirect to login (not 200)\"\n      ],\n      \"expected\": [\n        \"Before login: session has no user_id key\",\n        \"After login: session['user_id'] == 2 exactly\",\n        \"Logout returns 302 redirect to /\",\n        \"After logout: session has no user_id key\""
+  }
+}

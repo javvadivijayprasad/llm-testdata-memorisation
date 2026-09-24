@@ -1,0 +1,278 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-024",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Redirect to arbitrary URL",
+    "statement": "The system shall issue an HTTP 302 redirect to the URL given by the 'url' query parameter of /redirect-to.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "redirect to arbitrary url"
+    ],
+    "expected_outcomes": [
+      "response.status_code == 302",
+      "Location == url"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /redirect-to?url=<url>"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-024",
+    "reasoning": "The redirect_to() handler reads 'url' from query args, sets status_code=302 by default, and writes the exact URL string into the Location header. To maximise mutation kill rate I need to: (1) assert status_code == 302 exactly (catches constant mutations); (2) assert Location == the exact supplied URL string (catches string-copy mutations); (3) test with a custom 3xx status_code to cover the branch `if status_code >= 300 and status_code < 400`; (4) test boundary values 299 and 400 for the status_code guard (catches >= vs > and < vs <=); (5) test missing 'url' parameter (negative path, KeyError); (6) test a URL containing special/unicode characters to verify UTF-8 encoding path; (7) test that a non-3xx status_code is ignored and 302 is returned.",
+    "tests": [
+      {
+        "name": "test_redirect_to_basic_302",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "GET /redirect-to endpoint is registered"
+        ],
+        "actions": [
+          "Send GET /redirect-to?url=https://example.com"
+        ],
+        "expected": [
+          "response.status_code == 302",
+          "Location header == 'https://example.com'"
+        ],
+        "trace": [
+          "R-HTTPBIN-024: status 302 and Location set to supplied url"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_basic_302():\n    r = client.get('/redirect-to?url=https://example.com')\n    assert r.status_code == 302\n    assert r.headers['Location'] == 'https://example.com'\n\ntest_redirect_to_basic_302()"
+      },
+      {
+        "name": "test_redirect_to_location_exact_match",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to?url=http://httpbin.org/get"
+        ],
+        "expected": [
+          "response.status_code == 302",
+          "Location header == 'http://httpbin.org/get' exactly"
+        ],
+        "trace": [
+          "R-HTTPBIN-024: Location must equal the exact url query parameter value"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_location_exact_match():\n    target = 'http://httpbin.org/get'\n    r = client.get('/redirect-to?url=' + target)\n    assert r.status_code == 302\n    assert r.headers['Location'] == target\n    assert r.headers['Location'] != ''\n    assert r.headers['Location'] != '/redirect/1'\n\ntest_redirect_to_location_exact_match()"
+      },
+      {
+        "name": "test_redirect_to_custom_3xx_status_code",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to?url=https://example.com&status_code=301"
+        ],
+        "expected": [
+          "response.status_code == 301",
+          "Location header == 'https://example.com'"
+        ],
+        "trace": [
+          "R-HTTPBIN-024: when status_code param is a valid 3xx, it overrides the default 302"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_custom_3xx_status_code():\n    r = client.get('/redirect-to?url=https://example.com&status_code=301')\n    assert r.status_code == 301\n    assert r.headers['Location'] == 'https://example.com'\n\ntest_redirect_to_custom_3xx_status_code()"
+      },
+      {
+        "name": "test_redirect_to_status_code_boundary_300",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to?url=https://example.com&status_code=300"
+        ],
+        "expected": [
+          "response.status_code == 300 (lower boundary of valid 3xx range, >= 300 passes)"
+        ],
+        "trace": [
+          "R-HTTPBIN-024 BVA: status_code=300 is the minimum accepted value (>= 300 and < 400)"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_status_code_boundary_300():\n    r = client.get('/redirect-to?url=https://example.com&status_code=300')\n    assert r.status_code == 300\n    assert r.headers['Location'] == 'https://example.com'\n\ntest_redirect_to_status_code_boundary_300()"
+      },
+      {
+        "name": "test_redirect_to_status_code_boundary_299_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to?url=https://example.com&status_code=299"
+        ],
+        "expected": [
+          "response.status_code == 302 (299 < 300 so guard fails, default 302 used)"
+        ],
+        "trace": [
+          "R-HTTPBIN-024 BVA: status_code=299 is one below the minimum; guard `>= 300` rejects it, default 302 applies"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_status_code_boundary_299_rejected():\n    r = client.get('/redirect-to?url=https://example.com&status_code=299')\n    assert r.status_code == 302\n    assert r.headers['Location'] == 'https://example.com'\n\ntest_redirect_to_status_code_boundary_299_rejected()"
+      },
+      {
+        "name": "test_redirect_to_status_code_boundary_399_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to?url=https://example.com&status_code=399"
+        ],
+        "expected": [
+          "response.status_code == 399 (399 < 400 so guard passes)"
+        ],
+        "trace": [
+          "R-HTTPBIN-024 BVA: status_code=399 is one below the upper boundary; guard `< 400` accepts it"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_status_code_boundary_399_accepted():\n    r = client.get('/redirect-to?url=https://example.com&status_code=399')\n    assert r.status_code == 399\n    assert r.headers['Location'] == 'https://example.com'\n\ntest_redirect_to_status_code_boundary_399_accepted()"
+      },
+      {
+        "name": "test_redirect_to_status_code_boundary_400_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to?url=https://example.com&status_code=400"
+        ],
+        "expected": [
+          "response.status_code == 302 (400 is not < 400, guard fails, default 302 used)"
+        ],
+        "trace": [
+          "R-HTTPBIN-024 BVA: status_code=400 equals upper boundary; guard `< 400` rejects it, default 302 applies"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_status_code_boundary_400_rejected():\n    r = client.get('/redirect-to?url=https://example.com&status_code=400')\n    assert r.status_code == 302\n    assert r.headers['Location'] == 'https://example.com'\n\ntest_redirect_to_status_code_boundary_400_rejected()"
+      },
+      {
+        "name": "test_redirect_to_missing_url_param",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to with no url query parameter"
+        ],
+        "expected": [
+          "response raises KeyError or returns a 4xx/5xx status (not 302)"
+        ],
+        "trace": [
+          "R-HTTPBIN-024 NEG: missing required 'url' param triggers error path; code does args['url'] which raises KeyError -> 500"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_missing_url_param():\n    r = client.get('/redirect-to')\n    assert r.status_code != 302\n    assert r.status_code >= 400\n\ntest_redirect_to_missing_url_param()"
+      },
+      {
+        "name": "test_redirect_to_url_with_query_string_preserved",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to?url=https://example.com/path?foo=bar%26baz=qux"
+        ],
+        "expected": [
+          "response.status_code == 302",
+          "Location header contains the full URL with query string intact"
+        ],
+        "trace": [
+          "R-HTTPBIN-024: Location must be the exact url value including embedded query parameters"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_url_with_query_string_preserved():\n    target = 'https://example.com/path?foo=bar'\n    import urllib.parse\n    encoded = urllib.parse.quote(target, safe='')\n    r = client.get('/redirect-to?url=' + encoded)\n    assert r.status_code == 302\n    assert r.headers['Location'] == target\n\ntest_redirect_to_url_with_query_string_preserved()"
+      },
+      {
+        "name": "test_redirect_to_default_is_302_not_301_or_303",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to?url=https://example.com without status_code param"
+        ],
+        "expected": [
+          "response.status_code == 302 exactly, not 301, not 303, not 200"
+        ],
+        "trace": [
+          "R-HTTPBIN-024: default status code constant is 302; catches mutations to 301/303/200"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_default_is_302_not_301_or_303():\n    r = client.get('/redirect-to?url=https://example.com')\n    assert r.status_code == 302\n    assert r.status_code != 301\n    assert r.status_code != 303\n    assert r.status_code != 200\n    assert r.headers['Location'] == 'https://example.com'\n\ntest_redirect_to_default_is_302_not_301_or_303()"
+      },
+      {
+        "name": "test_redirect_to_unicode_url",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to with a URL containing unicode characters percent-encoded"
+        ],
+        "expected": [
+          "response.status_code == 302",
+          "Location header equals the decoded unicode URL"
+        ],
+        "trace": [
+          "R-HTTPBIN-024: handler encodes url value as UTF-8 into Location; unicode URLs must survive round-trip"
+        ],
+        "executable": "from httpbin.core import app\nimport urllib.parse\nclient = app.test_client()\n\ndef test_redirect_to_unicode_url():\n    target = 'https://example.com/\u00e9l\u00e8ve'\n    encoded_target = urllib.parse.quote(target, safe=':/?#[]@!$&\\'()*+,;=')\n    r = client.get('/redirect-to?url=' + urllib.parse.quote(target, safe=''))\n    assert r.status_code == 302\n    loc = r.headers['Location']\n    assert loc == target or urllib.parse.unquote(loc) == target\n\ntest_redirect_to_unicode_url()"
+      },
+      {
+        "name": "test_redirect_to_status_code_301_boundary_exact",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable"
+        ],
+        "actions": [
+          "Send GET /redirect-to?url=https://example.com&status_code=301"
+        ],
+        "expected": [
+          "response.status_code == 301 exactly (not 302, not 300)"
+        ],
+        "trace": [
+          "R-HTTPBIN-024 BVA: 301 is within [300,400) so it overrides default; catches off-by-one on boundary"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_to_status_code_301_boundary_exact():\n    r = client.get('/redirect-to?url=https://example.com&status_code=301')\n    assert r.status_code == 301\n    assert r.status_code != 302\n    assert r.status_code != 300\n    assert r.headers['Location'] == 'https://example.com'\n\ntest_redirect_to_status_code_301_boundary_exact()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-024",
+  "domain": "http_utilities",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 1.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9482,
+    "output_tokens": 3663,
+    "latency_ms": 43957,
+    "wall_ms": 43957,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-024\",\n  \"reasoning\": \"The redirect_to() handler reads 'url' from query args, sets status_code=302 by default, and writes the exact URL string into the Location header. To maximise mutation kill rate I need to: (1) assert status_code == 302 exactly (catches constant mutations); (2) assert Location == the exact supplied URL string (catches string-copy mutations); (3) test with a custom 3xx status_code to cover the branch `if status_code >= 300 and status_code < 400`; (4) test boundary values 299 and 400 for the status_code guard (catches >= vs > and < vs <=); (5) test missing 'url' parameter (negative path, KeyError); (6) test a URL containing special/unicode characters to verify UTF-8 encoding path; (7) test that a non-3xx status_code is ignored and 302 is returned.\",\n  \"tests\": [\n    {\n      \"name\": \"test_redirect_to_basic_302\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\"httpbin Flask app is importable\", \"GET /redirect-to endpoint is registered\"],\n      \"actions\": [\"Send GET /redirect-to?url=https://example.com\"],\n      \"expected\": [\"response.status_code == 302\", \"Location header == 'https://example.com'\"],\n      \"trace\": [\"R-HTTPBIN-024: status 302 and Location set to supplied url\"],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_to_basic_302():\\n    r = client.get('/redirect-to?url=https://example.com')\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == 'https://example.com'\\n\\ntest_redirect_to_basic_302()\"\n    },\n    {\n      \"name\": \"test_redirect_to_location_exact_match\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\"httpbin Flask app is importable\"],\n      \"actions\": [\"Send GET /redirect-to?url=http://httpbin.org/get\"],\n      \"expected\": [\"response.status_code == 302\", \"Location header == 'http://httpbin.org/get' exactly\"],\n      \"trace\": [\"R-HTTPBIN-024: Location must equal the exact url query parameter value\"],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_to_location_exact_match():\\n    target = 'http://httpbin.org/get'\\n    r = client.get('/redirect-to?url=' + target)\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == target\\n    assert r.headers['Location'] != ''\\n    assert r.headers['Location'] != '/redirect/1'\\n\\ntest_redirect_to_location_exact_match()\"\n    },\n    {\n      \"name\": \"test_redirect_to_custom_3xx_status_code\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"DT\",\n      \"preconditions\": [\"httpbin Flask app is importable\"],\n      \"actions\": [\"Send GET /redirect-to?url=https://example.com&status_code=301\"],\n      \"expected\": [\"response.status_code == 301\", \"Location header == 'https://example.com'\"],\n      \"trace\": [\"R-HTTPBIN-024: when status_code param is a valid 3xx, it overrides the default 302\"],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_to_custom_3xx_status_code():\\n    r = client.get('/redirect-to?url=https://example.com&status_code=301')\\n    assert r.status_code == 301\\n    assert r.headers['Location'] == 'https://example.com'\\n\\ntest_redirect_to_custom_3xx_status_code()\"\n    },\n    {\n      \"name\": \"test_redirect_to_status_code_boundary_300\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\"httpbin Flask app is importable\"],\n      \"actions\": [\"Send GET /redirect-to?url=https://example.com&status_code=300\"],\n      \"expected\": [\"response.status_code == 300 (lower boundary of valid 3xx range, >= 300 passes)\"],\n      \"trace\": [\"R-HTTPBIN-024 BVA: status_code=300 is the minimum accepted value (>= 300 and < 400)\"],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_to_status_code_boundary_300():\\n    r = client.get('/redirect-to?url=https://example.com&status_code=300')\\n    assert r.status_code == 300\\n    assert r.headers['Locatio"
+  }
+}

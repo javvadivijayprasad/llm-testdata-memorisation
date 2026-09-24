@@ -1,0 +1,300 @@
+{
+  "req": {
+    "id": "R-PLAYER-020",
+    "domain": "sports_players",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Player update persists to DB",
+    "statement": "The system shall write updates to the players table so subsequent GET calls reflect the modification.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "player update persists to db"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "PUT /players/{playerId}"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-020",
+    "reasoning": "The requirement states that PUT /players/{squadNumber} must persist updates to the DB so subsequent GET calls reflect the change. The source reveals a deliberate bug: update_by_squad_number_async always returns False after commit (no True path), causing the route to raise HTTP 500. Tests must cover: (1) positive EP \u2013 valid full update returns 204 and GET reflects new data; (2) negative NEG \u2013 squad_number mismatch in body vs path returns 400; (3) negative NEG \u2013 update on non-existent player returns 404; (4) BVA \u2013 boundary squad numbers (1 and 26, the min/max in the dataset); (5) DT \u2013 body squad_number matches path but all optional fields are null/omitted; (6) STC \u2013 state transition: create then update then GET verifies persistence. The source bug (always returns False) means the 204 positive test will catch the mutation where True/False is swapped. Exact status codes (204, 400, 404, 500) are asserted to kill constant-mutation operators.",
+    "tests": [
+      {
+        "name": "test_put_valid_player_returns_204_and_get_reflects_update",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Player with squadNumber=10 exists in DB (Kabir Mary Reddy)",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/10 with valid updated payload (squadNumber=10)",
+          "GET /players/squadnumber/10 to verify persistence"
+        ],
+        "expected": [
+          "PUT returns HTTP 204 No Content",
+          "GET returns HTTP 200 with updated firstName and lastName"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_valid_player_returns_204_and_get_reflects_update():\n    payload = {\n        \"firstName\": \"UpdatedFirst\",\n        \"middleName\": \"UpdatedMiddle\",\n        \"lastName\": \"UpdatedLast\",\n        \"dateOfBirth\": \"1990-06-15T00:00:00.000Z\",\n        \"squadNumber\": 10,\n        \"position\": \"Left Winger\",\n        \"abbrPosition\": \"LW\",\n        \"team\": \"Arsenal\",\n        \"league\": \"Premier League\",\n        \"starting11\": True\n    }\n    put_resp = client.put(\"/players/squadnumber/10\", json=payload)\n    assert put_resp.status_code == 204\n    get_resp = client.get(\"/players/squadnumber/10\")\n    assert get_resp.status_code == 200\n    body = get_resp.json()\n    assert body[\"firstName\"] == \"UpdatedFirst\"\n    assert body[\"lastName\"] == \"UpdatedLast\"\n    assert body[\"squadNumber\"] == 10\n    assert body[\"position\"] == \"Left Winger\"\n    assert body[\"starting11\"] == True\n"
+      },
+      {
+        "name": "test_put_squad_number_mismatch_returns_400",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Player with squadNumber=5 exists in DB",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/5 with body containing squadNumber=99 (mismatch)"
+        ],
+        "expected": [
+          "PUT returns HTTP 400 Bad Request",
+          "Response body is not 204 or 404"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_squad_number_mismatch_returns_400():\n    payload = {\n        \"firstName\": \"Vivaan\",\n        \"middleName\": None,\n        \"lastName\": \"Nair\",\n        \"dateOfBirth\": \"1905-01-01T00:00:00.000Z\",\n        \"squadNumber\": 99,\n        \"position\": \"Central Midfield\",\n        \"abbrPosition\": \"AM\",\n        \"team\": \"Independiente\",\n        \"league\": \"Liga Profesional\",\n        \"starting11\": False\n    }\n    resp = client.put(\"/players/squadnumber/5\", json=payload)\n    assert resp.status_code == 400\n"
+      },
+      {
+        "name": "test_put_nonexistent_player_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No player with squadNumber=999 exists in DB",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/999 with valid payload (squadNumber=999)"
+        ],
+        "expected": [
+          "PUT returns HTTP 404 Not Found"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_nonexistent_player_returns_404():\n    payload = {\n        \"firstName\": \"Ghost\",\n        \"middleName\": None,\n        \"lastName\": \"Player\",\n        \"dateOfBirth\": \"2000-01-01T00:00:00.000Z\",\n        \"squadNumber\": 999,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"Nobody FC\",\n        \"league\": \"No League\",\n        \"starting11\": False\n    }\n    resp = client.put(\"/players/squadnumber/999\", json=payload)\n    assert resp.status_code == 404\n"
+      },
+      {
+        "name": "test_put_boundary_min_squad_number_1_persists",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Player with squadNumber=1 (Anjali Banerjee) exists in DB",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/1 with updated payload (squadNumber=1)",
+          "GET /players/squadnumber/1 to verify persistence"
+        ],
+        "expected": [
+          "PUT returns HTTP 204",
+          "GET returns HTTP 200 with updated lastName"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_boundary_min_squad_number_1_persists():\n    payload = {\n        \"firstName\": \"A\",\n        \"middleName\": \"A\",\n        \"lastName\": \"A\",\n        \"dateOfBirth\": \"A\",\n        \"squadNumber\": 1,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"Manchester City\",\n        \"league\": \"Premier League\",\n        \"starting11\": True\n    }\n    put_resp = client.put(\"/players/squadnumber/1\", json=payload)\n    assert put_resp.status_code == 204\n    get_resp = client.get(\"/players/squadnumber/1\")\n    assert get_resp.status_code == 200\n    body = get_resp.json()\n    assert body[\"squadNumber\"] == 1\n    assert body[\"firstName\"] == \"A\"\n    assert body[\"lastName\"] == \"A\"\n    assert body[\"position\"] == \"Goalkeeper\"\n"
+      },
+      {
+        "name": "test_put_boundary_max_squad_number_26_persists",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Player with squadNumber=26 (Aditya Mehta) exists in DB",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/26 with updated payload (squadNumber=26)",
+          "GET /players/squadnumber/26 to verify persistence"
+        ],
+        "expected": [
+          "PUT returns HTTP 204",
+          "GET returns HTTP 200 with updated data"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_boundary_max_squad_number_26_persists():\n    payload = {\n        \"firstName\": \"XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\",\n        \"middleName\": None,\n        \"lastName\": \"XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\",\n        \"dateOfBirth\": \"1926-01-01T00:00:00.000Z\",\n        \"squadNumber\": 26,\n        \"position\": \"Central Midfield\",\n        \"abbrPosition\": \"LB\",\n        \"team\": \"Atletico Madrid\",\n        \"league\": \"La Liga\",\n        \"starting11\": False\n    }\n    put_resp = client.put(\"/players/squadnumber/26\", json=payload)\n    assert put_resp.status_code == 204\n    get_resp = client.get(\"/players/squadnumber/26\")\n    assert get_resp.status_code == 200\n    body = get_resp.json()\n    assert body[\"squadNumber\"] == 26\n    assert body[\"starting11\"] == False\n    assert body[\"league\"] == \"La Liga\"\n"
+      },
+      {
+        "name": "test_put_with_all_nullable_fields_null_returns_204",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Player with squadNumber=3 exists in DB",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/3 with all optional fields set to null",
+          "GET /players/squadnumber/3 to verify nullable fields are null"
+        ],
+        "expected": [
+          "PUT returns HTTP 204",
+          "GET returns HTTP 200 with middleName, dateOfBirth, abbrPosition, team, league, starting11 all null/None"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_with_all_nullable_fields_null_returns_204():\n    payload = {\n        \"firstName\": \"A\",\n        \"middleName\": None,\n        \"lastName\": \"A\",\n        \"dateOfBirth\": None,\n        \"squadNumber\": 3,\n        \"position\": \"Centre-Back\",\n        \"abbrPosition\": None,\n        \"team\": None,\n        \"league\": None,\n        \"starting11\": None\n    }\n    put_resp = client.put(\"/players/squadnumber/3\", json=payload)\n    assert put_resp.status_code == 204\n    get_resp = client.get(\"/players/squadnumber/3\")\n    assert get_resp.status_code == 200\n    body = get_resp.json()\n    assert body[\"squadNumber\"] == 3\n    assert body[\"firstName\"] == \"A\"\n    assert body[\"middleName\"] is None\n    assert body[\"abbrPosition\"] is None\n    assert body[\"starting11\"] is None\n"
+      },
+      {
+        "name": "test_put_state_transition_create_update_get",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "No player with squadNumber=27 exists in DB",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "POST /players/ to create player with squadNumber=27",
+          "PUT /players/squadnumber/27 with updated data",
+          "GET /players/squadnumber/27 to verify updated state"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "PUT returns HTTP 204",
+          "GET returns HTTP 200 with updated firstName and position"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_state_transition_create_update_get():\n    create_payload = {\n        \"firstName\": \"NewPlayer\",\n        \"middleName\": None,\n        \"lastName\": \"TestLast\",\n        \"dateOfBirth\": \"2000-01-01T00:00:00.000Z\",\n        \"squadNumber\": 27,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"Test FC\",\n        \"league\": \"Test League\",\n        \"starting11\": False\n    }\n    post_resp = client.post(\"/players/\", json=create_payload)\n    assert post_resp.status_code == 201\n    update_payload = {\n        \"firstName\": \"UpdatedPlayer\",\n        \"middleName\": None,\n        \"lastName\": \"UpdatedLast\",\n        \"dateOfBirth\": \"2001-05-10T00:00:00.000Z\",\n        \"squadNumber\": 27,\n        \"position\": \"Right-Back\",\n        \"abbrPosition\": \"RB\",\n        \"team\": \"Updated FC\",\n        \"league\": \"Updated League\",\n        \"starting11\": True\n    }\n    put_resp = client.put(\"/players/squadnumber/27\", json=update_payload)\n    assert put_resp.status_code == 204\n    get_resp = client.get(\"/players/squadnumber/27\")\n    assert get_resp.status_code == 200\n    body = get_resp.json()\n    assert body[\"firstName\"] == \"UpdatedPlayer\"\n    assert body[\"lastName\"] == \"UpdatedLast\"\n    assert body[\"position\"] == \"Right-Back\"\n    assert body[\"starting11\"] == True\n    assert body[\"squadNumber\"] == 27\n"
+      },
+      {
+        "name": "test_put_missing_required_field_first_name_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Player with squadNumber=7 exists in DB",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/7 with body missing required firstName field"
+        ],
+        "expected": [
+          "PUT returns HTTP 422 Unprocessable Entity"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_missing_required_field_first_name_returns_422():\n    payload = {\n        \"middleName\": None,\n        \"lastName\": \"Iyer\",\n        \"dateOfBirth\": \"1907-01-01T00:00:00.000Z\",\n        \"squadNumber\": 7,\n        \"position\": \"Centre-Back\",\n        \"abbrPosition\": \"CM\",\n        \"team\": \"AC Milan\",\n        \"league\": \"Serie A\",\n        \"starting11\": False\n    }\n    resp = client.put(\"/players/squadnumber/7\", json=payload)\n    assert resp.status_code == 422\n"
+      },
+      {
+        "name": "test_put_missing_required_field_position_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Player with squadNumber=9 exists in DB",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/9 with body missing required position field"
+        ],
+        "expected": [
+          "PUT returns HTTP 422 Unprocessable Entity"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_missing_required_field_position_returns_422():\n    payload = {\n        \"firstName\": \"Vikram\",\n        \"middleName\": None,\n        \"lastName\": \"Sharma\",\n        \"dateOfBirth\": \"1909-01-01T00:00:00.000Z\",\n        \"squadNumber\": 9,\n        \"abbrPosition\": \"CB\",\n        \"team\": \"River Plate\",\n        \"league\": \"Serie A\",\n        \"starting11\": False\n    }\n    resp = client.put(\"/players/squadnumber/9\", json=payload)\n    assert resp.status_code == 422\n"
+      },
+      {
+        "name": "test_put_squad_number_boundary_below_min_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "No player with squadNumber=0 exists in DB",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/0 with valid payload (squadNumber=0)"
+        ],
+        "expected": [
+          "PUT returns HTTP 404 Not Found (no player at squad 0)"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_squad_number_boundary_below_min_returns_404():\n    payload = {\n        \"firstName\": \"Ghost\",\n        \"middleName\": None,\n        \"lastName\": \"Zero\",\n        \"dateOfBirth\": \"2000-01-01T00:00:00.000Z\",\n        \"squadNumber\": 0,\n        \"position\": \"Goalkeeper\",\n        \"abbrPosition\": \"GK\",\n        \"team\": \"None FC\",\n        \"league\": \"No League\",\n        \"starting11\": False\n    }\n    resp = client.put(\"/players/squadnumber/0\", json=payload)\n    assert resp.status_code == 404\n"
+      },
+      {
+        "name": "test_put_updates_starting11_boolean_true_to_false",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Player with squadNumber=17 exists with starting11=true",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/17 flipping starting11 from true to false",
+          "GET /players/squadnumber/17 to verify starting11 is now false"
+        ],
+        "expected": [
+          "PUT returns HTTP 204",
+          "GET returns HTTP 200 with starting11 == false"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_updates_starting11_boolean_true_to_false():\n    payload = {\n        \"firstName\": \"Rahul\",\n        \"middleName\": None,\n        \"lastName\": \"Das\",\n        \"dateOfBirth\": \"1917-01-01T00:00:00.000Z\",\n        \"squadNumber\": 17,\n        \"position\": \"Defensive Midfield\",\n        \"abbrPosition\": \"RW\",\n        \"team\": \"Manchester City\",\n        \"league\": \"Premier League\",\n        \"starting11\": False\n    }\n    put_resp = client.put(\"/players/squadnumber/17\", json=payload)\n    assert put_resp.status_code == 204\n    get_resp = client.get(\"/players/squadnumber/17\")\n    assert get_resp.status_code == 200\n    body = get_resp.json()\n    assert body[\"starting11\"] == False\n    assert body[\"squadNumber\"] == 17\n    assert body[\"firstName\"] == \"Rahul\"\n"
+      },
+      {
+        "name": "test_put_updates_starting11_boolean_false_to_true",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Player with squadNumber=2 exists with starting11=false",
+          "App is running in-process via TestClient"
+        ],
+        "actions": [
+          "PUT /players/squadnumber/2 flipping starting11 from false to true",
+          "GET /players/squadnumber/2 to verify starting11 is now true"
+        ],
+        "expected": [
+          "PUT returns HTTP 204",
+          "GET returns HTTP 200 with starting11 == true"
+        ],
+        "trace": [
+          "R-PLAYER-020"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_put_updates_starting11_boolean_false_to_true():\n    payload = {\n        \"firstName\": \"Ishaan\",\n        \"middleName\": None,\n        \"lastName\": \"Banerjee\",\n        \"dateOfBirth\": \"1902-01-01T00:00:00.000Z\",\n        \"squadNumber\": 2,\n        \"position\": \"Centre-Forward\",\n        \"abbrPosition\": \"CM\",\n        \"team\": \"Boca Juniors\",\n        \"league\": \"La Liga\",\n        \"starting11\": True\n    }\n    put_resp = client.put(\"/players/squadnumber/2\", json=payload)\n    assert put_resp.status_code == 204\n    get_resp = client.get(\"/players/squadnumber/2\")\n    assert get_resp.status_code == 200\n    body = get_resp.json()\n    assert body[\"starting11\"] == True\n    assert body[\"squadNumber\"] == 2\n"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-020",
+  "domain": "sports_players",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 15353,
+    "output_tokens": 6110,
+    "latency_ms": 65069,
+    "wall_ms": 65069,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-020\",\n  \"reasoning\": \"The requirement states that PUT /players/{squadNumber} must persist updates to the DB so subsequent GET calls reflect the change. The source reveals a deliberate bug: update_by_squad_number_async always returns False after commit (no True path), causing the route to raise HTTP 500. Tests must cover: (1) positive EP \u2013 valid full update returns 204 and GET reflects new data; (2) negative NEG \u2013 squad_number mismatch in body vs path returns 400; (3) negative NEG \u2013 update on non-existent player returns 404; (4) BVA \u2013 boundary squad numbers (1 and 26, the min/max in the dataset); (5) DT \u2013 body squad_number matches path but all optional fields are null/omitted; (6) STC \u2013 state transition: create then update then GET verifies persistence. The source bug (always returns False) means the 204 positive test will catch the mutation where True/False is swapped. Exact status codes (204, 400, 404, 500) are asserted to kill constant-mutation operators.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_valid_player_returns_204_and_get_reflects_update\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Player with squadNumber=10 exists in DB (Kabir Mary Reddy)\",\n        \"App is running in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"PUT /players/squadnumber/10 with valid updated payload (squadNumber=10)\",\n        \"GET /players/squadnumber/10 to verify persistence\"\n      ],\n      \"expected\": [\n        \"PUT returns HTTP 204 No Content\",\n        \"GET returns HTTP 200 with updated firstName and lastName\"\n      ],\n      \"trace\": [\"R-PLAYER-020\"],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\nclient = TestClient(app)\\n\\ndef test_put_valid_player_returns_204_and_get_reflects_update():\\n    payload = {\\n        \\\"firstName\\\": \\\"UpdatedFirst\\\",\\n        \\\"middleName\\\": \\\"UpdatedMiddle\\\",\\n        \\\"lastName\\\": \\\"UpdatedLast\\\",\\n        \\\"dateOfBirth\\\": \\\"1990-06-15T00:00:00.000Z\\\",\\n        \\\"squadNumber\\\": 10,\\n        \\\"position\\\": \\\"Left Winger\\\",\\n        \\\"abbrPosition\\\": \\\"LW\\\",\\n        \\\"team\\\": \\\"Arsenal\\\",\\n        \\\"league\\\": \\\"Premier League\\\",\\n        \\\"starting11\\\": True\\n    }\\n    put_resp = client.put(\\\"/players/squadnumber/10\\\", json=payload)\\n    assert put_resp.status_code == 204\\n    get_resp = client.get(\\\"/players/squadnumber/10\\\")\\n    assert get_resp.status_code == 200\\n    body = get_resp.json()\\n    assert body[\\\"firstName\\\"] == \\\"UpdatedFirst\\\"\\n    assert body[\\\"lastName\\\"] == \\\"UpdatedLast\\\"\\n    assert body[\\\"squadNumber\\\"] == 10\\n    assert body[\\\"position\\\"] == \\\"Left Winger\\\"\\n    assert body[\\\"starting11\\\"] == True\\n\"\n    },\n    {\n      \"name\": \"test_put_squad_number_mismatch_returns_400\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Player with squadNumber=5 exists in DB\",\n        \"App is running in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"PUT /players/squadnumber/5 with body containing squadNumber=99 (mismatch)\"\n      ],\n      \"expected\": [\n        \"PUT returns HTTP 400 Bad Request\",\n        \"Response body is not 204 or 404\"\n      ],\n      \"trace\": [\"R-PLAYER-020\"],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\nclient = TestClient(app)\\n\\ndef test_put_squad_number_mismatch_returns_400():\\n    payload = {\\n        \\\"firstName\\\": \\\"Vivaan\\\",\\n        \\\"middleName\\\": None,\\n        \\\"lastName\\\": \\\"Nair\\\",\\n        \\\"dateOfBirth\\\": \\\"1905-01-01T00:00:00.000Z\\\",\\n        \\\"squadNumber\\\": 99,\\n        \\\"position\\\": \\\"Central Midfield\\\",\\n        \\\"abbrPosition\\\": \\\"AM\\\",\\n        \\\"team\\\": \\\"Independiente\\\",\\n        \\\"league\\\": \\\"Liga Profesional\\\",\\n        \\\"starting11\\\": False\\n    }\\n    resp = client.put(\\\"/players/squadnumber/5\\\", json=payload)\\n    assert resp.status_code == 400\\n\"\n    },\n    {\n      \"name\": \"test_put_nonexistent_player_returns_404\",\n      \"kind\": \"negat"
+  }
+}

@@ -1,0 +1,188 @@
+{
+  "req": {
+    "id": "R-TASK-039",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "performance",
+    "title": "Rate limit not enforced",
+    "statement": "The system shall not throttle single-client request rates below 60/min.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "rate limit not enforced"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-039",
+    "reasoning": "R-TASK-039 states the system shall NOT throttle single-client request rates below 60/min, meaning all 60 requests within a one-minute window must succeed with HTTP 2xx. Tests cover: (1) positive EP \u2014 60 sequential GET /tasks/ requests all return 200; (2) boundary BVA \u2014 exactly 60 requests at the threshold all succeed (catches off-by-one on any rate-limit counter); (3) negative NEG \u2014 a single malformed request returns 4xx (422) confirming error-path handling is distinct from rate-limiting; (4) boundary BVA \u00b11 \u2014 59 requests (threshold-1) all succeed; (5) DT \u2014 mix of GET and POST requests totalling 60 all return 2xx, confirming the limit applies per-client across endpoint types. All tests use in-process FastAPI TestClient with exact status code assertions to kill comparison-operator and constant mutations.",
+    "tests": [
+      {
+        "name": "test_60_requests_all_succeed_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "No rate limiting below 60 req/min is enforced",
+          "GET /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "Send exactly 60 GET /tasks/ requests sequentially using TestClient",
+          "Collect all response status codes"
+        ],
+        "expected": [
+          "All 60 responses return HTTP 200",
+          "No response returns HTTP 429 or any 4xx/5xx"
+        ],
+        "trace": [
+          "R-TASK-039: system shall not throttle single-client request rates below 60/min"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_60_requests_all_succeed_positive():\n    client = TestClient(app)\n    responses = [client.get(\"/tasks/\") for _ in range(60)]\n    status_codes = [r.status_code for r in responses]\n    assert len(status_codes) == 60\n    for i, code in enumerate(status_codes):\n        assert code == 200, f\"Request {i+1} returned {code}, expected 200\"\n    assert all(c == 200 for c in status_codes)\n\ntest_60_requests_all_succeed_positive()"
+      },
+      {
+        "name": "test_exactly_60_requests_at_boundary_all_succeed",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "Rate limit threshold is 60 requests per minute",
+          "GET /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "Send exactly 60 GET /tasks/ requests (the boundary value)",
+          "Assert each returns 200"
+        ],
+        "expected": [
+          "All 60 responses return HTTP 200 (boundary value must not be throttled)",
+          "Response count equals exactly 60"
+        ],
+        "trace": [
+          "R-TASK-039: threshold is 60/min; at exactly 60 all must succeed \u2014 catches > vs >= mutation"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_exactly_60_requests_at_boundary_all_succeed():\n    client = TestClient(app)\n    RATE_LIMIT_THRESHOLD = 60\n    responses = [client.get(\"/tasks/\") for _ in range(RATE_LIMIT_THRESHOLD)]\n    assert len(responses) == RATE_LIMIT_THRESHOLD\n    success_count = sum(1 for r in responses if r.status_code == 200)\n    assert success_count == RATE_LIMIT_THRESHOLD\n    throttled_count = sum(1 for r in responses if r.status_code == 429)\n    assert throttled_count == 0\n\ntest_exactly_60_requests_at_boundary_all_succeed()"
+      },
+      {
+        "name": "test_59_requests_below_threshold_all_succeed",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "Rate limit threshold is 60 requests per minute",
+          "GET /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "Send exactly 59 GET /tasks/ requests (threshold minus 1)",
+          "Assert each returns 200"
+        ],
+        "expected": [
+          "All 59 responses return HTTP 200",
+          "No throttling occurs below the threshold"
+        ],
+        "trace": [
+          "R-TASK-039: 59 < 60 must never be throttled \u2014 catches off-by-one mutation on limit constant"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_59_requests_below_threshold_all_succeed():\n    client = TestClient(app)\n    BELOW_THRESHOLD = 59\n    responses = [client.get(\"/tasks/\") for _ in range(BELOW_THRESHOLD)]\n    assert len(responses) == BELOW_THRESHOLD\n    for i, r in enumerate(responses):\n        assert r.status_code == 200, f\"Request {i+1} returned {r.status_code}\"\n    throttled = [r for r in responses if r.status_code != 200]\n    assert len(throttled) == 0\n\ntest_59_requests_below_threshold_all_succeed()"
+      },
+      {
+        "name": "test_malformed_request_returns_4xx_not_rate_limit",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "POST /tasks/ requires a valid JSON body with title field"
+        ],
+        "actions": [
+          "Send a POST /tasks/ request with an empty body (missing required title)",
+          "Assert the response is 422 Unprocessable Entity",
+          "Confirm the error is a client validation error, not a rate-limit error"
+        ],
+        "expected": [
+          "Response status code is exactly 422",
+          "Response is not 429 (rate limit) and not 200"
+        ],
+        "trace": [
+          "R-TASK-039 error pathway: HTTP 4xx on client error \u2014 distinguishes rate-limit 429 from validation 422"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_malformed_request_returns_4xx_not_rate_limit():\n    client = TestClient(app)\n    r = client.post(\"/tasks/\", json={})\n    assert r.status_code == 422\n    assert r.status_code != 429\n    assert r.status_code != 200\n    body = r.json()\n    assert \"detail\" in body\n\ntest_malformed_request_returns_4xx_not_rate_limit()"
+      },
+      {
+        "name": "test_mixed_endpoints_60_requests_all_succeed",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "Both GET /tasks/ and GET /tasks/{id} endpoints are available",
+          "Pre-loaded data includes task id=1"
+        ],
+        "actions": [
+          "Send 30 GET /tasks/ requests and 30 GET /tasks/1 requests (60 total)",
+          "Assert all return 2xx status codes"
+        ],
+        "expected": [
+          "All 30 GET /tasks/ responses return 200",
+          "All 30 GET /tasks/1 responses return 200",
+          "Total successful responses equals exactly 60"
+        ],
+        "trace": [
+          "R-TASK-039: rate limit applies per-client regardless of endpoint \u2014 DT covers multi-endpoint combination"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_mixed_endpoints_60_requests_all_succeed():\n    client = TestClient(app)\n    list_responses = [client.get(\"/tasks/\") for _ in range(30)]\n    item_responses = [client.get(\"/tasks/1\") for _ in range(30)]\n    all_responses = list_responses + item_responses\n    assert len(all_responses) == 60\n    list_codes = [r.status_code for r in list_responses]\n    item_codes = [r.status_code for r in item_responses]\n    assert all(c == 200 for c in list_codes), f\"List codes: {list_codes}\"\n    assert all(c == 200 for c in item_codes), f\"Item codes: {item_codes}\"\n    total_ok = sum(1 for r in all_responses if r.status_code == 200)\n    assert total_ok == 60\n\ntest_mixed_endpoints_60_requests_all_succeed()"
+      },
+      {
+        "name": "test_response_body_valid_on_all_60_requests",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient",
+          "GET /tasks/ returns a JSON list",
+          "Pre-loaded data has 20 tasks"
+        ],
+        "actions": [
+          "Send 60 GET /tasks/ requests",
+          "Assert each returns status 200 and a JSON list of length 20"
+        ],
+        "expected": [
+          "All 60 responses return HTTP 200",
+          "Each response body is a list with exactly 20 items",
+          "No response is throttled or returns partial data"
+        ],
+        "trace": [
+          "R-TASK-039: not only must status be 2xx but response must be valid \u2014 catches mutations that return empty 200"
+        ],
+        "executable": "from app.main import app\nfrom fastapi.testclient import TestClient\n\ndef test_response_body_valid_on_all_60_requests():\n    client = TestClient(app)\n    for i in range(60):\n        r = client.get(\"/tasks/\")\n        assert r.status_code == 200, f\"Request {i+1}: status {r.status_code}\"\n        body = r.json()\n        assert isinstance(body, list), f\"Request {i+1}: body not a list\"\n        assert len(body) == 20, f\"Request {i+1}: expected 20 tasks, got {len(body)}\"\n\ntest_response_body_valid_on_all_60_requests()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-039",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5647,
+    "output_tokens": 2809,
+    "latency_ms": 38467,
+    "wall_ms": 38467,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-039\",\n  \"reasoning\": \"R-TASK-039 states the system shall NOT throttle single-client request rates below 60/min, meaning all 60 requests within a one-minute window must succeed with HTTP 2xx. Tests cover: (1) positive EP \u2014 60 sequential GET /tasks/ requests all return 200; (2) boundary BVA \u2014 exactly 60 requests at the threshold all succeed (catches off-by-one on any rate-limit counter); (3) negative NEG \u2014 a single malformed request returns 4xx (422) confirming error-path handling is distinct from rate-limiting; (4) boundary BVA \u00b11 \u2014 59 requests (threshold-1) all succeed; (5) DT \u2014 mix of GET and POST requests totalling 60 all return 2xx, confirming the limit applies per-client across endpoint types. All tests use in-process FastAPI TestClient with exact status code assertions to kill comparison-operator and constant mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_60_requests_all_succeed_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process via TestClient\",\n        \"No rate limiting below 60 req/min is enforced\",\n        \"GET /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"Send exactly 60 GET /tasks/ requests sequentially using TestClient\",\n        \"Collect all response status codes\"\n      ],\n      \"expected\": [\n        \"All 60 responses return HTTP 200\",\n        \"No response returns HTTP 429 or any 4xx/5xx\"\n      ],\n      \"trace\": [\n        \"R-TASK-039: system shall not throttle single-client request rates below 60/min\"\n      ],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\n\\ndef test_60_requests_all_succeed_positive():\\n    client = TestClient(app)\\n    responses = [client.get(\\\"/tasks/\\\") for _ in range(60)]\\n    status_codes = [r.status_code for r in responses]\\n    assert len(status_codes) == 60\\n    for i, code in enumerate(status_codes):\\n        assert code == 200, f\\\"Request {i+1} returned {code}, expected 200\\\"\\n    assert all(c == 200 for c in status_codes)\\n\\ntest_60_requests_all_succeed_positive()\"\n    },\n    {\n      \"name\": \"test_exactly_60_requests_at_boundary_all_succeed\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process via TestClient\",\n        \"Rate limit threshold is 60 requests per minute\",\n        \"GET /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"Send exactly 60 GET /tasks/ requests (the boundary value)\",\n        \"Assert each returns 200\"\n      ],\n      \"expected\": [\n        \"All 60 responses return HTTP 200 (boundary value must not be throttled)\",\n        \"Response count equals exactly 60\"\n      ],\n      \"trace\": [\n        \"R-TASK-039: threshold is 60/min; at exactly 60 all must succeed \u2014 catches > vs >= mutation\"\n      ],\n      \"executable\": \"from app.main import app\\nfrom fastapi.testclient import TestClient\\n\\ndef test_exactly_60_requests_at_boundary_all_succeed():\\n    client = TestClient(app)\\n    RATE_LIMIT_THRESHOLD = 60\\n    responses = [client.get(\\\"/tasks/\\\") for _ in range(RATE_LIMIT_THRESHOLD)]\\n    assert len(responses) == RATE_LIMIT_THRESHOLD\\n    success_count = sum(1 for r in responses if r.status_code == 200)\\n    assert success_count == RATE_LIMIT_THRESHOLD\\n    throttled_count = sum(1 for r in responses if r.status_code == 429)\\n    assert throttled_count == 0\\n\\ntest_exactly_60_requests_at_boundary_all_succeed()\"\n    },\n    {\n      \"name\": \"test_59_requests_below_threshold_all_succeed\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process via TestClient\",\n        \"Rate limit threshold is 60 requests per minute\",\n        \"GET /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"Send exactly 59 GET /tasks/ requests (threshold minus 1)\",\n        \"Assert each returns 200\"\n      ],\n      \"expected\": [\n        \"All 59 responses return HTTP 200"
+  }
+}

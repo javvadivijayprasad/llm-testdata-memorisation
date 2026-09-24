@@ -1,0 +1,220 @@
+{
+  "req": {
+    "id": "R-TASK-030",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Task id is auto-generated",
+    "statement": "The system shall assign a unique integer id to each new task; client-supplied ids in the payload shall be ignored.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task id is auto-generated"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-030",
+    "reasoning": "R-TASK-030 requires that (1) every POST /tasks/ response carries a server-assigned integer id, (2) that id is unique across successive calls, and (3) any id supplied by the client in the request body is silently ignored. The test suite covers: EP-positive (normal create, id is integer and present), NEG (client supplies an id field \u2013 it must be ignored, not echoed), BVA (two back-to-back creates must yield strictly different ids, catching off-by-one or constant-id mutations). Additional assertions pin the exact HTTP status code (201), exact field types, and exact non-id field values to kill constant-substitution and comparison-flip mutants.",
+    "tests": [
+      {
+        "name": "test_auto_generated_id_is_integer_and_present",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows (ids 1-20)",
+          "POST /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "POST /tasks/ with a valid title and no id field",
+          "Inspect the response status code and body"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON contains key 'id'",
+          "id value is an integer",
+          "id value is greater than 0",
+          "title in response matches submitted title",
+          "completed defaults to false"
+        ],
+        "trace": [
+          "R-TASK-030: system shall assign a unique integer id to each new task"
+        ],
+        "executable": "import os, sys\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_auto_generated_id_is_integer_and_present():\n    payload = {\"title\": \"Auto ID Task\", \"description\": \"desc\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert \"id\" in body\n    assert isinstance(body[\"id\"], int)\n    assert body[\"id\"] > 0\n    assert body[\"title\"] == \"Auto ID Task\"\n    assert body[\"completed\"] == False\n\ntest_auto_generated_id_is_integer_and_present()\n"
+      },
+      {
+        "name": "test_client_supplied_id_is_ignored",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows (ids 1-20)",
+          "POST /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "POST /tasks/ with a payload that includes an explicit 'id' field set to 9999",
+          "Inspect the response body"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON 'id' is NOT 9999 (client-supplied id is ignored)",
+          "Response JSON 'id' is a positive integer assigned by the server",
+          "title in response matches submitted title"
+        ],
+        "trace": [
+          "R-TASK-030: client-supplied ids in the payload shall be ignored"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_client_supplied_id_is_ignored():\n    payload = {\"id\": 9999, \"title\": \"Client ID Task\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert \"id\" in body\n    assert isinstance(body[\"id\"], int)\n    assert body[\"id\"] != 9999\n    assert body[\"id\"] > 0\n    assert body[\"title\"] == \"Client ID Task\"\n\ntest_client_supplied_id_is_ignored()\n"
+      },
+      {
+        "name": "test_successive_tasks_get_unique_ids",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows (ids 1-20)",
+          "POST /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "POST /tasks/ twice with different titles",
+          "Compare the two returned ids"
+        ],
+        "expected": [
+          "Both responses return HTTP 201",
+          "Both ids are positive integers",
+          "The two ids are strictly different (uniqueness invariant)",
+          "Second id is greater than first id (auto-increment direction)"
+        ],
+        "trace": [
+          "R-TASK-030: system shall assign a UNIQUE integer id to each new task"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_successive_tasks_get_unique_ids():\n    r1 = client.post(\"/tasks/\", json={\"title\": \"First Task\", \"completed\": False})\n    r2 = client.post(\"/tasks/\", json={\"title\": \"Second Task\", \"completed\": False})\n    assert r1.status_code == 201\n    assert r2.status_code == 201\n    id1 = r1.json()[\"id\"]\n    id2 = r2.json()[\"id\"]\n    assert isinstance(id1, int)\n    assert isinstance(id2, int)\n    assert id1 > 0\n    assert id2 > 0\n    assert id1 != id2\n    assert id2 > id1\n\ntest_successive_tasks_get_unique_ids()\n"
+      },
+      {
+        "name": "test_id_not_in_request_schema_and_response_has_exact_fields",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows (ids 1-20)",
+          "POST /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "POST /tasks/ with only required fields (title)",
+          "Verify response contains exactly the expected schema fields including server-assigned id"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response contains 'id', 'title', 'description', 'completed', 'created_at'",
+          "id is a positive integer",
+          "completed is False (default)",
+          "description is None (not supplied)",
+          "created_at is a non-empty string"
+        ],
+        "trace": [
+          "R-TASK-030: system shall assign a unique integer id",
+          "schemas.Task fields: id, title, description, completed, created_at, updated_at"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_id_not_in_request_schema_and_response_has_exact_fields():\n    r = client.post(\"/tasks/\", json={\"title\": \"Minimal Task\"})\n    assert r.status_code == 201\n    body = r.json()\n    assert set([\"id\", \"title\", \"description\", \"completed\", \"created_at\", \"updated_at\"]).issubset(body.keys())\n    assert isinstance(body[\"id\"], int)\n    assert body[\"id\"] > 0\n    assert body[\"title\"] == \"Minimal Task\"\n    assert body[\"completed\"] == False\n    assert body[\"description\"] is None\n    assert body[\"created_at\"] is not None\n    assert isinstance(body[\"created_at\"], str)\n    assert len(body[\"created_at\"]) > 0\n\ntest_id_not_in_request_schema_and_response_has_exact_fields()\n"
+      },
+      {
+        "name": "test_id_increments_beyond_existing_seed_rows",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows (ids 1-20)",
+          "POST /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "POST /tasks/ once after the 20 seed rows are present",
+          "Assert the new id is greater than 20 (the highest seed id)"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Returned id is strictly greater than 20",
+          "Returned id is an integer"
+        ],
+        "trace": [
+          "R-TASK-030: unique integer id; seed data occupies ids 1-20 so next must be > 20"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_id_increments_beyond_existing_seed_rows():\n    r = client.post(\"/tasks/\", json={\"title\": \"Post-Seed Task\", \"completed\": False})\n    assert r.status_code == 201\n    body = r.json()\n    assert isinstance(body[\"id\"], int)\n    assert body[\"id\"] > 20\n    assert body[\"title\"] == \"Post-Seed Task\"\n\ntest_id_increments_beyond_existing_seed_rows()\n"
+      },
+      {
+        "name": "test_missing_title_returns_4xx_not_201",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows",
+          "POST /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "POST /tasks/ with an empty JSON body (no title)",
+          "Assert the response is a 4xx error, not 201"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity (validation error)",
+          "No id is assigned because the task was not created"
+        ],
+        "trace": [
+          "R-TASK-030 error pathway: HTTP 4xx on client error",
+          "schemas.TaskCreate requires title (min_length=1)"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_missing_title_returns_4xx_not_201():\n    r = client.post(\"/tasks/\", json={})\n    assert r.status_code == 422\n    body = r.json()\n    assert \"id\" not in body\n    assert \"detail\" in body\n\ntest_missing_title_returns_4xx_not_201()\n"
+      },
+      {
+        "name": "test_three_tasks_all_have_distinct_ids",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with 20 seed rows",
+          "POST /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "POST /tasks/ three times in sequence",
+          "Collect all three returned ids",
+          "Assert all three are distinct and all are integers > 20"
+        ],
+        "expected": [
+          "All three responses return HTTP 201",
+          "All three ids are distinct integers",
+          "All three ids are greater than 20",
+          "ids are strictly monotonically increasing"
+        ],
+        "trace": [
+          "R-TASK-030: unique integer id per task; catches constant-id mutation"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.main import app\nfrom app.database import engine, Base\nfrom fastapi.testclient import TestClient\n\nBase.metadata.create_all(bind=engine)\nclient = TestClient(app)\n\ndef test_three_tasks_all_have_distinct_ids():\n    ids = []\n    for i in range(3):\n        r = client.post(\"/tasks/\", json={\"title\": f\"Task {i}\", \"completed\": False})\n        assert r.status_code == 201\n        body = r.json()\n        assert isinstance(body[\"id\"], int)\n        assert body[\"id\"] > 20\n        ids.append(body[\"id\"])\n    assert len(set(ids)) == 3\n    assert ids[0] < ids[1] < ids[2]\n\ntest_three_tasks_all_have_distinct_ids()\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-030",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5670,
+    "output_tokens": 3623,
+    "latency_ms": 47965,
+    "wall_ms": 47965,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-030\",\n  \"reasoning\": \"R-TASK-030 requires that (1) every POST /tasks/ response carries a server-assigned integer id, (2) that id is unique across successive calls, and (3) any id supplied by the client in the request body is silently ignored. The test suite covers: EP-positive (normal create, id is integer and present), NEG (client supplies an id field \u2013 it must be ignored, not echoed), BVA (two back-to-back creates must yield strictly different ids, catching off-by-one or constant-id mutations). Additional assertions pin the exact HTTP status code (201), exact field types, and exact non-id field values to kill constant-substitution and comparison-flip mutants.\",\n  \"tests\": [\n    {\n      \"name\": \"test_auto_generated_id_is_integer_and_present\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 20 seed rows (ids 1-20)\",\n        \"POST /tasks/ endpoint is reachable in-process\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with a valid title and no id field\",\n        \"Inspect the response status code and body\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response JSON contains key 'id'\",\n        \"id value is an integer\",\n        \"id value is greater than 0\",\n        \"title in response matches submitted title\",\n        \"completed defaults to false\"\n      ],\n      \"trace\": [\n        \"R-TASK-030: system shall assign a unique integer id to each new task\"\n      ],\n      \"executable\": \"import os, sys\\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\\nfrom app.main import app\\nfrom app.database import engine, Base\\nfrom fastapi.testclient import TestClient\\n\\nBase.metadata.create_all(bind=engine)\\nclient = TestClient(app)\\n\\ndef test_auto_generated_id_is_integer_and_present():\\n    payload = {\\\"title\\\": \\\"Auto ID Task\\\", \\\"description\\\": \\\"desc\\\", \\\"completed\\\": False}\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert \\\"id\\\" in body\\n    assert isinstance(body[\\\"id\\\"], int)\\n    assert body[\\\"id\\\"] > 0\\n    assert body[\\\"title\\\"] == \\\"Auto ID Task\\\"\\n    assert body[\\\"completed\\\"] == False\\n\\ntest_auto_generated_id_is_integer_and_present()\\n\"\n    },\n    {\n      \"name\": \"test_client_supplied_id_is_ignored\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 20 seed rows (ids 1-20)\",\n        \"POST /tasks/ endpoint is reachable in-process\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with a payload that includes an explicit 'id' field set to 9999\",\n        \"Inspect the response body\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response JSON 'id' is NOT 9999 (client-supplied id is ignored)\",\n        \"Response JSON 'id' is a positive integer assigned by the server\",\n        \"title in response matches submitted title\"\n      ],\n      \"trace\": [\n        \"R-TASK-030: client-supplied ids in the payload shall be ignored\"\n      ],\n      \"executable\": \"import os\\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\\nfrom app.main import app\\nfrom app.database import engine, Base\\nfrom fastapi.testclient import TestClient\\n\\nBase.metadata.create_all(bind=engine)\\nclient = TestClient(app)\\n\\ndef test_client_supplied_id_is_ignored():\\n    payload = {\\\"id\\\": 9999, \\\"title\\\": \\\"Client ID Task\\\", \\\"completed\\\": False}\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert \\\"id\\\" in body\\n    assert isinstance(body[\\\"id\\\"], int)\\n    assert body[\\\"id\\\"] != 9999\\n    assert body[\\\"id\\\"] > 0\\n    assert body[\\\"title\\\"] == \\\"Client ID Task\\\"\\n\\ntest_client_supplied_id_is_ignored()\\n\"\n    },\n    {\n      \"name\": \"test_successive_tasks_get_unique_ids\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 20 seed rows (ids 1-20)\",\n        \"POST /tasks/ endpoint is reachabl"
+  }
+}

@@ -1,0 +1,193 @@
+{
+  "req": {
+    "id": "R-TASK-023",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Task deletion persists",
+    "statement": "The system shall remove deleted rows so subsequent GET returns 404 for that id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task deletion persists"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "DELETE /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-023",
+    "reasoning": "The violation was test[4] having kind=negative but heuristic=STC. STC (State Transition Coverage) is a structural/positive heuristic that traces valid state paths; it must not be paired with kind=negative. The fix is to change that test's kind to 'positive', which correctly reflects that STC traces the happy-path state machine: task exists -> deleted -> confirmed absent. All other tests are preserved exactly as they were. Tests: (1) positive/EP - delete existing task, verify 204 then GET 404; (2) negative/NEG - delete non-existent task, verify 404; (3) boundary/BVA - delete lowest id boundary; (4) boundary/BVA - delete highest id boundary; (5) positive/STC - state transition coverage: exists->deleted->absent; (6) positive/DT - double-delete idempotency.",
+    "tests": [
+      {
+        "name": "test_delete_existing_task_returns_204_and_subsequent_get_returns_404",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains task with id=5 (title='Write project report', completed=false)",
+          "FastAPI app is running in-process with TestClient"
+        ],
+        "actions": [
+          "POST /tasks/ to create a known task and capture its id",
+          "DELETE /tasks/{task_id}",
+          "GET /tasks/{task_id}"
+        ],
+        "expected": [
+          "POST returns HTTP 201 with the created task",
+          "DELETE returns HTTP 204 with no body",
+          "GET returns HTTP 404"
+        ],
+        "trace": [
+          "R-TASK-023: deleted rows must be removed so subsequent GET returns 404"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nr_create = client.post(\"/tasks/\", json={\"title\": \"Write project report\", \"description\": None, \"completed\": False})\nassert r_create.status_code == 201\ntask_id = r_create.json()[\"id\"]\nr_delete = client.delete(f\"/tasks/{task_id}\")\nassert r_delete.status_code == 204\nassert r_delete.content == b\"\"\nr_get = client.get(f\"/tasks/{task_id}\")\nassert r_get.status_code == 404\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty (fresh in-memory SQLite)",
+          "task_id=99999 does not exist"
+        ],
+        "actions": [
+          "DELETE /tasks/99999"
+        ],
+        "expected": [
+          "DELETE returns HTTP 404",
+          "Response body contains detail message referencing the id"
+        ],
+        "trace": [
+          "R-TASK-023: error pathway - HTTP 4xx on client error (task not found)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine2 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal2 = sessionmaker(autocommit=False, autoflush=False, bind=engine2)\nmodels.Base.metadata.create_all(bind=engine2)\n\ndef override_get_db2():\n    db = TestingSessionLocal2()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db2\nclient2 = TestClient(app)\n\nr = client2.delete(\"/tasks/99999\")\nassert r.status_code == 404\nbody = r.json()\nassert \"detail\" in body\nassert \"99999\" in body[\"detail\"]\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_lowest_id_boundary_persists",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains at least one task",
+          "The task with the lowest assigned id is targeted"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task and record id as id_low",
+          "DELETE /tasks/{id_low}",
+          "GET /tasks/{id_low}"
+        ],
+        "expected": [
+          "DELETE returns exactly HTTP 204",
+          "GET returns exactly HTTP 404",
+          "No residual row exists for id_low"
+        ],
+        "trace": [
+          "R-TASK-023: boundary - lowest id deletion must persist; catches off-by-one in id filter"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine3 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal3 = sessionmaker(autocommit=False, autoflush=False, bind=engine3)\nmodels.Base.metadata.create_all(bind=engine3)\n\ndef override_get_db3():\n    db = TestingSessionLocal3()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db3\nclient3 = TestClient(app)\n\nr1 = client3.post(\"/tasks/\", json={\"title\": \"Buy groceries\", \"description\": \"A\", \"completed\": True})\nassert r1.status_code == 201\nid_low = r1.json()[\"id\"]\nr_del = client3.delete(f\"/tasks/{id_low}\")\nassert r_del.status_code == 204\nassert r_del.content == b\"\"\nr_get = client3.get(f\"/tasks/{id_low}\")\nassert r_get.status_code == 404\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_highest_id_boundary_persists",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains multiple tasks",
+          "The task with the highest assigned id is targeted"
+        ],
+        "actions": [
+          "POST /tasks/ twice to create two tasks; capture the higher id",
+          "DELETE /tasks/{id_high}",
+          "GET /tasks/{id_high}",
+          "GET /tasks/{id_low} to confirm lower id still exists"
+        ],
+        "expected": [
+          "DELETE returns exactly HTTP 204",
+          "GET for deleted id returns exactly HTTP 404",
+          "GET for surviving id returns exactly HTTP 200"
+        ],
+        "trace": [
+          "R-TASK-023: boundary - highest id deletion must persist; confirms only targeted row removed"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine4 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal4 = sessionmaker(autocommit=False, autoflush=False, bind=engine4)\nmodels.Base.metadata.create_all(bind=engine4)\n\ndef override_get_db4():\n    db = TestingSessionLocal4()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db4\nclient4 = TestClient(app)\n\nr1 = client4.post(\"/tasks/\", json={\"title\": \"Renew gym membership\", \"description\": None, \"completed\": True})\nassert r1.status_code == 201\nid_low = r1.json()[\"id\"]\nr2 = client4.post(\"/tasks/\", json={\"title\": \"Reply to emails\", \"description\": None, \"completed\": False})\nassert r2.status_code == 201\nid_high = r2.json()[\"id\"]\nassert id_high > id_low\nr_del = client4.delete(f\"/tasks/{id_high}\")\nassert r_del.status_code == 204\nassert r_del.content == b\"\"\nr_get_high = client4.get(f\"/tasks/{id_high}\")\nassert r_get_high.status_code == 404\nr_get_low = client4.get(f\"/tasks/{id_low}\")\nassert r_get_low.status_code == 200\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_delete_state_transition_exists_to_deleted_to_absent",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database is fresh in-memory SQLite",
+          "No tasks exist initially"
+        ],
+        "actions": [
+          "POST /tasks/ to transition task into 'exists' state",
+          "GET /tasks/{task_id} to confirm 'exists' state (200)",
+          "DELETE /tasks/{task_id} to transition task into 'deleted' state",
+          "GET /tasks/{task_id} to confirm 'absent' state (404)"
+        ],
+        "expected": [
+          "POST returns HTTP 201 confirming task enters 'exists' state",
+          "First GET returns HTTP 200 confirming task is retrievable",
+          "DELETE returns HTTP 204 confirming state transition to 'deleted'",
+          "Second GET returns HTTP 404 confirming task is in 'absent' state"
+        ],
+        "trace": [
+          "R-TASK-023: state transition coverage - task exists -> deleted -> confirmed absent; core persistence requirement"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine5 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal5 = sessionmaker(autocommit=False, autoflush=False, bind=engine5)\nmodels.Base.metadata.create_all(bind=engine5)\n\ndef override_get_db5():\n    db = TestingSessionLocal5()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db5\nclient5 = TestClient(app)\n\nr_post = client5.post(\"/tasks/\", json={\"title\": \"Schedule dentist appointment\", \"description\": \"Annual checkup\", \"completed\": False})\nassert r_post.status_code == 201\ntask_id = r_post.json()[\"id\"]\n\nr_get_before = client5.get(f\"/tasks/{task_id}\")\nassert r_get_before.status_code == 200\nassert r_get_before.json()[\"id\"] == task_id\n\nr_del = client5.delete(f\"/tasks/{task_id}\")\nassert r_del.status_code == 204\nassert r_del.content == b\"\"\n\nr_get_after = client5.get(f\"/tasks/{task_id}\")\nassert r_get_after.status_code == 404\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_double_delete_second_returns_404",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is fresh in-memory SQLite",
+          "A task is created and then deleted once"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task",
+          "DELETE /tasks/{task_id} (first delete)",
+          "DELETE /tasks/{task_id} (second delete)"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "First DELETE returns HTTP 204",
+          "Second DELETE returns HTTP 404 confirming deletion is not silently swallowed"
+        ],
+        "trace": [
+          "R-TASK-023: decision table - idempotency of delete; second delete must not succeed silently"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine6 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal6 = sessionmaker(autocommit=False, autoflush=False, bind=engine6)\nmodels.Base.metadata.create_all(bind=engine6)\n\ndef override_get_db6():\n    db = TestingSessionLocal6()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db6\nclient6 = TestClient(app)\n\nr_post = client6.post(\"/tasks/\", json={\"title\": \"Prepare quarterly report\", \"description\": None, \"completed\": False})\nassert r_post.status_code == 201\ntask_id = r_post.json()[\"id\"]\n\nr_del1 = client6.delete(f\"/tasks/{task_id}\")\nassert r_del1.status_code == 204\nassert r_del1.content == b\"\"\n\nr_del2 = client6.delete(f\"/tasks/{task_id}\")\nassert r_del2.status_code == 404\nbody = r_del2.json()\nassert \"detail\" in body\n\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-023",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7570,
+    "output_tokens": 4279,
+    "latency_ms": 48623,
+    "wall_ms": 48623,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-023\",\n  \"reasoning\": \"The requirement states that deleting a task must persist: the row is removed from the database so a subsequent GET returns 404. I design tests covering: (1) positive EP \u2013 delete an existing task, verify 204, then verify GET returns 404; (2) negative NEG \u2013 delete a non-existent task_id, verify 404 immediately; (3) boundary BVA \u2013 delete the lowest valid id (id=1) and highest valid id (id=20) to catch off-by-one mutations in id handling; (4) STC \u2013 state transition: task exists \u2192 deleted \u2192 confirmed absent; (5) DT \u2013 double-delete (idempotency): first delete succeeds (204), second delete returns 404, confirming the deletion is not silently swallowed. All tests use in-process FastAPI TestClient with a fresh SQLite in-memory database seeded with the specified fixture rows, ensuring determinism and isolation.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_existing_task_returns_204_and_subsequent_get_returns_404\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains task with id=5 (title='Write project report', completed=false)\",\n        \"FastAPI app is running in-process with TestClient\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ to create a known task and capture its id\",\n        \"DELETE /tasks/{task_id}\",\n        \"GET /tasks/{task_id}\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 201 with the created task\",\n        \"DELETE returns HTTP 204 with no body\",\n        \"GET returns HTTP 404\"\n      ],\n      \"trace\": [\n        \"R-TASK-023: deleted rows must be removed so subsequent GET returns 404\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\nengine = create_engine(\\\"sqlite:///:memory:\\\", connect_args={\\\"check_same_thread\\\": False})\\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_delete_existing_task_returns_204_and_subsequent_get_returns_404():\\n    r_create = client.post(\\\"/tasks/\\\", json={\\\"title\\\": \\\"Write project report\\\", \\\"description\\\": None, \\\"completed\\\": False})\\n    assert r_create.status_code == 201\\n    task_id = r_create.json()[\\\"id\\\"]\\n    r_delete = client.delete(f\\\"/tasks/{task_id}\\\")\\n    assert r_delete.status_code == 204\\n    assert r_delete.content == b\\\"\\\"\\n    r_get = client.get(f\\\"/tasks/{task_id}\\\")\\n    assert r_get.status_code == 404\\n\\ntest_delete_existing_task_returns_204_and_subsequent_get_returns_404()\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty (fresh in-memory SQLite)\",\n        \"task_id=99999 does not exist\"\n      ],\n      \"actions\": [\n        \"DELETE /tasks/99999\"\n      ],\n      \"expected\": [\n        \"DELETE returns HTTP 404\",\n        \"Response body contains detail message referencing the id\"\n      ],\n      \"trace\": [\n        \"R-TASK-023: error pathway \u2013 HTTP 4xx on client error (task not found)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\nengine2 = create_engine(\\\"sqlite:///:memory:\\\", connect_args={\\\"check_same_thread\\\": False})\\nTestingSessionLocal2 = sessionmaker(autocommit=False, autoflush=False, bind=engine2)\\nmodels.Base.metadata.create_all(bind=engine2)\\n\\ndef override_get_db2():\\n    db = TestingSessionLocal2()\\n    try:\\n        yield db\\n   "
+  }
+}

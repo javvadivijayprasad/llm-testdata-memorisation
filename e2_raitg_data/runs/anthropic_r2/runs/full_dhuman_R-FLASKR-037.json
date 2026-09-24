@@ -1,0 +1,123 @@
+{
+  "req": {
+    "id": "R-FLASKR-037",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Index renders even with zero posts",
+    "statement": "The system shall render the index page with 'No posts' or empty state when the post table is empty.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "index renders even with zero posts"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-037",
+    "reasoning": "R-FLASKR-037 requires the index page (GET /) to render successfully with HTTP 2xx even when the post table is empty. The pre-loaded fixture contains 1 post, so tests must explicitly clear the post table to create the zero-posts state. Three test cases are designed: (1) positive \u2014 empty post table yields HTTP 200 and a valid HTML response body; (2) negative \u2014 verifying that a bad HTTP method (POST) to / yields 405, confirming the route is GET-only; (3) boundary \u2014 the transition from 1 post to 0 posts (deleting the only row) still yields HTTP 200, catching off-by-one mutations in the post-count branch. All tests use exact status code assertions and inspect response body content to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_index_empty_posts_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask app created with TESTING=True and a fresh temp database",
+          "Database initialised with schema (init_db called)",
+          "All rows deleted from post table so it is empty"
+        ],
+        "actions": [
+          "DELETE all rows from the post table via direct DB access",
+          "Send GET / via test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body is non-empty bytes (HTML rendered)",
+          "Response content-type contains text/html"
+        ],
+        "trace": [
+          "R-FLASKR-037: index renders even with zero posts -> HTTP 2xx response"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\ndef test_index_empty_posts_returns_200():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        db = get_db()\n        db.execute('DELETE FROM post')\n        db.commit()\n    client = app.test_client()\n    r = client.get('/')\n    assert r.status_code == 200\n    assert len(r.data) > 0\n    assert b'html' in r.data.lower() or b'<' in r.data\n    os.unlink(path)\n\ntest_index_empty_posts_returns_200()"
+      },
+      {
+        "name": "test_index_post_method_not_allowed",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Flask app created with TESTING=True and a fresh temp database",
+          "Database initialised with schema"
+        ],
+        "actions": [
+          "Send POST / via test client (wrong HTTP method)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 405 (Method Not Allowed)",
+          "Response is NOT 200"
+        ],
+        "trace": [
+          "R-FLASKR-037: error pathway \u2014 HTTP 4xx on client error (wrong method)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_index_post_method_not_allowed():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r = client.post('/')\n    assert r.status_code == 405\n    assert r.status_code != 200\n    assert r.status_code != 404\n    os.unlink(path)\n\ntest_index_post_method_not_allowed()"
+      },
+      {
+        "name": "test_index_after_deleting_last_post_returns_200",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask app created with TESTING=True and a fresh temp database",
+          "Database initialised with schema and pre-loaded fixture (1 post exists)",
+          "The single post is then deleted, leaving exactly 0 posts"
+        ],
+        "actions": [
+          "Confirm exactly 1 post exists before deletion",
+          "Delete the single post row (id=1) from the post table",
+          "Confirm exactly 0 posts remain",
+          "Send GET / via test client"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200 after transition from 1 post to 0 posts",
+          "Response body contains HTML content",
+          "No server error (5xx) is returned"
+        ],
+        "trace": [
+          "R-FLASKR-037: boundary \u2014 transition from 1 post to 0 posts still yields HTTP 200",
+          "BVA: post count boundary at 0 (one below the minimum non-empty state of 1)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\ndef test_index_after_deleting_last_post_returns_200():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        db = get_db()\n        # Insert a user and a post to simulate the pre-loaded fixture\n        from werkzeug.security import generate_password_hash\n        db.execute(\n            'INSERT INTO user (username, password) VALUES (?, ?)',\n            ('testuser', generate_password_hash('testpass'))\n        )\n        db.execute(\n            \"INSERT INTO post (title, body, author_id) VALUES (?, ?, ?)\",\n            ('only post', 'body text', 1)\n        )\n        db.commit()\n        count_before = db.execute('SELECT COUNT(*) FROM post').fetchone()[0]\n        assert count_before == 1\n        db.execute('DELETE FROM post WHERE id = 1')\n        db.commit()\n        count_after = db.execute('SELECT COUNT(*) FROM post').fetchone()[0]\n        assert count_after == 0\n    client = app.test_client()\n    r = client.get('/')\n    assert r.status_code == 200\n    assert r.status_code != 500\n    assert len(r.data) > 0\n    os.unlink(path)\n\ntest_index_after_deleting_last_post_returns_200()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-037",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5451,
+    "output_tokens": 1787,
+    "latency_ms": 25896,
+    "wall_ms": 25896,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-037\",\n  \"reasoning\": \"R-FLASKR-037 requires the index page (GET /) to render successfully with HTTP 2xx even when the post table is empty. The pre-loaded fixture contains 1 post, so tests must explicitly clear the post table to create the zero-posts state. Three test cases are designed: (1) positive \u2014 empty post table yields HTTP 200 and a valid HTML response body; (2) negative \u2014 verifying that a bad HTTP method (POST) to / yields 405, confirming the route is GET-only; (3) boundary \u2014 the transition from 1 post to 0 posts (deleting the only row) still yields HTTP 200, catching off-by-one mutations in the post-count branch. All tests use exact status code assertions and inspect response body content to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_index_empty_posts_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a fresh temp database\",\n        \"Database initialised with schema (init_db called)\",\n        \"All rows deleted from post table so it is empty\"\n      ],\n      \"actions\": [\n        \"DELETE all rows from the post table via direct DB access\",\n        \"Send GET / via test client\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body is non-empty bytes (HTML rendered)\",\n        \"Response content-type contains text/html\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-037: index renders even with zero posts -> HTTP 2xx response\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db, get_db\\n\\ndef test_index_empty_posts_returns_200():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        init_db()\\n        db = get_db()\\n        db.execute('DELETE FROM post')\\n        db.commit()\\n    client = app.test_client()\\n    r = client.get('/')\\n    assert r.status_code == 200\\n    assert len(r.data) > 0\\n    assert b'html' in r.data.lower() or b'<' in r.data\\n    os.unlink(path)\\n\\ntest_index_empty_posts_returns_200()\"\n    },\n    {\n      \"name\": \"test_index_post_method_not_allowed\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a fresh temp database\",\n        \"Database initialised with schema\"\n      ],\n      \"actions\": [\n        \"Send POST / via test client (wrong HTTP method)\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 405 (Method Not Allowed)\",\n        \"Response is NOT 200\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-037: error pathway \u2014 HTTP 4xx on client error (wrong method)\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\ndef test_index_post_method_not_allowed():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/')\\n    assert r.status_code == 405\\n    assert r.status_code != 200\\n    assert r.status_code != 404\\n    os.unlink(path)\\n\\ntest_index_post_method_not_allowed()\"\n    },\n    {\n      \"name\": \"test_index_after_deleting_last_post_returns_200\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a fresh temp database\",\n        \"Database initialised with schema and pre-loaded fixture (1 post exists)\",\n        \"The single post is then deleted, leaving exactly 0 posts\"\n      ],\n      \"actions\": [\n        \"Confirm exactly 1 post exists before deletion\",\n        \"Delete the single post row (id=1) from the post table\",\n        \"Confirm exactly 0 posts remain\",\n        \"Send GET / via test client\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly"
+  }
+}

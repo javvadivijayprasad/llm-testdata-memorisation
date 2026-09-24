@@ -1,0 +1,214 @@
+{
+  "req": {
+    "id": "R-TASK-010",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Update task",
+    "statement": "The system shall update mutable fields of the task and return the updated object when PUT /tasks/{task_id} is called with a valid body.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "update task"
+    ],
+    "expected_outcomes": [
+      "HTTP 200",
+      "updated task returned"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-010",
+    "reasoning": "The requirement covers PUT /tasks/{task_id} updating mutable fields and returning the updated object. I designed tests covering: (1) EP positive \u2013 update all mutable fields on a known task and assert exact response values; (2) NEG \u2013 update a non-existent task_id returns exactly 404; (3) BVA \u2013 title at max length boundary (100 chars) succeeds, title at 101 chars fails with 422; (4) STC \u2013 toggle completed from false to true then back to false to verify state transitions; (5) DT \u2013 partial update (only one field) leaves other fields unchanged. Each test uses pre-loaded rows (ids 1-20), asserts exact status codes and field values to kill operator-flip and constant-bump mutations.",
+    "tests": [
+      {
+        "name": "test_update_task_all_fields_returns_200_with_updated_values",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task id=7 exists with title='Fix login bug', completed=false"
+        ],
+        "actions": [
+          "PUT /tasks/7 with body {title: 'Fixed login bug', description: 'All done', completed: true}"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body has id=7, title='Fixed login bug', description='All done', completed=true"
+        ],
+        "trace": [
+          "R-TASK-010: update mutable fields; return updated object"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_update_task_all_fields_returns_200_with_updated_values():\n    payload = {\"title\": \"Fixed login bug\", \"description\": \"All done\", \"completed\": True}\n    r = client.put(\"/tasks/7\", json=payload)\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"id\"] == 7\n    assert body[\"title\"] == \"Fixed login bug\"\n    assert body[\"description\"] == \"All done\"\n    assert body[\"completed\"] is True\n    assert \"created_at\" in body\n"
+      },
+      {
+        "name": "test_update_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task id=9999 does not exist"
+        ],
+        "actions": [
+          "PUT /tasks/9999 with valid body {title: 'Ghost task'}"
+        ],
+        "expected": [
+          "HTTP 404",
+          "Response detail contains 'not found'"
+        ],
+        "trace": [
+          "R-TASK-010: HTTP 4xx on client error (non-existent resource)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_update_nonexistent_task_returns_404():\n    r = client.put(\"/tasks/9999\", json={\"title\": \"Ghost task\"})\n    assert r.status_code == 404\n    body = r.json()\n    assert \"detail\" in body\n    assert \"not found\" in body[\"detail\"].lower()\n"
+      },
+      {
+        "name": "test_update_task_title_at_max_length_boundary_succeeds",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task id=10 exists with title='Organize desk'"
+        ],
+        "actions": [
+          "PUT /tasks/10 with title of exactly 100 characters (max allowed)",
+          "PUT /tasks/10 with title of exactly 101 characters (one over max)"
+        ],
+        "expected": [
+          "100-char title: HTTP 200, title in response equals the 100-char string",
+          "101-char title: HTTP 422 (validation error)"
+        ],
+        "trace": [
+          "R-TASK-010: boundary on title max_length=100; BVA at n and n+1"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_update_task_title_at_max_length_boundary_succeeds():\n    title_100 = \"A\" * 100\n    r = client.put(\"/tasks/10\", json={\"title\": title_100})\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"title\"] == title_100\n    assert len(body[\"title\"]) == 100\n\n    title_101 = \"A\" * 101\n    r2 = client.put(\"/tasks/10\", json={\"title\": title_101})\n    assert r2.status_code == 422\n"
+      },
+      {
+        "name": "test_update_task_completed_state_transition_false_to_true_to_false",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task id=4 exists with completed=false"
+        ],
+        "actions": [
+          "PUT /tasks/4 with {completed: true} \u2014 transition false->true",
+          "PUT /tasks/4 with {completed: false} \u2014 transition true->false"
+        ],
+        "expected": [
+          "After first PUT: HTTP 200, completed=true",
+          "After second PUT: HTTP 200, completed=false"
+        ],
+        "trace": [
+          "R-TASK-010: state transition on completed field; STC false->true->false"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_update_task_completed_state_transition_false_to_true_to_false():\n    r1 = client.put(\"/tasks/4\", json={\"completed\": True})\n    assert r1.status_code == 200\n    b1 = r1.json()\n    assert b1[\"id\"] == 4\n    assert b1[\"completed\"] is True\n\n    r2 = client.put(\"/tasks/4\", json={\"completed\": False})\n    assert r2.status_code == 200\n    b2 = r2.json()\n    assert b2[\"id\"] == 4\n    assert b2[\"completed\"] is False\n"
+      },
+      {
+        "name": "test_partial_update_only_title_leaves_other_fields_unchanged",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task id=7 exists with title='Fix login bug', description='Ember willow nova meridian flux cascade zenith.', completed=false"
+        ],
+        "actions": [
+          "PUT /tasks/7 with only {title: 'Patched title'} (no description or completed)"
+        ],
+        "expected": [
+          "HTTP 200",
+          "title == 'Patched title'",
+          "description unchanged == 'Ember willow nova meridian flux cascade zenith.'",
+          "completed unchanged == false",
+          "id == 7"
+        ],
+        "trace": [
+          "R-TASK-010: partial update; only provided fields mutated; DT decision on exclude_unset"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_partial_update_only_title_leaves_other_fields_unchanged():\n    r = client.put(\"/tasks/7\", json={\"title\": \"Patched title\"})\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"id\"] == 7\n    assert body[\"title\"] == \"Patched title\"\n    assert body[\"description\"] == \"Ember willow nova meridian flux cascade zenith.\"\n    assert body[\"completed\"] is False\n"
+      },
+      {
+        "name": "test_update_task_with_empty_title_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task id=5 exists"
+        ],
+        "actions": [
+          "PUT /tasks/5 with {title: ''} (empty string, violates min_length=1)"
+        ],
+        "expected": [
+          "HTTP 422 (validation error, not 200 or 404)"
+        ],
+        "trace": [
+          "R-TASK-010: HTTP 4xx on client error; title min_length=1 boundary violation"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_update_task_with_empty_title_returns_422():\n    r = client.put(\"/tasks/5\", json={\"title\": \"\"})\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n"
+      },
+      {
+        "name": "test_update_task_title_at_min_length_boundary_one_char_succeeds",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task id=11 exists with title='Water the plants'"
+        ],
+        "actions": [
+          "PUT /tasks/11 with title of exactly 1 character (min allowed)"
+        ],
+        "expected": [
+          "HTTP 200",
+          "title == 'X' (single char)",
+          "id == 11"
+        ],
+        "trace": [
+          "R-TASK-010: BVA at min_length=1 for title; catches off-by-one mutation on min_length"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_update_task_title_at_min_length_boundary_one_char_succeeds():\n    r = client.put(\"/tasks/11\", json={\"title\": \"X\"})\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"id\"] == 11\n    assert body[\"title\"] == \"X\"\n    assert len(body[\"title\"]) == 1\n"
+      },
+      {
+        "name": "test_update_task_response_contains_all_required_schema_fields",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task id=2 exists with title='Book flight tickets', completed=true"
+        ],
+        "actions": [
+          "PUT /tasks/2 with {title: 'Book train tickets', completed: false}"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response JSON contains keys: id, title, description, completed, created_at",
+          "id == 2, title == 'Book train tickets', completed == false"
+        ],
+        "trace": [
+          "R-TASK-010: updated task returned with full schema; EP on valid update"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\n\ndef test_update_task_response_contains_all_required_schema_fields():\n    r = client.put(\"/tasks/2\", json={\"title\": \"Book train tickets\", \"completed\": False})\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"id\"] == 2\n    assert body[\"title\"] == \"Book train tickets\"\n    assert body[\"completed\"] is False\n    assert \"description\" in body\n    assert \"created_at\" in body\n    assert body[\"description\"] == \"Delta willow vertex flux alpha orbit.\"\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-010",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5925,
+    "output_tokens": 3170,
+    "latency_ms": 39932,
+    "wall_ms": 39932,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-010\",\n  \"reasoning\": \"The requirement covers PUT /tasks/{task_id} updating mutable fields and returning the updated object. I designed tests covering: (1) EP positive \u2013 update all mutable fields on a known task and assert exact response values; (2) NEG \u2013 update a non-existent task_id returns exactly 404; (3) BVA \u2013 title at max length boundary (100 chars) succeeds, title at 101 chars fails with 422; (4) STC \u2013 toggle completed from false to true then back to false to verify state transitions; (5) DT \u2013 partial update (only one field) leaves other fields unchanged. Each test uses pre-loaded rows (ids 1-20), asserts exact status codes and field values to kill operator-flip and constant-bump mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_update_task_all_fields_returns_200_with_updated_values\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Task id=7 exists with title='Fix login bug', completed=false\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/7 with body {title: 'Fixed login bug', description: 'All done', completed: true}\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body has id=7, title='Fixed login bug', description='All done', completed=true\"\n      ],\n      \"trace\": [\n        \"R-TASK-010: update mutable fields; return updated object\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_update_task_all_fields_returns_200_with_updated_values():\\n    payload = {\\\"title\\\": \\\"Fixed login bug\\\", \\\"description\\\": \\\"All done\\\", \\\"completed\\\": True}\\n    r = client.put(\\\"/tasks/7\\\", json=payload)\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body[\\\"id\\\"] == 7\\n    assert body[\\\"title\\\"] == \\\"Fixed login bug\\\"\\n    assert body[\\\"description\\\"] == \\\"All done\\\"\\n    assert body[\\\"completed\\\"] is True\\n    assert \\\"created_at\\\" in body\\n\"\n    },\n    {\n      \"name\": \"test_update_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Task id=9999 does not exist\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/9999 with valid body {title: 'Ghost task'}\"\n      ],\n      \"expected\": [\n        \"HTTP 404\",\n        \"Response detail contains 'not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-010: HTTP 4xx on client error (non-existent resource)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_update_nonexistent_task_returns_404():\\n    r = client.put(\\\"/tasks/9999\\\", json={\\\"title\\\": \\\"Ghost task\\\"})\\n    assert r.status_code == 404\\n    body = r.json()\\n    assert \\\"detail\\\" in body\\n    assert \\\"not found\\\" in body[\\\"detail\\\"].lower()\\n\"\n    },\n    {\n      \"name\": \"test_update_task_title_at_max_length_boundary_succeeds\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Task id=10 exists with title='Organize desk'\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/10 with title of exactly 100 characters (max allowed)\",\n        \"PUT /tasks/10 with title of exactly 101 characters (one over max)\"\n      ],\n      \"expected\": [\n        \"100-char title: HTTP 200, title in response equals the 100-char string\",\n        \"101-char title: HTTP 422 (validation error)\"\n      ],\n      \"trace\": [\n        \"R-TASK-010: boundary on title max_length=100; BVA at n and n+1\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\nclient = TestClient(app)\\n\\ndef test_update_task_title_at_max_length_boundary_succeeds():\\n    title_100 = \\\"A\\\" * 100\\n    r = client.put(\\\"/tasks/10\\\", json={\\\"title\\\": title_100})\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body[\\\"title\\\"] == title_100\\n    assert len(body[\\\"title\\\"]) == 100\\n\\n    title_101 = \\\"A\\\" * 101\\n    r2 = client.put(\\\"/tasks/10\\\", json={\\\"title\\\": title_101"
+  }
+}

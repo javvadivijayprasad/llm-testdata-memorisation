@@ -1,0 +1,215 @@
+{
+  "req": {
+    "id": "R-FLASKR-033",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Update pre-populates form",
+    "statement": "The system shall pre-fill the update form with the existing post's title and body.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "update pre-populates form"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "GET /<id>/update"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-033",
+    "reasoning": "R-FLASKR-033 requires that GET /<id>/update pre-fills the update form with the existing post's title and body. Tests must verify: (1) positive \u2014 authenticated author sees their post's title and body in the response HTML; (2) negative \u2014 unauthenticated user is redirected (cannot see the form); (3) boundary \u2014 a post with minimal single-character title and body still pre-populates correctly; (4) negative \u2014 non-author authenticated user gets 403; (5) boundary \u2014 post with maximum-length title/body pre-populates fully. Mutation resilience is achieved by asserting exact status codes (200 vs 302 vs 403 vs 404), exact byte strings from the known test data, and both sides of auth/author checks.",
+    "tests": [
+      {
+        "name": "test_update_prepopulates_form_authenticated_author",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database seeded with pre-loaded rows",
+          "User Rahul (id=1) is the author of post id=2 (title='Pillow delta willow', body='Zenith alpha vertex flux flux matrix harbor matrix.')",
+          "User is logged in as Rahul"
+        ],
+        "actions": [
+          "POST /auth/login with username=Rahul, password=stone",
+          "GET /2/update"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body contains 'Pillow delta willow' (the post title)",
+          "Response body contains 'Zenith alpha vertex flux flux matrix harbor matrix.' (the post body)"
+        ],
+        "trace": [
+          "R-FLASKR-033: system shall pre-fill update form with existing post title and body"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\nclient = app.test_client()\n\ndef test_update_prepopulates_form_authenticated_author():\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.get('/2/update')\n    assert r.status_code == 200\n    assert b'Pillow delta willow' in r.data\n    assert b'Zenith alpha vertex flux flux matrix harbor matrix.' in r.data\n\ntest_update_prepopulates_form_authenticated_author()"
+      },
+      {
+        "name": "test_update_redirects_unauthenticated_user",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database seeded with pre-loaded rows",
+          "No user is logged in (fresh client session)"
+        ],
+        "actions": [
+          "GET /2/update without prior login"
+        ],
+        "expected": [
+          "HTTP 302 redirect (not 200)",
+          "Location header points to /auth/login"
+        ],
+        "trace": [
+          "R-FLASKR-033: login_required decorator must block unauthenticated access",
+          "auth.py: login_required redirects to auth.login when g.user is None"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\nclient = app.test_client()\n\ndef test_update_redirects_unauthenticated_user():\n    r = client.get('/2/update')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'\n\ntest_update_redirects_unauthenticated_user()"
+      },
+      {
+        "name": "test_update_prepopulates_single_char_title_and_body",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database seeded with pre-loaded rows",
+          "User Rahul (id=1) is logged in",
+          "A post with single-character title 'A' and body 'A' is created by Rahul"
+        ],
+        "actions": [
+          "POST /auth/login as Rahul",
+          "POST /create with title='A', body='A'",
+          "GET /<new_id>/update"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body contains value='A' or textarea with 'A' for both title and body"
+        ],
+        "trace": [
+          "R-FLASKR-033: minimum-length (1 char) title and body must still pre-populate",
+          "BVA: lower boundary of title/body length"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\nclient = app.test_client()\n\ndef test_update_prepopulates_single_char_title_and_body():\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.post('/create', data={'title': 'A', 'body': 'A'})\n    assert r.status_code == 302\n    with app.app_context():\n        from flaskr.db import get_db\n        post = get_db().execute(\n            \"SELECT id FROM post WHERE title = 'A' AND body = 'A' AND author_id = 1\"\n        ).fetchone()\n        new_id = post['id']\n    r = client.get(f'/{new_id}/update')\n    assert r.status_code == 200\n    assert b'>A<' in r.data or b'value=\"A\"' in r.data or r.data.count(b'A') >= 2\n\ntest_update_prepopulates_single_char_title_and_body()"
+      },
+      {
+        "name": "test_update_returns_403_for_non_author",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database seeded with pre-loaded rows",
+          "Post id=2 is authored by Rahul (author_id=1)",
+          "User Anjali (id=2) is logged in \u2014 she is NOT the author of post 2"
+        ],
+        "actions": [
+          "POST /auth/login as Anjali (password=cloud)",
+          "GET /2/update"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden (not 200, not 302)"
+        ],
+        "trace": [
+          "R-FLASKR-033: get_post(id, check_author=True) aborts with 403 when current user is not the author",
+          "blog.py: abort(403) when post['author_id'] != g.user['id']"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\nclient = app.test_client()\n\ndef test_update_returns_403_for_non_author():\n    r = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\n    assert r.status_code == 302\n    r = client.get('/2/update')\n    assert r.status_code == 403\n\ntest_update_returns_403_for_non_author()"
+      },
+      {
+        "name": "test_update_returns_404_for_nonexistent_post",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database seeded with pre-loaded rows (20 posts, max id=20)",
+          "User Rahul is logged in"
+        ],
+        "actions": [
+          "POST /auth/login as Rahul",
+          "GET /999999/update (post id does not exist)"
+        ],
+        "expected": [
+          "HTTP 404 Not Found"
+        ],
+        "trace": [
+          "R-FLASKR-033: get_post aborts 404 when post id does not exist",
+          "blog.py: abort(404, ...) when post is None"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\nclient = app.test_client()\n\ndef test_update_returns_404_for_nonexistent_post():\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.get('/999999/update')\n    assert r.status_code == 404\n\ntest_update_returns_404_for_nonexistent_post()"
+      },
+      {
+        "name": "test_update_prepopulates_exact_title_and_body_values",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database seeded with pre-loaded rows",
+          "Post id=3 authored by Rahul (author_id=1): title='Bmber matrix orbit', body='Vertex signal signal signal cascade vertex cascade zenith.'",
+          "User Rahul is logged in"
+        ],
+        "actions": [
+          "POST /auth/login as Rahul",
+          "GET /3/update"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response contains exact title string 'Bmber matrix orbit'",
+          "Response contains exact body string 'Vertex signal signal signal cascade vertex cascade zenith.'"
+        ],
+        "trace": [
+          "R-FLASKR-033: pre-fill form with existing post title and body \u2014 exact value assertion kills constant-mutation operators"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\nclient = app.test_client()\n\ndef test_update_prepopulates_exact_title_and_body_values():\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.get('/3/update')\n    assert r.status_code == 200\n    assert b'Bmber matrix orbit' in r.data\n    assert b'Vertex signal signal signal cascade vertex cascade zenith.' in r.data\n\ntest_update_prepopulates_exact_title_and_body_values()"
+      },
+      {
+        "name": "test_update_prepopulates_after_state_transition_create",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database seeded with pre-loaded rows",
+          "User Rahul is logged in",
+          "A new post is created via POST /create"
+        ],
+        "actions": [
+          "POST /auth/login as Rahul",
+          "POST /create with title='Orbit beacon test', body='Summit flux delta.'",
+          "Follow redirect to index",
+          "GET /<new_post_id>/update"
+        ],
+        "expected": [
+          "HTTP 200 on GET update",
+          "Response contains 'Orbit beacon test'",
+          "Response contains 'Summit flux delta.'"
+        ],
+        "trace": [
+          "R-FLASKR-033: state transition \u2014 post created then immediately retrievable in update form",
+          "STC: created -> update state"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\nclient = app.test_client()\n\ndef test_update_prepopulates_after_state_transition_create():\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.post('/create', data={'title': 'Orbit beacon test', 'body': 'Summit flux delta.'})\n    assert r.status_code == 302\n    with app.app_context():\n        from flaskr.db import get_db\n        row = get_db().execute(\n            \"SELECT id FROM post WHERE title = 'Orbit beacon test' AND author_id = 1\"\n        ).fetchone()\n        new_id = row['id']\n    r = client.get(f'/{new_id}/update')\n    assert r.status_code == 200\n    assert b'Orbit beacon test' in r.data\n    assert b'Summit flux delta.' in r.data\n\ntest_update_prepopulates_after_state_transition_create()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-033",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8453,
+    "output_tokens": 3725,
+    "latency_ms": 45129,
+    "wall_ms": 45129,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-033\",\n  \"reasoning\": \"R-FLASKR-033 requires that GET /<id>/update pre-fills the update form with the existing post's title and body. Tests must verify: (1) positive \u2014 authenticated author sees their post's title and body in the response HTML; (2) negative \u2014 unauthenticated user is redirected (cannot see the form); (3) boundary \u2014 a post with minimal single-character title and body still pre-populates correctly; (4) negative \u2014 non-author authenticated user gets 403; (5) boundary \u2014 post with maximum-length title/body pre-populates fully. Mutation resilience is achieved by asserting exact status codes (200 vs 302 vs 403 vs 404), exact byte strings from the known test data, and both sides of auth/author checks.\",\n  \"tests\": [\n    {\n      \"name\": \"test_update_prepopulates_form_authenticated_author\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database seeded with pre-loaded rows\",\n        \"User Rahul (id=1) is the author of post id=2 (title='Pillow delta willow', body='Zenith alpha vertex flux flux matrix harbor matrix.')\",\n        \"User is logged in as Rahul\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=Rahul, password=stone\",\n        \"GET /2/update\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body contains 'Pillow delta willow' (the post title)\",\n        \"Response body contains 'Zenith alpha vertex flux flux matrix harbor matrix.' (the post body)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-033: system shall pre-fill update form with existing post title and body\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\nclient = app.test_client()\\n\\ndef test_update_prepopulates_form_authenticated_author():\\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302\\n    r = client.get('/2/update')\\n    assert r.status_code == 200\\n    assert b'Pillow delta willow' in r.data\\n    assert b'Zenith alpha vertex flux flux matrix harbor matrix.' in r.data\\n\\ntest_update_prepopulates_form_authenticated_author()\"\n    },\n    {\n      \"name\": \"test_update_redirects_unauthenticated_user\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database seeded with pre-loaded rows\",\n        \"No user is logged in (fresh client session)\"\n      ],\n      \"actions\": [\n        \"GET /2/update without prior login\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect (not 200)\",\n        \"Location header points to /auth/login\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-033: login_required decorator must block unauthenticated access\",\n        \"auth.py: login_required redirects to auth.login when g.user is None\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\nclient = app.test_client()\\n\\ndef test_update_redirects_unauthenticated_user():\\n    r = client.get('/2/update')\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/auth/login'\\n\\ntest_update_redirects_unauthenticated_user()\"\n    },\n    {\n      \"name\": \"test_update_prepopulates_single_char_title_and_body\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database seeded with pre-loaded rows\",\n        \"User Rahul (id=1) is logged in\",\n        \"A post with single-character title 'A' and body 'A' is created by Rahul\"\n      ],\n      \"actions\": [\n        \"POST /auth/login as Rahul\",\n        \"POST /create with title='A', body='A'\",\n        \"GET /<new_id>/update\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n   "
+  }
+}

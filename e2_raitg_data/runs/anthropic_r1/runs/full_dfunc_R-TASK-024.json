@@ -1,0 +1,312 @@
+{
+  "req": {
+    "id": "R-TASK-024",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "startup",
+    "title": "Create schema on startup",
+    "statement": "The system shall create the tasks table via SQLAlchemy metadata at application startup.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "create schema on startup"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "lifecycle"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-024",
+    "reasoning": "R-TASK-024 requires that the tasks table is created via SQLAlchemy metadata at application startup. The primary observable effect is that the app is reachable (HTTP 200 on root) and the /tasks/ endpoint returns HTTP 200 with the pre-loaded rows, proving the table exists. Positive: app starts and root returns exact payload. Negative: querying a non-existent task returns 404 (table exists but row absent). Boundary: the tasks table has exactly 20 pre-loaded rows; querying with default limit returns all 20, and querying id=20 (last valid) vs id=21 (first invalid) exercises the boundary of the seeded dataset and confirms the schema is fully operational.",
+    "tests": [
+      {
+        "name": "test_startup_root_endpoint_returns_exact_welcome_payload",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is imported in-process",
+          "models.Base.metadata.create_all runs at import time",
+          "tasks table is created before first request"
+        ],
+        "actions": [
+          "Import app from app.main",
+          "Create TestClient",
+          "GET /"
+        ],
+        "expected": [
+          "HTTP 200",
+          "JSON body contains message, docs, version with exact values"
+        ],
+        "trace": [
+          "R-TASK-024: schema created at startup enables app to serve requests"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_root_endpoint_returns_exact_welcome_payload():\n    client = TestClient(app)\n    r = client.get(\"/\")\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"message\"] == \"Welcome to Task Manager API\"\n    assert body[\"docs\"] == \"/docs\"\n    assert body[\"version\"] == \"1.0.0\"\n    assert len(body) == 3\n\ntest_startup_root_endpoint_returns_exact_welcome_payload()"
+      },
+      {
+        "name": "test_startup_tasks_table_exists_and_returns_preloaded_rows",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup",
+          "20 pre-loaded rows present"
+        ],
+        "actions": [
+          "GET /tasks/ with default parameters"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response is a list of exactly 20 tasks",
+          "First task id==1, title=='Read chapter 5', completed==True",
+          "Last task id==20, title=='Reply to emails', completed==False"
+        ],
+        "trace": [
+          "R-TASK-024: table created at startup; pre-loaded rows are queryable"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_tasks_table_exists_and_returns_preloaded_rows():\n    client = TestClient(app)\n    r = client.get(\"/tasks/\")\n    assert r.status_code == 200\n    tasks = r.json()\n    assert isinstance(tasks, list)\n    assert len(tasks) == 20\n    first = tasks[0]\n    assert first[\"id\"] == 1\n    assert first[\"title\"] == \"Read chapter 5\"\n    assert first[\"completed\"] == True\n    last = tasks[19]\n    assert last[\"id\"] == 20\n    assert last[\"title\"] == \"Reply to emails\"\n    assert last[\"completed\"] == False\n\ntest_startup_tasks_table_exists_and_returns_preloaded_rows()"
+      },
+      {
+        "name": "test_startup_schema_allows_task_creation_and_retrieval",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup"
+        ],
+        "actions": [
+          "POST /tasks/ with valid payload",
+          "GET /tasks/{id} with returned id"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "Response contains id, title, description, completed, created_at",
+          "GET returns HTTP 200 with same task data"
+        ],
+        "trace": [
+          "R-TASK-024: schema creation enables write and read operations"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_schema_allows_task_creation_and_retrieval():\n    client = TestClient(app)\n    payload = {\"title\": \"Startup test task\", \"description\": \"Created in test\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    created = r.json()\n    assert created[\"title\"] == \"Startup test task\"\n    assert created[\"description\"] == \"Created in test\"\n    assert created[\"completed\"] == False\n    assert \"id\" in created\n    assert \"created_at\" in created\n    task_id = created[\"id\"]\n    r2 = client.get(f\"/tasks/{task_id}\")\n    assert r2.status_code == 200\n    fetched = r2.json()\n    assert fetched[\"id\"] == task_id\n    assert fetched[\"title\"] == \"Startup test task\"\n\ntest_startup_schema_allows_task_creation_and_retrieval()"
+      },
+      {
+        "name": "test_startup_nonexistent_task_returns_404_not_500",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup",
+          "task id 999999 does not exist in pre-loaded data"
+        ],
+        "actions": [
+          "GET /tasks/999999"
+        ],
+        "expected": [
+          "HTTP 404 (not 500, proving table exists but row is absent)",
+          "detail message contains task id 999999"
+        ],
+        "trace": [
+          "R-TASK-024: if table were missing, a 500 would occur; 404 proves table exists"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_nonexistent_task_returns_404_not_500():\n    client = TestClient(app)\n    r = client.get(\"/tasks/999999\")\n    assert r.status_code == 404\n    body = r.json()\n    assert \"detail\" in body\n    assert \"999999\" in body[\"detail\"]\n\ntest_startup_nonexistent_task_returns_404_not_500()"
+      },
+      {
+        "name": "test_startup_invalid_task_id_type_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup"
+        ],
+        "actions": [
+          "GET /tasks/not-an-integer"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response body contains 'detail' key"
+        ],
+        "trace": [
+          "R-TASK-024: schema exists; FastAPI validates path param type before DB query"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_invalid_task_id_type_returns_422():\n    client = TestClient(app)\n    r = client.get(\"/tasks/not-an-integer\")\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n    assert isinstance(body[\"detail\"], list)\n\ntest_startup_invalid_task_id_type_returns_422()"
+      },
+      {
+        "name": "test_startup_boundary_last_valid_task_id_20_returns_200",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup",
+          "pre-loaded data has exactly 20 rows; id=20 is the last"
+        ],
+        "actions": [
+          "GET /tasks/20"
+        ],
+        "expected": [
+          "HTTP 200",
+          "id==20, title=='Reply to emails', completed==False"
+        ],
+        "trace": [
+          "R-TASK-024: boundary at max pre-loaded id; table must exist for this to succeed"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_boundary_last_valid_task_id_20_returns_200():\n    client = TestClient(app)\n    r = client.get(\"/tasks/20\")\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"id\"] == 20\n    assert body[\"title\"] == \"Reply to emails\"\n    assert body[\"completed\"] == False\n    assert body[\"description\"] == \"Summit cascade willow zenith pulse beacon ember willow.\"\n\ntest_startup_boundary_last_valid_task_id_20_returns_200()"
+      },
+      {
+        "name": "test_startup_boundary_first_beyond_preloaded_id_21_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup",
+          "pre-loaded data has exactly 20 rows; id=21 does not exist"
+        ],
+        "actions": [
+          "GET /tasks/21"
+        ],
+        "expected": [
+          "HTTP 404",
+          "detail message references id 21"
+        ],
+        "trace": [
+          "R-TASK-024: boundary at max+1 pre-loaded id; 404 proves table exists and row is absent"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_boundary_first_beyond_preloaded_id_21_returns_404():\n    client = TestClient(app)\n    r = client.get(\"/tasks/21\")\n    assert r.status_code == 404\n    body = r.json()\n    assert \"detail\" in body\n    assert \"21\" in body[\"detail\"]\n\ntest_startup_boundary_first_beyond_preloaded_id_21_returns_404()"
+      },
+      {
+        "name": "test_startup_boundary_task_id_1_first_row_returns_exact_data",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup",
+          "id=1 is the first pre-loaded row"
+        ],
+        "actions": [
+          "GET /tasks/1"
+        ],
+        "expected": [
+          "HTTP 200",
+          "id==1, title=='Read chapter 5', completed==True"
+        ],
+        "trace": [
+          "R-TASK-024: boundary at minimum pre-loaded id; table must exist"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_boundary_task_id_1_first_row_returns_exact_data():\n    client = TestClient(app)\n    r = client.get(\"/tasks/1\")\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"id\"] == 1\n    assert body[\"title\"] == \"Read chapter 5\"\n    assert body[\"completed\"] == True\n    assert \"created_at\" in body\n\ntest_startup_boundary_task_id_1_first_row_returns_exact_data()"
+      },
+      {
+        "name": "test_startup_boundary_task_id_0_returns_404_or_422",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup",
+          "id=0 is below minimum valid id"
+        ],
+        "actions": [
+          "GET /tasks/0"
+        ],
+        "expected": [
+          "HTTP 404 (row not found) \u2014 not 500, proving table exists"
+        ],
+        "trace": [
+          "R-TASK-024: id=0 is boundary below first row; table existence proven by non-500 response"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_boundary_task_id_0_returns_404_or_422():\n    client = TestClient(app)\n    r = client.get(\"/tasks/0\")\n    assert r.status_code == 404\n    body = r.json()\n    assert \"detail\" in body\n    assert \"0\" in body[\"detail\"]\n\ntest_startup_boundary_task_id_0_returns_404_or_422()"
+      },
+      {
+        "name": "test_startup_completed_filter_true_returns_only_completed_tasks",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup",
+          "pre-loaded data: ids 1,2,3,9,15,19 have completed=True (6 rows)"
+        ],
+        "actions": [
+          "GET /tasks/?completed=true"
+        ],
+        "expected": [
+          "HTTP 200",
+          "All returned tasks have completed==True",
+          "Exactly 6 tasks returned"
+        ],
+        "trace": [
+          "R-TASK-024: schema created; filter on completed column works only if table exists"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_completed_filter_true_returns_only_completed_tasks():\n    client = TestClient(app)\n    r = client.get(\"/tasks/?completed=true\")\n    assert r.status_code == 200\n    tasks = r.json()\n    assert isinstance(tasks, list)\n    assert len(tasks) == 6\n    for t in tasks:\n        assert t[\"completed\"] == True\n    ids = {t[\"id\"] for t in tasks}\n    assert ids == {1, 2, 3, 9, 15, 19}\n\ntest_startup_completed_filter_true_returns_only_completed_tasks()"
+      },
+      {
+        "name": "test_startup_completed_filter_false_returns_only_incomplete_tasks",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup",
+          "pre-loaded data: 14 rows have completed=False"
+        ],
+        "actions": [
+          "GET /tasks/?completed=false"
+        ],
+        "expected": [
+          "HTTP 200",
+          "All returned tasks have completed==False",
+          "Exactly 14 tasks returned"
+        ],
+        "trace": [
+          "R-TASK-024: schema created; boolean filter on completed column is functional"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_completed_filter_false_returns_only_incomplete_tasks():\n    client = TestClient(app)\n    r = client.get(\"/tasks/?completed=false\")\n    assert r.status_code == 200\n    tasks = r.json()\n    assert isinstance(tasks, list)\n    assert len(tasks) == 14\n    for t in tasks:\n        assert t[\"completed\"] == False\n\ntest_startup_completed_filter_false_returns_only_incomplete_tasks()"
+      },
+      {
+        "name": "test_startup_schema_task_fields_match_model_exactly",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app imported in-process",
+          "tasks table created at startup with correct columns"
+        ],
+        "actions": [
+          "GET /tasks/2 (known completed task with description)"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response has exactly: id, title, description, completed, created_at, updated_at",
+          "id==2, title=='Book flight tickets', completed==True"
+        ],
+        "trace": [
+          "R-TASK-024: schema columns match Task model; all fields present in response"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_startup_schema_task_fields_match_model_exactly():\n    client = TestClient(app)\n    r = client.get(\"/tasks/2\")\n    assert r.status_code == 200\n    body = r.json()\n    assert body[\"id\"] == 2\n    assert body[\"title\"] == \"Book flight tickets\"\n    assert body[\"description\"] == \"Delta willow vertex flux alpha orbit.\"\n    assert body[\"completed\"] == True\n    assert \"created_at\" in body\n    assert \"updated_at\" in body\n    expected_keys = {\"id\", \"title\", \"description\", \"completed\", \"created_at\", \"updated_at\"}\n    assert set(body.keys()) == expected_keys\n\ntest_startup_schema_task_fields_match_model_exactly()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-024",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5656,
+    "output_tokens": 4708,
+    "latency_ms": 56407,
+    "wall_ms": 56407,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-024\",\n  \"reasoning\": \"R-TASK-024 requires that the tasks table is created via SQLAlchemy metadata at application startup. The primary observable effect is that the app is reachable (HTTP 200 on root) and the /tasks/ endpoint returns HTTP 200 with the pre-loaded rows, proving the table exists. Positive: app starts and root returns exact payload. Negative: querying a non-existent task returns 404 (table exists but row absent). Boundary: the tasks table has exactly 20 pre-loaded rows; querying with default limit returns all 20, and querying id=20 (last valid) vs id=21 (first invalid) exercises the boundary of the seeded dataset and confirms the schema is fully operational.\",\n  \"tests\": [\n    {\n      \"name\": \"test_startup_root_endpoint_returns_exact_welcome_payload\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is imported in-process\",\n        \"models.Base.metadata.create_all runs at import time\",\n        \"tasks table is created before first request\"\n      ],\n      \"actions\": [\n        \"Import app from app.main\",\n        \"Create TestClient\",\n        \"GET /\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"JSON body contains message, docs, version with exact values\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: schema created at startup enables app to serve requests\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_startup_root_endpoint_returns_exact_welcome_payload():\\n    client = TestClient(app)\\n    r = client.get(\\\"/\\\")\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body[\\\"message\\\"] == \\\"Welcome to Task Manager API\\\"\\n    assert body[\\\"docs\\\"] == \\\"/docs\\\"\\n    assert body[\\\"version\\\"] == \\\"1.0.0\\\"\\n    assert len(body) == 3\\n\\ntest_startup_root_endpoint_returns_exact_welcome_payload()\"\n    },\n    {\n      \"name\": \"test_startup_tasks_table_exists_and_returns_preloaded_rows\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app imported in-process\",\n        \"tasks table created at startup\",\n        \"20 pre-loaded rows present\"\n      ],\n      \"actions\": [\n        \"GET /tasks/ with default parameters\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response is a list of exactly 20 tasks\",\n        \"First task id==1, title=='Read chapter 5', completed==True\",\n        \"Last task id==20, title=='Reply to emails', completed==False\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: table created at startup; pre-loaded rows are queryable\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_startup_tasks_table_exists_and_returns_preloaded_rows():\\n    client = TestClient(app)\\n    r = client.get(\\\"/tasks/\\\")\\n    assert r.status_code == 200\\n    tasks = r.json()\\n    assert isinstance(tasks, list)\\n    assert len(tasks) == 20\\n    first = tasks[0]\\n    assert first[\\\"id\\\"] == 1\\n    assert first[\\\"title\\\"] == \\\"Read chapter 5\\\"\\n    assert first[\\\"completed\\\"] == True\\n    last = tasks[19]\\n    assert last[\\\"id\\\"] == 20\\n    assert last[\\\"title\\\"] == \\\"Reply to emails\\\"\\n    assert last[\\\"completed\\\"] == False\\n\\ntest_startup_tasks_table_exists_and_returns_preloaded_rows()\"\n    },\n    {\n      \"name\": \"test_startup_schema_allows_task_creation_and_retrieval\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"FastAPI app imported in-process\",\n        \"tasks table created at startup\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with valid payload\",\n        \"GET /tasks/{id} with returned id\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 201\",\n        \"Response contains id, title, description, completed, created_at\",\n        \"GET returns HTTP 200 with same task data\"\n      ],\n      \"trace\": [\n        \"R-TASK-024: schema creation enables write and read operations\"\n      ],\n      \"executable\": \"from fastapi.test"
+  }
+}

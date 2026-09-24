@@ -1,0 +1,220 @@
+{
+  "req": {
+    "id": "R-PLAYER-021",
+    "domain": "sports_players",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Player deletion persists to DB",
+    "statement": "The system shall remove the row from the players table so GET returns 404 afterwards.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "player deletion persists to db"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "DELETE /players/{playerId}"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-021",
+    "reasoning": "The requirement states that DELETE /players/{playerId} (implemented as DELETE /players/squadnumber/{squad_number}) must remove the row from the players table so a subsequent GET returns 404. Tests cover: (1) positive EP \u2014 delete an existing player and verify 204 then 404 on re-fetch; (2) negative NEG \u2014 delete a non-existent player and verify 404; (3) boundary BVA \u2014 delete the lowest squad number (1) and highest (26) to catch off-by-one mutations; (4) STC \u2014 full state transition: exists \u2192 deleted \u2192 re-delete returns 404; (5) DT \u2014 verify the deleted player is absent from the full collection listing. Each test uses exact status code assertions and verifies both sides of the state transition to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_delete_existing_player_returns_204_and_subsequent_get_returns_404",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Player with squadNumber=10 exists in the database (Kabir Mary Reddy)"
+        ],
+        "actions": [
+          "Send DELETE /players/squadnumber/10",
+          "Assert response status is exactly 204",
+          "Send GET /players/squadnumber/10",
+          "Assert response status is exactly 404"
+        ],
+        "expected": [
+          "DELETE returns HTTP 204 No Content",
+          "Subsequent GET returns HTTP 404 Not Found",
+          "Persistence is confirmed \u2014 row is gone from DB"
+        ],
+        "trace": [
+          "R-PLAYER-021: system shall remove the row so GET returns 404 afterwards"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_existing_player_returns_204_and_subsequent_get_returns_404():\n    delete_resp = client.delete('/players/squadnumber/10')\n    assert delete_resp.status_code == 204\n    assert delete_resp.content == b''\n    get_resp = client.get('/players/squadnumber/10')\n    assert get_resp.status_code == 404\n\ntest_delete_existing_player_returns_204_and_subsequent_get_returns_404()"
+      },
+      {
+        "name": "test_delete_nonexistent_player_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No player with squadNumber=999 exists in the database"
+        ],
+        "actions": [
+          "Send DELETE /players/squadnumber/999",
+          "Assert response status is exactly 404"
+        ],
+        "expected": [
+          "DELETE returns HTTP 404 Not Found",
+          "No server error (not 500)"
+        ],
+        "trace": [
+          "R-PLAYER-021: error pathway \u2014 HTTP 4xx on client error (player not found)"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_nonexistent_player_returns_404():\n    resp = client.delete('/players/squadnumber/999')\n    assert resp.status_code == 404\n    assert resp.status_code != 204\n    assert resp.status_code != 500\n\ntest_delete_nonexistent_player_returns_404()"
+      },
+      {
+        "name": "test_delete_lowest_squad_number_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Player with squadNumber=1 (Anjali Banerjee) exists in the database \u2014 lowest squad number"
+        ],
+        "actions": [
+          "Send DELETE /players/squadnumber/1",
+          "Assert response status is exactly 204",
+          "Send GET /players/squadnumber/1",
+          "Assert response status is exactly 404"
+        ],
+        "expected": [
+          "DELETE returns HTTP 204 for the minimum squad number boundary",
+          "Subsequent GET returns HTTP 404 confirming DB removal"
+        ],
+        "trace": [
+          "R-PLAYER-021: boundary \u2014 lowest valid squad number (1) must be deletable and persist"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_lowest_squad_number_boundary():\n    delete_resp = client.delete('/players/squadnumber/1')\n    assert delete_resp.status_code == 204\n    get_resp = client.get('/players/squadnumber/1')\n    assert get_resp.status_code == 404\n    get_resp2 = client.get('/players/squadnumber/2')\n    assert get_resp2.status_code == 200\n\ntest_delete_lowest_squad_number_boundary()"
+      },
+      {
+        "name": "test_delete_highest_squad_number_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Player with squadNumber=26 (Aditya Mehta) exists in the database \u2014 highest squad number"
+        ],
+        "actions": [
+          "Send DELETE /players/squadnumber/26",
+          "Assert response status is exactly 204",
+          "Send GET /players/squadnumber/26",
+          "Assert response status is exactly 404",
+          "Send GET /players/squadnumber/25 to confirm adjacent row unaffected"
+        ],
+        "expected": [
+          "DELETE returns HTTP 204 for the maximum squad number boundary",
+          "Subsequent GET returns HTTP 404 confirming DB removal",
+          "Adjacent player (squadNumber=25) still returns 200"
+        ],
+        "trace": [
+          "R-PLAYER-021: boundary \u2014 highest valid squad number (26) must be deletable and persist"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_highest_squad_number_boundary():\n    delete_resp = client.delete('/players/squadnumber/26')\n    assert delete_resp.status_code == 204\n    get_resp = client.get('/players/squadnumber/26')\n    assert get_resp.status_code == 404\n    adjacent_resp = client.get('/players/squadnumber/25')\n    assert adjacent_resp.status_code == 200\n    adjacent_data = adjacent_resp.json()\n    assert adjacent_data['squadNumber'] == 25\n\ntest_delete_highest_squad_number_boundary()"
+      },
+      {
+        "name": "test_delete_player_state_transition_exists_to_deleted_to_redelete",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Player with squadNumber=15 (Priya Chopra) exists in the database"
+        ],
+        "actions": [
+          "Verify player exists via GET /players/squadnumber/15 (state: EXISTS)",
+          "Send DELETE /players/squadnumber/15 (transition: EXISTS -> DELETED)",
+          "Assert DELETE returns 204",
+          "Send GET /players/squadnumber/15 (state: DELETED)",
+          "Assert GET returns 404",
+          "Send DELETE /players/squadnumber/15 again (transition: DELETED -> re-delete)",
+          "Assert second DELETE returns 404 (not 204)"
+        ],
+        "expected": [
+          "Initial GET returns 200 confirming player exists",
+          "First DELETE returns 204",
+          "GET after delete returns 404",
+          "Second DELETE returns 404 (idempotent \u2014 already gone)"
+        ],
+        "trace": [
+          "R-PLAYER-021: state transition \u2014 player moves from existing to deleted; re-deletion must return 404"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_player_state_transition_exists_to_deleted_to_redelete():\n    pre_resp = client.get('/players/squadnumber/15')\n    assert pre_resp.status_code == 200\n    assert pre_resp.json()['squadNumber'] == 15\n    del_resp1 = client.delete('/players/squadnumber/15')\n    assert del_resp1.status_code == 204\n    get_resp = client.get('/players/squadnumber/15')\n    assert get_resp.status_code == 404\n    del_resp2 = client.delete('/players/squadnumber/15')\n    assert del_resp2.status_code == 404\n    assert del_resp2.status_code != 204\n\ntest_delete_player_state_transition_exists_to_deleted_to_redelete()"
+      },
+      {
+        "name": "test_delete_player_absent_from_collection_after_deletion",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Player with squadNumber=7 (Ishaan Iyer) exists in the database",
+          "GET /players/ returns all 26 players"
+        ],
+        "actions": [
+          "Send DELETE /players/squadnumber/7",
+          "Assert DELETE returns 204",
+          "Send GET /players/ to retrieve full collection",
+          "Assert response status is 200",
+          "Assert no player in the list has squadNumber=7",
+          "Assert total count decreased by exactly 1 (25 players remain)"
+        ],
+        "expected": [
+          "DELETE returns 204",
+          "Collection GET returns 200",
+          "No player with squadNumber=7 in the collection",
+          "Collection has exactly 25 players"
+        ],
+        "trace": [
+          "R-PLAYER-021: row removed from players table \u2014 verified via collection endpoint"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_player_absent_from_collection_after_deletion():\n    del_resp = client.delete('/players/squadnumber/7')\n    assert del_resp.status_code == 204\n    list_resp = client.get('/players/')\n    assert list_resp.status_code == 200\n    players = list_resp.json()\n    squad_numbers = [p['squadNumber'] for p in players]\n    assert 7 not in squad_numbers\n    assert len(players) == 25\n\ntest_delete_player_absent_from_collection_after_deletion()"
+      },
+      {
+        "name": "test_delete_player_by_uuid_get_returns_404",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Player with squadNumber=20 (Reyansh Shah, id=3f760606-760f-4c31-bbcf-de3b8d30dee3) exists"
+        ],
+        "actions": [
+          "Send DELETE /players/squadnumber/20",
+          "Assert DELETE returns 204",
+          "Send GET /players/{uuid} using the known UUID of the deleted player",
+          "Assert GET by UUID returns 404"
+        ],
+        "expected": [
+          "DELETE returns 204",
+          "GET by UUID returns 404 confirming row is gone from DB at the persistence layer"
+        ],
+        "trace": [
+          "R-PLAYER-021: row removed from players table \u2014 verified via UUID lookup endpoint"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_delete_player_by_uuid_get_returns_404():\n    player_uuid = '3f760606-760f-4c31-bbcf-de3b8d30dee3'\n    pre_resp = client.get(f'/players/{player_uuid}')\n    assert pre_resp.status_code == 200\n    assert pre_resp.json()['squadNumber'] == 20\n    del_resp = client.delete('/players/squadnumber/20')\n    assert del_resp.status_code == 204\n    get_resp = client.get(f'/players/{player_uuid}')\n    assert get_resp.status_code == 404\n\ntest_delete_player_by_uuid_get_returns_404()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-021",
+  "domain": "sports_players",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11197,
+    "output_tokens": 3226,
+    "latency_ms": 41173,
+    "wall_ms": 41173,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-021\",\n  \"reasoning\": \"The requirement states that DELETE /players/{playerId} (implemented as DELETE /players/squadnumber/{squad_number}) must remove the row from the players table so a subsequent GET returns 404. Tests cover: (1) positive EP \u2014 delete an existing player and verify 204 then 404 on re-fetch; (2) negative NEG \u2014 delete a non-existent player and verify 404; (3) boundary BVA \u2014 delete the lowest squad number (1) and highest (26) to catch off-by-one mutations; (4) STC \u2014 full state transition: exists \u2192 deleted \u2192 re-delete returns 404; (5) DT \u2014 verify the deleted player is absent from the full collection listing. Each test uses exact status code assertions and verifies both sides of the state transition to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_existing_player_returns_204_and_subsequent_get_returns_404\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Player with squadNumber=10 exists in the database (Kabir Mary Reddy)\"\n      ],\n      \"actions\": [\n        \"Send DELETE /players/squadnumber/10\",\n        \"Assert response status is exactly 204\",\n        \"Send GET /players/squadnumber/10\",\n        \"Assert response status is exactly 404\"\n      ],\n      \"expected\": [\n        \"DELETE returns HTTP 204 No Content\",\n        \"Subsequent GET returns HTTP 404 Not Found\",\n        \"Persistence is confirmed \u2014 row is gone from DB\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-021: system shall remove the row so GET returns 404 afterwards\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\nclient = TestClient(app)\\n\\ndef test_delete_existing_player_returns_204_and_subsequent_get_returns_404():\\n    delete_resp = client.delete('/players/squadnumber/10')\\n    assert delete_resp.status_code == 204\\n    assert delete_resp.content == b''\\n    get_resp = client.get('/players/squadnumber/10')\\n    assert get_resp.status_code == 404\\n\\ntest_delete_existing_player_returns_204_and_subsequent_get_returns_404()\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_player_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"No player with squadNumber=999 exists in the database\"\n      ],\n      \"actions\": [\n        \"Send DELETE /players/squadnumber/999\",\n        \"Assert response status is exactly 404\"\n      ],\n      \"expected\": [\n        \"DELETE returns HTTP 404 Not Found\",\n        \"No server error (not 500)\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-021: error pathway \u2014 HTTP 4xx on client error (player not found)\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\nclient = TestClient(app)\\n\\ndef test_delete_nonexistent_player_returns_404():\\n    resp = client.delete('/players/squadnumber/999')\\n    assert resp.status_code == 404\\n    assert resp.status_code != 204\\n    assert resp.status_code != 500\\n\\ntest_delete_nonexistent_player_returns_404()\"\n    },\n    {\n      \"name\": \"test_delete_lowest_squad_number_boundary\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Player with squadNumber=1 (Anjali Banerjee) exists in the database \u2014 lowest squad number\"\n      ],\n      \"actions\": [\n        \"Send DELETE /players/squadnumber/1\",\n        \"Assert response status is exactly 204\",\n        \"Send GET /players/squadnumber/1\",\n        \"Assert response status is exactly 404\"\n      ],\n      \"expected\": [\n        \"DELETE returns HTTP 204 for the minimum squad number boundary\",\n        \"Subsequent GET returns HTTP 404 confirming DB removal\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-021: boundary \u2014 lowest valid squad number (1) must be deletable and persist\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\nclient = TestClient(app)\\n\\ndef test_delete_lowest_squad_number_boundary():\\n    delete_resp = client.delete('/players/squadnumber/"
+  }
+}

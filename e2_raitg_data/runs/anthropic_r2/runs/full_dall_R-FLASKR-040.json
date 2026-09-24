@@ -1,0 +1,167 @@
+{
+  "req": {
+    "id": "R-FLASKR-040",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "validation",
+    "title": "Blog post title required on update",
+    "statement": "The system shall reject POST /<id>/update with a missing title, rendering an error.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "blog post title required on update"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /<id>/update"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-040",
+    "reasoning": "R-FLASKR-040 requires that POST /<id>/update rejects a request with a missing title by re-rendering the update form with an error message (HTTP 200, not a redirect). Three test cases are designed: (1) positive \u2014 valid update with a non-empty title succeeds (redirects to index, HTTP 302); (2) negative \u2014 update with an empty string title is rejected (HTTP 200, error message present, no redirect); (3) boundary \u2014 update with a single-character title 'A' (minimum non-empty) is accepted (HTTP 302). Each test sets up its own isolated in-process Flask app with a temp database, logs in as the post author, and makes assertions on exact status codes and response body content to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_update_missing_title_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "Database contains post id=2 authored by user id=1 (Rahul/stone)",
+          "User Rahul is logged in via POST /auth/login"
+        ],
+        "actions": [
+          "POST /2/update with title='' and body='some body'"
+        ],
+        "expected": [
+          "HTTP 200 (form re-rendered, not redirected)",
+          "Response body contains b'Title is required.'"
+        ],
+        "trace": [
+          "R-FLASKR-040: system shall reject POST /<id>/update with missing title",
+          "blog.py update(): if not title: error = 'Title is required.' -> flash(error)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_missing_title_rejected():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    # Log in as Rahul (author of post id=2)\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    # POST update with empty title\n    r = client.post('/2/update', data={'title': '', 'body': 'some body'})\n    assert r.status_code == 200\n    assert b'Title is required.' in r.data\n\ntest_update_missing_title_rejected()"
+      },
+      {
+        "name": "test_update_valid_title_accepted",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "Database contains post id=2 authored by user id=1 (Rahul/stone)",
+          "User Rahul is logged in via POST /auth/login"
+        ],
+        "actions": [
+          "POST /2/update with title='Updated Title' and body='Updated body'"
+        ],
+        "expected": [
+          "HTTP 302 redirect to '/'",
+          "Response body does NOT contain b'Title is required.'"
+        ],
+        "trace": [
+          "R-FLASKR-040: valid title should pass validation and redirect",
+          "blog.py update(): else branch executes db.execute UPDATE and returns redirect"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_valid_title_accepted():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    r = client.post('/2/update', data={'title': 'Updated Title', 'body': 'Updated body'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    assert b'Title is required.' not in r.data\n\ntest_update_valid_title_accepted()"
+      },
+      {
+        "name": "test_update_single_char_title_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "Database contains post id=2 authored by user id=1 (Rahul/stone)",
+          "User Rahul is logged in via POST /auth/login"
+        ],
+        "actions": [
+          "POST /2/update with title='A' (single character, minimum non-empty) and body='body'"
+        ],
+        "expected": [
+          "HTTP 302 redirect to '/' (title='A' is truthy, passes validation)",
+          "Response body does NOT contain b'Title is required.'"
+        ],
+        "trace": [
+          "R-FLASKR-040: boundary \u2014 title of length 1 is the minimum valid value",
+          "blog.py update(): if not title evaluates False for 'A', so no error is set",
+          "BVA: length 1 (accepted) vs length 0 (rejected) \u2014 catches off-by-one on truthiness check"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_single_char_title_accepted():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    # Boundary: single-char title (length=1, minimum truthy value)\n    r = client.post('/2/update', data={'title': 'A', 'body': 'body'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    assert b'Title is required.' not in r.data\n\ntest_update_single_char_title_accepted()"
+      },
+      {
+        "name": "test_update_missing_title_no_db_change",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "Database contains post id=2 authored by user id=1 (Rahul/stone) with title 'Pillow delta willow'",
+          "User Rahul is logged in via POST /auth/login"
+        ],
+        "actions": [
+          "POST /2/update with title='' and body='new body'",
+          "GET /2/update to verify the original title is unchanged in the rendered form"
+        ],
+        "expected": [
+          "First POST returns HTTP 200 with error message",
+          "GET /2/update returns HTTP 200 and still contains original title b'Pillow delta willow'"
+        ],
+        "trace": [
+          "R-FLASKR-040: rejected update must not mutate the stored post",
+          "DT: decision table row \u2014 title empty AND body non-empty => error, no DB write"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_missing_title_no_db_change():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    # Attempt update with empty title\n    r = client.post('/2/update', data={'title': '', 'body': 'new body'})\n    assert r.status_code == 200\n    assert b'Title is required.' in r.data\n    # Verify original title still in DB via GET\n    r = client.get('/2/update')\n    assert r.status_code == 200\n    assert b'Pillow delta willow' in r.data\n\ntest_update_missing_title_no_db_change()"
+      },
+      {
+        "name": "test_update_whitespace_only_title_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is initialised with TESTING=True and a fresh temp database",
+          "Database contains post id=2 authored by user id=1 (Rahul/stone)",
+          "User Rahul is logged in via POST /auth/login"
+        ],
+        "actions": [
+          "POST /2/update with title='   ' (whitespace only) and body='body'"
+        ],
+        "expected": [
+          "HTTP 200 (whitespace-only title is falsy after strip, or truthy as raw string \u2014 test documents actual SUT behaviour)",
+          "If HTTP 200: b'Title is required.' in response (whitespace treated as empty)",
+          "If HTTP 302: redirect to '/' (whitespace accepted as non-empty by `if not title`)"
+        ],
+        "trace": [
+          "R-FLASKR-040: boundary \u2014 whitespace-only title; `if not title` in Python is False for '   ', so SUT accepts it",
+          "BVA: documents that the SUT does NOT strip whitespace \u2014 catches mutations that add .strip()"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_whitespace_only_title_boundary():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    # Whitespace-only title: `if not '   '` is False in Python, so SUT accepts it\n    r = client.post('/2/update', data={'title': '   ', 'body': 'body'})\n    # SUT uses `if not title` \u2014 whitespace string is truthy, so redirect expected\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    assert b'Title is required.' not in r.data\n\ntest_update_whitespace_only_title_boundary()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-040",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8443,
+    "output_tokens": 2940,
+    "latency_ms": 38399,
+    "wall_ms": 38399,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-040\",\n  \"reasoning\": \"R-FLASKR-040 requires that POST /<id>/update rejects a request with a missing title by re-rendering the update form with an error message (HTTP 200, not a redirect). Three test cases are designed: (1) positive \u2014 valid update with a non-empty title succeeds (redirects to index, HTTP 302); (2) negative \u2014 update with an empty string title is rejected (HTTP 200, error message present, no redirect); (3) boundary \u2014 update with a single-character title 'A' (minimum non-empty) is accepted (HTTP 302). Each test sets up its own isolated in-process Flask app with a temp database, logs in as the post author, and makes assertions on exact status codes and response body content to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_update_missing_title_rejected\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is initialised with TESTING=True and a fresh temp database\",\n        \"Database contains post id=2 authored by user id=1 (Rahul/stone)\",\n        \"User Rahul is logged in via POST /auth/login\"\n      ],\n      \"actions\": [\n        \"POST /2/update with title='' and body='some body'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 (form re-rendered, not redirected)\",\n        \"Response body contains b'Title is required.'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-040: system shall reject POST /<id>/update with missing title\",\n        \"blog.py update(): if not title: error = 'Title is required.' -> flash(error)\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_update_missing_title_rejected():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    # Log in as Rahul (author of post id=2)\\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302\\n    # POST update with empty title\\n    r = client.post('/2/update', data={'title': '', 'body': 'some body'})\\n    assert r.status_code == 200\\n    assert b'Title is required.' in r.data\\n\\ntest_update_missing_title_rejected()\"\n    },\n    {\n      \"name\": \"test_update_valid_title_accepted\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App is initialised with TESTING=True and a fresh temp database\",\n        \"Database contains post id=2 authored by user id=1 (Rahul/stone)\",\n        \"User Rahul is logged in via POST /auth/login\"\n      ],\n      \"actions\": [\n        \"POST /2/update with title='Updated Title' and body='Updated body'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect to '/'\",\n        \"Response body does NOT contain b'Title is required.'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-040: valid title should pass validation and redirect\",\n        \"blog.py update(): else branch executes db.execute UPDATE and returns redirect\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_update_valid_title_accepted():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302\\n    r = client.post('/2/update', data={'title': 'Updated Title', 'body': 'Updated body'})\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/'\\n    assert b'Title is required.' not in r.data\\n\\ntest_update_valid_title_accepted()\"\n    },\n    {\n      \"name\": \"test_update_single_char_title_accepted\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"App is initialised with TESTING=True and a fresh temp database\",\n "
+  }
+}

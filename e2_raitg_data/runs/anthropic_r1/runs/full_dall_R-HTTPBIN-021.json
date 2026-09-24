@@ -1,0 +1,244 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-021",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Chain N redirects",
+    "statement": "The system shall redirect the client N times when GET /redirect/<n> is called, ending at /get on the final hop.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "chain n redirects"
+    ],
+    "expected_outcomes": [
+      "N-1 intermediate 302 responses",
+      "final 200 at /get"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /redirect/<n>"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-021",
+    "reasoning": "The requirement states GET /redirect/<n> must produce N-1 intermediate 302 responses and a final 200 at /get. I design tests covering: (1) a typical positive case with n=3 to verify the chain length and final destination; (2) boundary n=1 (minimum valid value, single hop directly to /get with 302); (3) boundary n=2 (one intermediate 302 then final /get); (4) a negative case with n=0 which should trigger the assert n>0 guard (500 or 4xx); (5) a state-transition test verifying each hop in the chain produces exactly 302 until the final 200; (6) a decision-table test verifying the Location header at each step points to the correct next URL. All tests use Flask test_client with follow_redirects=False to inspect individual hops, ensuring mutation-resilient exact-value assertions.",
+    "tests": [
+      {
+        "name": "test_redirect_n3_positive_chain",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "GET /redirect/3 endpoint exists"
+        ],
+        "actions": [
+          "Import app from httpbin.core",
+          "Create test client",
+          "GET /redirect/3 without following redirects",
+          "Manually follow each redirect hop",
+          "Assert each intermediate response is 302",
+          "Assert final response is 200 at /get"
+        ],
+        "expected": [
+          "First response: 302 with Location pointing to /redirect/2",
+          "Second response: 302 with Location pointing to /redirect/1",
+          "Third response: 302 with Location pointing to /get",
+          "Fourth response: 200 from /get"
+        ],
+        "trace": [
+          "R-HTTPBIN-021"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n3_positive_chain():\n    r1 = client.get('/redirect/3', follow_redirects=False)\n    assert r1.status_code == 302\n    loc1 = r1.headers['Location']\n    assert '/redirect/2' in loc1\n\n    r2 = client.get('/redirect/2', follow_redirects=False)\n    assert r2.status_code == 302\n    loc2 = r2.headers['Location']\n    assert '/redirect/1' in loc2\n\n    r3 = client.get('/redirect/1', follow_redirects=False)\n    assert r3.status_code == 302\n    loc3 = r3.headers['Location']\n    assert '/get' in loc3\n\n    r4 = client.get('/get', follow_redirects=False)\n    assert r4.status_code == 200\n\ntest_redirect_n3_positive_chain()"
+      },
+      {
+        "name": "test_redirect_n1_boundary_single_hop",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=1 is the minimum valid value per assert n>0"
+        ],
+        "actions": [
+          "GET /redirect/1 without following redirects",
+          "Assert response is 302",
+          "Assert Location header points to /get",
+          "Follow redirect to /get",
+          "Assert final status is 200"
+        ],
+        "expected": [
+          "302 response with Location containing /get",
+          "Following redirect yields 200"
+        ],
+        "trace": [
+          "R-HTTPBIN-021"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n1_boundary_single_hop():\n    r = client.get('/redirect/1', follow_redirects=False)\n    assert r.status_code == 302\n    loc = r.headers['Location']\n    assert '/get' in loc\n    assert '/redirect' not in loc\n\n    r_final = client.get('/get', follow_redirects=False)\n    assert r_final.status_code == 200\n\ntest_redirect_n1_boundary_single_hop()"
+      },
+      {
+        "name": "test_redirect_n0_negative_invalid",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=0 violates assert n>0 guard in redirect_n_times"
+        ],
+        "actions": [
+          "GET /redirect/0 without following redirects",
+          "Assert response is not 200 or 302",
+          "Assert response indicates error (4xx or 5xx)"
+        ],
+        "expected": [
+          "Response status code is 500 (AssertionError from assert n>0) or 400",
+          "Not a successful redirect chain"
+        ],
+        "trace": [
+          "R-HTTPBIN-021"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n0_negative_invalid():\n    r = client.get('/redirect/0', follow_redirects=False)\n    assert r.status_code not in (200, 302)\n    assert r.status_code >= 400\n\ntest_redirect_n0_negative_invalid()"
+      },
+      {
+        "name": "test_redirect_n2_boundary_two_hops",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=2 is boundary: one intermediate 302 then final /get"
+        ],
+        "actions": [
+          "GET /redirect/2 without following redirects",
+          "Assert 302 with Location pointing to /redirect/1",
+          "GET /redirect/1 without following redirects",
+          "Assert 302 with Location pointing to /get",
+          "GET /get and assert 200"
+        ],
+        "expected": [
+          "Exactly 2 redirect hops before reaching /get",
+          "First hop Location contains /redirect/1",
+          "Second hop Location contains /get",
+          "Final response is 200"
+        ],
+        "trace": [
+          "R-HTTPBIN-021"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n2_boundary_two_hops():\n    r1 = client.get('/redirect/2', follow_redirects=False)\n    assert r1.status_code == 302\n    loc1 = r1.headers['Location']\n    assert '/redirect/1' in loc1\n    assert '/redirect/2' not in loc1\n\n    r2 = client.get('/redirect/1', follow_redirects=False)\n    assert r2.status_code == 302\n    loc2 = r2.headers['Location']\n    assert '/get' in loc2\n    assert '/redirect' not in loc2\n\n    r3 = client.get('/get', follow_redirects=False)\n    assert r3.status_code == 200\n\ntest_redirect_n2_boundary_two_hops()"
+      },
+      {
+        "name": "test_redirect_state_transition_n4",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=4 exercises full state transition chain"
+        ],
+        "actions": [
+          "GET /redirect/4 and follow each hop manually",
+          "Record status code at each state transition",
+          "Assert exactly 3 intermediate 302s",
+          "Assert final state is 200 at /get"
+        ],
+        "expected": [
+          "States: 302->302->302->302->200",
+          "Exactly 4 redirect responses before 200",
+          "Final 200 from /get endpoint"
+        ],
+        "trace": [
+          "R-HTTPBIN-021"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_state_transition_n4():\n    paths = ['/redirect/4', '/redirect/3', '/redirect/2', '/redirect/1']\n    for path in paths:\n        r = client.get(path, follow_redirects=False)\n        assert r.status_code == 302, f'Expected 302 at {path}, got {r.status_code}'\n    r_final = client.get('/get', follow_redirects=False)\n    assert r_final.status_code == 200\n    import json\n    data = json.loads(r_final.data)\n    assert 'url' in data\n    assert 'headers' in data\n\ntest_redirect_state_transition_n4()"
+      },
+      {
+        "name": "test_redirect_location_header_exact_n3",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "Location header must decrement n at each hop"
+        ],
+        "actions": [
+          "GET /redirect/3 and check Location header value",
+          "GET /redirect/2 and check Location header value",
+          "GET /redirect/1 and check Location header value ends at /get"
+        ],
+        "expected": [
+          "/redirect/3 Location contains /redirect/2",
+          "/redirect/2 Location contains /redirect/1",
+          "/redirect/1 Location contains /get and NOT /redirect"
+        ],
+        "trace": [
+          "R-HTTPBIN-021"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_location_header_exact_n3():\n    r3 = client.get('/redirect/3', follow_redirects=False)\n    assert r3.status_code == 302\n    assert '/redirect/2' in r3.headers['Location']\n    assert '/redirect/3' not in r3.headers['Location']\n\n    r2 = client.get('/redirect/2', follow_redirects=False)\n    assert r2.status_code == 302\n    assert '/redirect/1' in r2.headers['Location']\n    assert '/redirect/2' not in r2.headers['Location']\n\n    r1 = client.get('/redirect/1', follow_redirects=False)\n    assert r1.status_code == 302\n    assert '/get' in r1.headers['Location']\n    assert '/redirect' not in r1.headers['Location']\n\ntest_redirect_location_header_exact_n3()"
+      },
+      {
+        "name": "test_redirect_follow_all_n3_final_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "Client follows all redirects automatically"
+        ],
+        "actions": [
+          "GET /redirect/3 with follow_redirects=True",
+          "Assert final status is exactly 200",
+          "Assert response body contains url and headers keys from /get"
+        ],
+        "expected": [
+          "Final status code is exactly 200",
+          "Response JSON contains 'url' and 'headers' keys (from view_get)"
+        ],
+        "trace": [
+          "R-HTTPBIN-021"
+        ],
+        "executable": "from httpbin.core import app\nimport json\nclient = app.test_client()\n\ndef test_redirect_follow_all_n3_final_200():\n    r = client.get('/redirect/3', follow_redirects=True)\n    assert r.status_code == 200\n    data = json.loads(r.data)\n    assert 'url' in data\n    assert 'headers' in data\n    assert 'args' in data\n    assert 'origin' in data\n\ntest_redirect_follow_all_n3_final_200()"
+      },
+      {
+        "name": "test_redirect_negative_non_integer_path",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "Route only accepts int type for n"
+        ],
+        "actions": [
+          "GET /redirect/abc (non-integer path segment)",
+          "Assert response is 404 (route not matched)"
+        ],
+        "expected": [
+          "Status code is 404 because Flask int converter rejects non-integer"
+        ],
+        "trace": [
+          "R-HTTPBIN-021"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_negative_non_integer_path():\n    r = client.get('/redirect/abc', follow_redirects=False)\n    assert r.status_code == 404\n\ntest_redirect_negative_non_integer_path()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-021",
+  "domain": "http_utilities",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 1.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9480,
+    "output_tokens": 3337,
+    "latency_ms": 40831,
+    "wall_ms": 40831,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-021\",\n  \"reasoning\": \"The requirement states GET /redirect/<n> must produce N-1 intermediate 302 responses and a final 200 at /get. I design tests covering: (1) a typical positive case with n=3 to verify the chain length and final destination; (2) boundary n=1 (minimum valid value, single hop directly to /get with 302); (3) boundary n=2 (one intermediate 302 then final /get); (4) a negative case with n=0 which should trigger the assert n>0 guard (500 or 4xx); (5) a state-transition test verifying each hop in the chain produces exactly 302 until the final 200; (6) a decision-table test verifying the Location header at each step points to the correct next URL. All tests use Flask test_client with follow_redirects=False to inspect individual hops, ensuring mutation-resilient exact-value assertions.\",\n  \"tests\": [\n    {\n      \"name\": \"test_redirect_n3_positive_chain\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable\",\n        \"GET /redirect/3 endpoint exists\"\n      ],\n      \"actions\": [\n        \"Import app from httpbin.core\",\n        \"Create test client\",\n        \"GET /redirect/3 without following redirects\",\n        \"Manually follow each redirect hop\",\n        \"Assert each intermediate response is 302\",\n        \"Assert final response is 200 at /get\"\n      ],\n      \"expected\": [\n        \"First response: 302 with Location pointing to /redirect/2\",\n        \"Second response: 302 with Location pointing to /redirect/1\",\n        \"Third response: 302 with Location pointing to /get\",\n        \"Fourth response: 200 from /get\"\n      ],\n      \"trace\": [\"R-HTTPBIN-021\"],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_n3_positive_chain():\\n    r1 = client.get('/redirect/3', follow_redirects=False)\\n    assert r1.status_code == 302\\n    loc1 = r1.headers['Location']\\n    assert '/redirect/2' in loc1\\n\\n    r2 = client.get('/redirect/2', follow_redirects=False)\\n    assert r2.status_code == 302\\n    loc2 = r2.headers['Location']\\n    assert '/redirect/1' in loc2\\n\\n    r3 = client.get('/redirect/1', follow_redirects=False)\\n    assert r3.status_code == 302\\n    loc3 = r3.headers['Location']\\n    assert '/get' in loc3\\n\\n    r4 = client.get('/get', follow_redirects=False)\\n    assert r4.status_code == 200\\n\\ntest_redirect_n3_positive_chain()\"\n    },\n    {\n      \"name\": \"test_redirect_n1_boundary_single_hop\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable\",\n        \"n=1 is the minimum valid value per assert n>0\"\n      ],\n      \"actions\": [\n        \"GET /redirect/1 without following redirects\",\n        \"Assert response is 302\",\n        \"Assert Location header points to /get\",\n        \"Follow redirect to /get\",\n        \"Assert final status is 200\"\n      ],\n      \"expected\": [\n        \"302 response with Location containing /get\",\n        \"Following redirect yields 200\"\n      ],\n      \"trace\": [\"R-HTTPBIN-021\"],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_n1_boundary_single_hop():\\n    r = client.get('/redirect/1', follow_redirects=False)\\n    assert r.status_code == 302\\n    loc = r.headers['Location']\\n    assert '/get' in loc\\n    assert '/redirect' not in loc\\n\\n    r_final = client.get('/get', follow_redirects=False)\\n    assert r_final.status_code == 200\\n\\ntest_redirect_n1_boundary_single_hop()\"\n    },\n    {\n      \"name\": \"test_redirect_n0_negative_invalid\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable\",\n        \"n=0 violates assert n>0 guard in redirect_n_times\"\n      ],\n      \"actions\": [\n        \"GET /redirect/0 without following redirects\",\n        \"Assert response is not 200 or 302\",\n        \"Assert response indicates error (4xx or 5xx)\"\n      ],\n      \"expected\": [\n        \"Response sta"
+  }
+}

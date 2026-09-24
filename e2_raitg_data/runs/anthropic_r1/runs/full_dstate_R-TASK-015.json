@@ -1,0 +1,191 @@
+{
+  "req": {
+    "id": "R-TASK-015",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Mark task complete",
+    "statement": "The system shall set completed=true when a PUT payload includes {\"completed\": true}.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "mark task complete"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-015",
+    "reasoning": "The requirement states that PUT /tasks/{task_id} with {\"completed\": true} must set completed=true and return HTTP 2xx with the updated payload. I design: (1) a positive EP test marking an incomplete task complete, asserting exact status 200 and completed==True; (2) a negative NEG test using a non-existent task_id to assert HTTP 404; (3) a BVA/STC test verifying idempotency when marking an already-completed task complete again; (4) a DT test verifying that omitting 'completed' from the payload does NOT change the completed field (partial update semantics); (5) a NEG test sending an invalid payload type for 'completed' to assert HTTP 422. Together these cover boolean invariants (true/false), state transitions (false->true, true->true), error paths (404, 422), and partial-update decision logic.",
+    "tests": [
+      {
+        "name": "test_mark_incomplete_task_complete_returns_200_and_completed_true",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task id=4 exists with completed=false (pre-loaded seed data)",
+          "Database is in known state with 20 pre-loaded rows"
+        ],
+        "actions": [
+          "Send PUT /tasks/4 with JSON body {\"completed\": true}",
+          "Capture response status code and JSON body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON field 'completed' equals true (boolean)",
+          "Response JSON field 'id' equals 4",
+          "Response JSON field 'title' equals 'Prepare meeting agenda'"
+        ],
+        "trace": [
+          "R-TASK-015: system shall set completed=true when PUT payload includes {\"completed\": true}"
+        ],
+        "executable": "import os, sys\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r015_pos.db')\nfrom app.database import engine, Base, SessionLocal\nfrom app import models\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\nfrom datetime import datetime\ndb = SessionLocal()\nseed = [\n    models.Task(id=4, title='Prepare meeting agenda', description='Harbor matrix prism summit beacon ember matrix.', completed=False, created_at=datetime(2025,5,19,9,37,22)),\n]\nfor t in seed:\n    db.merge(t)\ndb.commit()\ndb.close()\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_mark_incomplete_task_complete_returns_200_and_completed_true():\n    r = client.put('/tasks/4', json={'completed': True})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 4\n    assert body['completed'] == True\n    assert body['title'] == 'Prepare meeting agenda'\n\ntest_mark_incomplete_task_complete_returns_200_and_completed_true()"
+      },
+      {
+        "name": "test_mark_nonexistent_task_complete_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task id=9999 does not exist in the database",
+          "Database contains exactly 20 pre-loaded rows (ids 1-20)"
+        ],
+        "actions": [
+          "Send PUT /tasks/9999 with JSON body {\"completed\": true}",
+          "Capture response status code and JSON body"
+        ],
+        "expected": [
+          "HTTP 404 response",
+          "Response JSON 'detail' contains '9999'"
+        ],
+        "trace": [
+          "R-TASK-015: error pathway HTTP 4xx on client error (task not found)"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r015_neg404.db')\nfrom app.database import engine, Base, SessionLocal\nfrom app import models\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\nfrom datetime import datetime\ndb = SessionLocal()\nfor i in range(1, 21):\n    db.merge(models.Task(id=i, title=f'Task {i}', completed=False, created_at=datetime(2025,1,1)))\ndb.commit()\ndb.close()\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_mark_nonexistent_task_complete_returns_404():\n    r = client.put('/tasks/9999', json={'completed': True})\n    assert r.status_code == 404\n    body = r.json()\n    assert '9999' in body['detail']\n\ntest_mark_nonexistent_task_complete_returns_404()"
+      },
+      {
+        "name": "test_mark_already_complete_task_complete_is_idempotent",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task id=1 exists with completed=true (pre-loaded seed data)",
+          "Database is in known state"
+        ],
+        "actions": [
+          "Send PUT /tasks/1 with JSON body {\"completed\": true}",
+          "Capture response status code and JSON body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON field 'completed' equals true (boolean, unchanged)",
+          "Response JSON field 'id' equals 1",
+          "Response JSON field 'title' equals 'Read chapter 5'"
+        ],
+        "trace": [
+          "R-TASK-015: idempotency \u2014 setting completed=true on an already-complete task must still return 200 with completed=true",
+          "STC: state true->true transition"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r015_bva.db')\nfrom app.database import engine, Base, SessionLocal\nfrom app import models\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\nfrom datetime import datetime\ndb = SessionLocal()\ndb.merge(models.Task(id=1, title='Read chapter 5', description='Signal pulse ember orbit.', completed=True, created_at=datetime(2025,6,1,5,4,17)))\ndb.commit()\ndb.close()\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_mark_already_complete_task_complete_is_idempotent():\n    r = client.put('/tasks/1', json={'completed': True})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 1\n    assert body['completed'] == True\n    assert body['title'] == 'Read chapter 5'\n\ntest_mark_already_complete_task_complete_is_idempotent()"
+      },
+      {
+        "name": "test_partial_update_without_completed_does_not_change_completed_field",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task id=7 exists with completed=false (pre-loaded seed data)",
+          "Database is in known state"
+        ],
+        "actions": [
+          "Send PUT /tasks/7 with JSON body {\"title\": \"Fix login bug updated\"} (no 'completed' key)",
+          "Capture response status code and JSON body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON field 'completed' equals false (unchanged)",
+          "Response JSON field 'title' equals 'Fix login bug updated'",
+          "Response JSON field 'id' equals 7"
+        ],
+        "trace": [
+          "R-TASK-015: decision table \u2014 payload without 'completed' must not alter completed field; only explicit completed=true sets it"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r015_dt.db')\nfrom app.database import engine, Base, SessionLocal\nfrom app import models\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\nfrom datetime import datetime\ndb = SessionLocal()\ndb.merge(models.Task(id=7, title='Fix login bug', description='Ember willow nova meridian flux cascade zenith.', completed=False, created_at=datetime(2025,5,22,2,41,54)))\ndb.commit()\ndb.close()\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_partial_update_without_completed_does_not_change_completed_field():\n    r = client.put('/tasks/7', json={'title': 'Fix login bug updated'})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 7\n    assert body['completed'] == False\n    assert body['title'] == 'Fix login bug updated'\n\ntest_partial_update_without_completed_does_not_change_completed_field()"
+      },
+      {
+        "name": "test_mark_task_complete_with_invalid_payload_type_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task id=10 exists with completed=false (pre-loaded seed data)",
+          "Database is in known state"
+        ],
+        "actions": [
+          "Send PUT /tasks/10 with JSON body {\"completed\": \"yes\"} (string instead of boolean)",
+          "Capture response status code"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity response",
+          "Response body contains validation error details"
+        ],
+        "trace": [
+          "R-TASK-015: error pathway HTTP 4xx on client error \u2014 invalid payload type for 'completed' field"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r015_neg422.db')\nfrom app.database import engine, Base, SessionLocal\nfrom app import models\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\nfrom datetime import datetime\ndb = SessionLocal()\ndb.merge(models.Task(id=10, title='Organize desk', completed=False, created_at=datetime(2025,5,12,8,1,17)))\ndb.commit()\ndb.close()\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_mark_task_complete_with_invalid_payload_type_returns_422():\n    r = client.put('/tasks/10', json={'completed': 'yes'})\n    assert r.status_code == 422\n    body = r.json()\n    assert 'detail' in body\n\ntest_mark_task_complete_with_invalid_payload_type_returns_422()"
+      },
+      {
+        "name": "test_mark_task_complete_response_contains_all_required_fields",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task id=13 exists with completed=false (pre-loaded seed data)",
+          "Database is in known state"
+        ],
+        "actions": [
+          "Create a new task via POST /tasks/ to get a fresh id",
+          "Send PUT /tasks/{new_id} with JSON body {\"completed\": true}",
+          "Capture full response JSON"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response JSON contains keys: id, title, description, completed, created_at",
+          "completed field is exactly true (boolean)",
+          "id matches the created task id"
+        ],
+        "trace": [
+          "R-TASK-015: expected outcome \u2014 HTTP 2xx with expected payload; state transition false->true on newly created task"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r015_stc.db')\nfrom app.database import engine, Base, SessionLocal\nfrom app import models\nBase.metadata.drop_all(bind=engine)\nBase.metadata.create_all(bind=engine)\nfrom datetime import datetime\ndb = SessionLocal()\nfor i in range(1, 21):\n    db.merge(models.Task(id=i, title=f'Seed task {i}', completed=False, created_at=datetime(2025,1,1)))\ndb.commit()\ndb.close()\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nclient = TestClient(app)\n\ndef test_mark_task_complete_response_contains_all_required_fields():\n    cr = client.post('/tasks/', json={'title': 'STC test task', 'completed': False})\n    assert cr.status_code == 201\n    new_id = cr.json()['id']\n    r = client.put(f'/tasks/{new_id}', json={'completed': True})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == new_id\n    assert body['completed'] == True\n    assert body['title'] == 'STC test task'\n    assert 'created_at' in body\n\ntest_mark_task_complete_response_contains_all_required_fields()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-015",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5914,
+    "output_tokens": 3603,
+    "latency_ms": 44621,
+    "wall_ms": 44621,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-015\",\n  \"reasoning\": \"The requirement states that PUT /tasks/{task_id} with {\\\"completed\\\": true} must set completed=true and return HTTP 2xx with the updated payload. I design: (1) a positive EP test marking an incomplete task complete, asserting exact status 200 and completed==True; (2) a negative NEG test using a non-existent task_id to assert HTTP 404; (3) a BVA/STC test verifying idempotency when marking an already-completed task complete again; (4) a DT test verifying that omitting 'completed' from the payload does NOT change the completed field (partial update semantics); (5) a NEG test sending an invalid payload type for 'completed' to assert HTTP 422. Together these cover boolean invariants (true/false), state transitions (false->true, true->true), error paths (404, 422), and partial-update decision logic.\",\n  \"tests\": [\n    {\n      \"name\": \"test_mark_incomplete_task_complete_returns_200_and_completed_true\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Task id=4 exists with completed=false (pre-loaded seed data)\",\n        \"Database is in known state with 20 pre-loaded rows\"\n      ],\n      \"actions\": [\n        \"Send PUT /tasks/4 with JSON body {\\\"completed\\\": true}\",\n        \"Capture response status code and JSON body\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response JSON field 'completed' equals true (boolean)\",\n        \"Response JSON field 'id' equals 4\",\n        \"Response JSON field 'title' equals 'Prepare meeting agenda'\"\n      ],\n      \"trace\": [\n        \"R-TASK-015: system shall set completed=true when PUT payload includes {\\\"completed\\\": true}\"\n      ],\n      \"executable\": \"import os, sys\\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r015_pos.db')\\nfrom app.database import engine, Base, SessionLocal\\nfrom app import models\\nBase.metadata.drop_all(bind=engine)\\nBase.metadata.create_all(bind=engine)\\nfrom datetime import datetime\\ndb = SessionLocal()\\nseed = [\\n    models.Task(id=4, title='Prepare meeting agenda', description='Harbor matrix prism summit beacon ember matrix.', completed=False, created_at=datetime(2025,5,19,9,37,22)),\\n]\\nfor t in seed:\\n    db.merge(t)\\ndb.commit()\\ndb.close()\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\nclient = TestClient(app)\\n\\ndef test_mark_incomplete_task_complete_returns_200_and_completed_true():\\n    r = client.put('/tasks/4', json={'completed': True})\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body['id'] == 4\\n    assert body['completed'] == True\\n    assert body['title'] == 'Prepare meeting agenda'\\n\\ntest_mark_incomplete_task_complete_returns_200_and_completed_true()\"\n    },\n    {\n      \"name\": \"test_mark_nonexistent_task_complete_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Task id=9999 does not exist in the database\",\n        \"Database contains exactly 20 pre-loaded rows (ids 1-20)\"\n      ],\n      \"actions\": [\n        \"Send PUT /tasks/9999 with JSON body {\\\"completed\\\": true}\",\n        \"Capture response status code and JSON body\"\n      ],\n      \"expected\": [\n        \"HTTP 404 response\",\n        \"Response JSON 'detail' contains '9999'\"\n      ],\n      \"trace\": [\n        \"R-TASK-015: error pathway HTTP 4xx on client error (task not found)\"\n      ],\n      \"executable\": \"import os\\nos.environ.setdefault('DATABASE_URL', 'sqlite:///./test_r015_neg404.db')\\nfrom app.database import engine, Base, SessionLocal\\nfrom app import models\\nBase.metadata.drop_all(bind=engine)\\nBase.metadata.create_all(bind=engine)\\nfrom datetime import datetime\\ndb = SessionLocal()\\nfor i in range(1, 21):\\n    db.merge(models.Task(id=i, title=f'Task {i}', completed=False, created_at=datetime(2025,1,1)))\\ndb.commit()\\ndb.close()\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\nclient = TestClient(app)\\n\\ndef test_mark_nonexistent_task_complete_returns_404():\\n    r ="
+  }
+}

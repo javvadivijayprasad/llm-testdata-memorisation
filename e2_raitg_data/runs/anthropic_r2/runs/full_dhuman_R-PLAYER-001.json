@@ -1,0 +1,189 @@
+{
+  "req": {
+    "id": "R-PLAYER-001",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "functional",
+    "title": "Retrieve all players",
+    "statement": "The system shall respond to GET /players with a JSON array of all players in the database.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "retrieve all players"
+    ],
+    "expected_outcomes": [
+      "HTTP 200",
+      "JSON array of Player objects"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "GET /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-001",
+    "reasoning": "The requirement mandates GET /players/ returns HTTP 200 with a JSON array of all Player objects. I design: (1) a positive EP test verifying exact status code, content-type, array length (26 rows), and spot-checking known player fields; (2) a negative NEG test verifying the endpoint rejects an unsupported HTTP method (POST with wrong content triggers 422, DELETE returns 405); (3) a BVA boundary test verifying the exact count of 26 players (boundary: not 25, not 27) and that every object contains all required PlayerResponseModel fields; (4) a DT test verifying cache behaviour \u2014 first call is MISS, second is HIT, both return identical data; (5) a STC test verifying the array is non-empty and each element has the exact set of camelCase keys matching PlayerResponseModel. Together these cover status-code mutations, off-by-one count mutations, field-name mutations, boolean cache-header mutations, and method-routing mutations.",
+    "tests": [
+      {
+        "name": "test_get_all_players_returns_200_with_full_array",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is pre-loaded with exactly 26 player rows",
+          "FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "Send GET /players/ with TestClient"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response Content-Type contains application/json",
+          "Response body is a JSON array of exactly 26 elements",
+          "First element contains id, firstName, lastName, squadNumber, position",
+          "Player with squadNumber=10 has firstName='Lionel' and lastName='Messi'"
+        ],
+        "trace": [
+          "R-PLAYER-001: system shall respond to GET /players with a JSON array of all players"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_get_all_players_returns_200_with_full_array():\n    client = TestClient(app)\n    r = client.get('/players/')\n    assert r.status_code == 200\n    assert 'application/json' in r.headers['content-type']\n    data = r.json()\n    assert isinstance(data, list)\n    assert len(data) == 26\n    keys = {'id', 'firstName', 'lastName', 'squadNumber', 'position'}\n    for player in data:\n        for k in keys:\n            assert k in player, f'Missing key {k} in {player}'\n    messi = next((p for p in data if p['squadNumber'] == 10), None)\n    assert messi is not None\n    assert messi['firstName'] == 'Lionel'\n    assert messi['lastName'] == 'Messi'\n    assert messi['position'] == 'Right Winger'\n    assert messi['league'] == 'Ligue 1'\n\ntest_get_all_players_returns_200_with_full_array()"
+      },
+      {
+        "name": "test_get_all_players_wrong_method_returns_405",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "Send DELETE /players/ with TestClient (no such route defined)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 405 (Method Not Allowed)",
+          "Response is not 200"
+        ],
+        "trace": [
+          "R-PLAYER-001: error pathway HTTP 4xx on client error"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_get_all_players_wrong_method_returns_405():\n    client = TestClient(app)\n    r = client.delete('/players/')\n    assert r.status_code == 405\n    assert r.status_code != 200\n    assert r.status_code != 500\n\ntest_get_all_players_wrong_method_returns_405()"
+      },
+      {
+        "name": "test_get_all_players_exact_count_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with exactly 26 player rows"
+        ],
+        "actions": [
+          "Send GET /players/ with TestClient",
+          "Assert array length is exactly 26 (not 25, not 27)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Array length == 26 (boundary: 25 would be too few, 27 would be too many)",
+          "squadNumbers 1 through 26 are all present"
+        ],
+        "trace": [
+          "R-PLAYER-001: JSON array of ALL players in the database"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_get_all_players_exact_count_boundary():\n    client = TestClient(app)\n    r = client.get('/players/')\n    assert r.status_code == 200\n    data = r.json()\n    assert len(data) == 26\n    assert len(data) != 25\n    assert len(data) != 27\n    squad_numbers = {p['squadNumber'] for p in data}\n    assert squad_numbers == set(range(1, 27))\n    assert 1 in squad_numbers\n    assert 26 in squad_numbers\n    assert 27 not in squad_numbers\n    assert 0 not in squad_numbers\n\ntest_get_all_players_exact_count_boundary()"
+      },
+      {
+        "name": "test_get_all_players_cache_miss_then_hit",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database is pre-loaded with exactly 26 player rows",
+          "Cache may or may not be warm at test start"
+        ],
+        "actions": [
+          "Send GET /players/ twice in sequence",
+          "Check X-Cache header on each response",
+          "Verify both responses return identical data"
+        ],
+        "expected": [
+          "Both responses return HTTP 200",
+          "Both responses return arrays of length 26",
+          "X-Cache header is either HIT or MISS (exact string values)",
+          "Both responses return identical JSON arrays"
+        ],
+        "trace": [
+          "R-PLAYER-001: system shall respond to GET /players with a JSON array of all players"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nfrom routes.player_route import simple_memory_cache, CACHE_KEY\nimport asyncio\n\ndef test_get_all_players_cache_miss_then_hit():\n    asyncio.get_event_loop().run_until_complete(simple_memory_cache.clear(CACHE_KEY))\n    client = TestClient(app)\n    r1 = client.get('/players/')\n    assert r1.status_code == 200\n    assert r1.headers.get('x-cache') == 'MISS'\n    data1 = r1.json()\n    assert len(data1) == 26\n    r2 = client.get('/players/')\n    assert r2.status_code == 200\n    assert r2.headers.get('x-cache') == 'HIT'\n    data2 = r2.json()\n    assert len(data2) == 26\n    ids1 = {p['id'] for p in data1}\n    ids2 = {p['id'] for p in data2}\n    assert ids1 == ids2\n\ntest_get_all_players_cache_miss_then_hit()"
+      },
+      {
+        "name": "test_get_all_players_response_schema_fields",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is pre-loaded with exactly 26 player rows"
+        ],
+        "actions": [
+          "Send GET /players/ with TestClient",
+          "Inspect every player object for required and optional fields"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Every player object has exactly the camelCase keys from PlayerResponseModel",
+          "id is a valid UUID string (36 chars with hyphens)",
+          "squadNumber is an integer",
+          "Known players have correct field values"
+        ],
+        "trace": [
+          "R-PLAYER-001: JSON array of Player objects"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\nimport re\n\ndef test_get_all_players_response_schema_fields():\n    client = TestClient(app)\n    r = client.get('/players/')\n    assert r.status_code == 200\n    data = r.json()\n    assert len(data) == 26\n    required_keys = {'id', 'firstName', 'lastName', 'squadNumber', 'position'}\n    optional_keys = {'middleName', 'dateOfBirth', 'abbrPosition', 'team', 'league', 'starting11'}\n    all_keys = required_keys | optional_keys\n    uuid_re = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')\n    for p in data:\n        for k in required_keys:\n            assert k in p\n        for k in p.keys():\n            assert k in all_keys, f'Unexpected key {k}'\n        assert uuid_re.match(p['id']), f'Bad UUID: {p[\"id\"]}'\n        assert isinstance(p['squadNumber'], int)\n    armani = next(p for p in data if p['squadNumber'] == 1)\n    assert armani['id'] == '5a9cd988-95e6-54c1-bc34-9aa08acca8d0'\n    assert armani['firstName'] == 'Franco'\n    assert armani['lastName'] == 'Armani'\n    assert armani['position'] == 'Goalkeeper'\n    assert armani['abbrPosition'] == 'GK'\n    assert armani['starting11'] == False\n\ntest_get_all_players_response_schema_fields()"
+      },
+      {
+        "name": "test_get_all_players_spot_check_multiple_known_rows",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is pre-loaded with exactly 26 player rows"
+        ],
+        "actions": [
+          "Send GET /players/ with TestClient",
+          "Spot-check 4 known players across the dataset"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Juli\u00e1n \u00c1lvarez (squad 9) has middleName=None or empty, position=Centre-Forward",
+          "Enzo Fern\u00e1ndez (squad 24) has league=Liga Portugal, starting11=True",
+          "Dami\u00e1n Mart\u00ednez (squad 23) has team=Aston Villa FC, starting11=True",
+          "Nahuel Molina (squad 26) has abbrPosition=RB, starting11=True"
+        ],
+        "trace": [
+          "R-PLAYER-001: JSON array of ALL players in the database"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\ndef test_get_all_players_spot_check_multiple_known_rows():\n    client = TestClient(app)\n    r = client.get('/players/')\n    assert r.status_code == 200\n    data = r.json()\n    by_squad = {p['squadNumber']: p for p in data}\n    alvarez = by_squad[9]\n    assert alvarez['firstName'] == 'Juli\u00e1n'\n    assert alvarez['lastName'] == '\u00c1lvarez'\n    assert alvarez['position'] == 'Centre-Forward'\n    assert alvarez['abbrPosition'] == 'CF'\n    assert alvarez['starting11'] == True\n    enzo = by_squad[24]\n    assert enzo['firstName'] == 'Enzo'\n    assert enzo['lastName'] == 'Fern\u00e1ndez'\n    assert enzo['league'] == 'Liga Portugal'\n    assert enzo['starting11'] == True\n    dibu = by_squad[23]\n    assert dibu['team'] == 'Aston Villa FC'\n    assert dibu['starting11'] == True\n    molina = by_squad[26]\n    assert molina['abbrPosition'] == 'RB'\n    assert molina['starting11'] == True\n    assert molina['team'] == 'Atl\u00e9tico Madrid'\n\ntest_get_all_players_spot_check_multiple_known_rows()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-001",
+  "domain": "sports_players",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11295,
+    "output_tokens": 3373,
+    "latency_ms": 45453,
+    "wall_ms": 45453,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-001\",\n  \"reasoning\": \"The requirement mandates GET /players/ returns HTTP 200 with a JSON array of all Player objects. I design: (1) a positive EP test verifying exact status code, content-type, array length (26 rows), and spot-checking known player fields; (2) a negative NEG test verifying the endpoint rejects an unsupported HTTP method (POST with wrong content triggers 422, DELETE returns 405); (3) a BVA boundary test verifying the exact count of 26 players (boundary: not 25, not 27) and that every object contains all required PlayerResponseModel fields; (4) a DT test verifying cache behaviour \u2014 first call is MISS, second is HIT, both return identical data; (5) a STC test verifying the array is non-empty and each element has the exact set of camelCase keys matching PlayerResponseModel. Together these cover status-code mutations, off-by-one count mutations, field-name mutations, boolean cache-header mutations, and method-routing mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_all_players_returns_200_with_full_array\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is pre-loaded with exactly 26 player rows\",\n        \"FastAPI app is running in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"Send GET /players/ with TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response Content-Type contains application/json\",\n        \"Response body is a JSON array of exactly 26 elements\",\n        \"First element contains id, firstName, lastName, squadNumber, position\",\n        \"Player with squadNumber=10 has firstName='Lionel' and lastName='Messi'\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-001: system shall respond to GET /players with a JSON array of all players\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\ndef test_get_all_players_returns_200_with_full_array():\\n    client = TestClient(app)\\n    r = client.get('/players/')\\n    assert r.status_code == 200\\n    assert 'application/json' in r.headers['content-type']\\n    data = r.json()\\n    assert isinstance(data, list)\\n    assert len(data) == 26\\n    keys = {'id', 'firstName', 'lastName', 'squadNumber', 'position'}\\n    for player in data:\\n        for k in keys:\\n            assert k in player, f'Missing key {k} in {player}'\\n    messi = next((p for p in data if p['squadNumber'] == 10), None)\\n    assert messi is not None\\n    assert messi['firstName'] == 'Lionel'\\n    assert messi['lastName'] == 'Messi'\\n    assert messi['position'] == 'Right Winger'\\n    assert messi['league'] == 'Ligue 1'\\n\\ntest_get_all_players_returns_200_with_full_array()\"\n    },\n    {\n      \"name\": \"test_get_all_players_wrong_method_returns_405\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"Send DELETE /players/ with TestClient (no such route defined)\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 405 (Method Not Allowed)\",\n        \"Response is not 200\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-001: error pathway HTTP 4xx on client error\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\ndef test_get_all_players_wrong_method_returns_405():\\n    client = TestClient(app)\\n    r = client.delete('/players/')\\n    assert r.status_code == 405\\n    assert r.status_code != 200\\n    assert r.status_code != 500\\n\\ntest_get_all_players_wrong_method_returns_405()\"\n    },\n    {\n      \"name\": \"test_get_all_players_exact_count_boundary\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is pre-loaded with exactly 26 player rows\"\n      ],\n      \"actions\": [\n        \"Send GET /players/ with TestClient\",\n        \"Assert array length is exactly 26 (not 25, not 27)\"\n      ],\n      \"expected\": [\n  "
+  }
+}

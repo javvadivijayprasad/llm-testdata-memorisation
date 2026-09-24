@@ -1,0 +1,230 @@
+{
+  "req": {
+    "id": "R-TASK-038",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "validation",
+    "title": "Task update rejects id changes",
+    "statement": "The system shall ignore any id field in the PUT body and only mutate the task addressed by the URL.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task update rejects id changes"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-038",
+    "reasoning": "R-TASK-038 requires that when a PUT /tasks/{id} request body contains an 'id' field, the system ignores it and mutates only the task addressed by the URL path parameter. Tests must verify: (1) positive \u2014 a body with a different id value still updates the correct task and the response id matches the URL id; (2) negative \u2014 the body id cannot hijack a different task's identity; (3) boundary \u2014 body id equal to URL id is a no-op on identity; (4) additional EP/DT cases covering the id-ignore behaviour with various field combinations. Mutation resilience is achieved by asserting exact response id values, exact HTTP status codes, and verifying the original task at the alternate id is untouched.",
+    "tests": [
+      {
+        "name": "test_put_body_id_ignored_response_id_matches_url",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task with id=1 exists in the database (title='Read chapter 5', completed=true)",
+          "Task with id=99 does NOT exist in the database"
+        ],
+        "actions": [
+          "Send PUT /tasks/1 with JSON body {\"id\": 99, \"title\": \"Updated Title\", \"completed\": false}",
+          "Inspect response status code and body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body id == 1 (URL id, not body id 99)",
+          "Response body title == 'Updated Title'",
+          "Response body completed == false"
+        ],
+        "trace": [
+          "R-TASK-038"
+        ],
+        "executable": "import os, sys\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.database import Base, engine\nBase.metadata.create_all(bind=engine)\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy.orm import Session\nfrom app.database import SessionLocal\nfrom app import models\n\nclient = TestClient(app)\n\ndef test_put_body_id_ignored_response_id_matches_url():\n    db = SessionLocal()\n    db.query(models.Task).delete()\n    task = models.Task(id=1, title='Read chapter 5', completed=True)\n    db.add(task)\n    db.commit()\n    db.close()\n    r = client.put('/tasks/1', json={'id': 99, 'title': 'Updated Title', 'completed': False})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 1\n    assert body['title'] == 'Updated Title'\n    assert body['completed'] == False\n\ntest_put_body_id_ignored_response_id_matches_url()"
+      },
+      {
+        "name": "test_put_body_id_does_not_mutate_alternate_task",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task with id=1 exists (title='Read chapter 5')",
+          "Task with id=2 exists (title='Book flight tickets')"
+        ],
+        "actions": [
+          "Send PUT /tasks/1 with JSON body {\"id\": 2, \"title\": \"Hijacked\", \"completed\": true}",
+          "Then GET /tasks/2 to verify task 2 is untouched"
+        ],
+        "expected": [
+          "PUT returns HTTP 200 with id==1 in body",
+          "GET /tasks/2 returns HTTP 200 with title still 'Book flight tickets' (unchanged)"
+        ],
+        "trace": [
+          "R-TASK-038"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.database import Base, engine\nBase.metadata.create_all(bind=engine)\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import SessionLocal\nfrom app import models\n\nclient = TestClient(app)\n\ndef test_put_body_id_does_not_mutate_alternate_task():\n    db = SessionLocal()\n    db.query(models.Task).delete()\n    db.add(models.Task(id=1, title='Read chapter 5', completed=True))\n    db.add(models.Task(id=2, title='Book flight tickets', completed=True))\n    db.commit()\n    db.close()\n    r = client.put('/tasks/1', json={'id': 2, 'title': 'Hijacked', 'completed': True})\n    assert r.status_code == 200\n    assert r.json()['id'] == 1\n    assert r.json()['title'] == 'Hijacked'\n    r2 = client.get('/tasks/2')\n    assert r2.status_code == 200\n    assert r2.json()['id'] == 2\n    assert r2.json()['title'] == 'Book flight tickets'\n\ntest_put_body_id_does_not_mutate_alternate_task()"
+      },
+      {
+        "name": "test_put_body_id_equal_to_url_id_is_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task with id=5 exists (title='Write project report', completed=false)"
+        ],
+        "actions": [
+          "Send PUT /tasks/5 with JSON body {\"id\": 5, \"title\": \"Same ID Body\", \"completed\": true}",
+          "Inspect response"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response id == 5 exactly",
+          "Response title == 'Same ID Body'",
+          "Response completed == true"
+        ],
+        "trace": [
+          "R-TASK-038"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.database import Base, engine\nBase.metadata.create_all(bind=engine)\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import SessionLocal\nfrom app import models\n\nclient = TestClient(app)\n\ndef test_put_body_id_equal_to_url_id_is_accepted():\n    db = SessionLocal()\n    db.query(models.Task).delete()\n    db.add(models.Task(id=5, title='Write project report', completed=False))\n    db.commit()\n    db.close()\n    r = client.put('/tasks/5', json={'id': 5, 'title': 'Same ID Body', 'completed': True})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 5\n    assert body['title'] == 'Same ID Body'\n    assert body['completed'] == True\n\ntest_put_body_id_equal_to_url_id_is_accepted()"
+      },
+      {
+        "name": "test_put_body_id_zero_ignored_url_task_updated",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task with id=3 exists (title='Submit expense report', completed=true)"
+        ],
+        "actions": [
+          "Send PUT /tasks/3 with JSON body {\"id\": 0, \"title\": \"Zero ID Body\", \"completed\": false}",
+          "Inspect response"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response id == 3 (URL id, not 0)",
+          "Response title == 'Zero ID Body'",
+          "Response completed == false"
+        ],
+        "trace": [
+          "R-TASK-038"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.database import Base, engine\nBase.metadata.create_all(bind=engine)\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import SessionLocal\nfrom app import models\n\nclient = TestClient(app)\n\ndef test_put_body_id_zero_ignored_url_task_updated():\n    db = SessionLocal()\n    db.query(models.Task).delete()\n    db.add(models.Task(id=3, title='Submit expense report', completed=True))\n    db.commit()\n    db.close()\n    r = client.put('/tasks/3', json={'id': 0, 'title': 'Zero ID Body', 'completed': False})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 3\n    assert body['title'] == 'Zero ID Body'\n    assert body['completed'] == False\n\ntest_put_body_id_zero_ignored_url_task_updated()"
+      },
+      {
+        "name": "test_put_body_id_negative_ignored_url_task_updated",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task with id=7 exists (title='Fix login bug', completed=false)"
+        ],
+        "actions": [
+          "Send PUT /tasks/7 with JSON body {\"id\": -1, \"title\": \"Negative ID Body\", \"completed\": true}",
+          "Inspect response"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response id == 7 (URL id, not -1)",
+          "Response title == 'Negative ID Body'",
+          "Response completed == true"
+        ],
+        "trace": [
+          "R-TASK-038"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.database import Base, engine\nBase.metadata.create_all(bind=engine)\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import SessionLocal\nfrom app import models\n\nclient = TestClient(app)\n\ndef test_put_body_id_negative_ignored_url_task_updated():\n    db = SessionLocal()\n    db.query(models.Task).delete()\n    db.add(models.Task(id=7, title='Fix login bug', completed=False))\n    db.commit()\n    db.close()\n    r = client.put('/tasks/7', json={'id': -1, 'title': 'Negative ID Body', 'completed': True})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 7\n    assert body['title'] == 'Negative ID Body'\n    assert body['completed'] == True\n\ntest_put_body_id_negative_ignored_url_task_updated()"
+      },
+      {
+        "name": "test_put_body_id_large_value_ignored_url_task_updated",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task with id=10 exists (title='Organize desk', completed=false)"
+        ],
+        "actions": [
+          "Send PUT /tasks/10 with JSON body {\"id\": 999999, \"title\": \"Large ID Body\", \"completed\": true}",
+          "Inspect response and verify task 10 is updated, not task 999999"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response id == 10 exactly",
+          "Response title == 'Large ID Body'",
+          "Response completed == true",
+          "GET /tasks/999999 returns 404"
+        ],
+        "trace": [
+          "R-TASK-038"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.database import Base, engine\nBase.metadata.create_all(bind=engine)\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import SessionLocal\nfrom app import models\n\nclient = TestClient(app)\n\ndef test_put_body_id_large_value_ignored_url_task_updated():\n    db = SessionLocal()\n    db.query(models.Task).delete()\n    db.add(models.Task(id=10, title='Organize desk', completed=False))\n    db.commit()\n    db.close()\n    r = client.put('/tasks/10', json={'id': 999999, 'title': 'Large ID Body', 'completed': True})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 10\n    assert body['title'] == 'Large ID Body'\n    assert body['completed'] == True\n    r2 = client.get('/tasks/999999')\n    assert r2.status_code == 404\n\ntest_put_body_id_large_value_ignored_url_task_updated()"
+      },
+      {
+        "name": "test_put_nonexistent_url_id_returns_404_regardless_of_body_id",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task with id=1 exists",
+          "Task with id=50 does NOT exist"
+        ],
+        "actions": [
+          "Send PUT /tasks/50 with JSON body {\"id\": 1, \"title\": \"Ghost Update\", \"completed\": false}",
+          "Inspect response status code"
+        ],
+        "expected": [
+          "HTTP 404 response (URL task 50 not found)",
+          "Task with id=1 is NOT modified"
+        ],
+        "trace": [
+          "R-TASK-038"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.database import Base, engine\nBase.metadata.create_all(bind=engine)\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import SessionLocal\nfrom app import models\n\nclient = TestClient(app)\n\ndef test_put_nonexistent_url_id_returns_404_regardless_of_body_id():\n    db = SessionLocal()\n    db.query(models.Task).delete()\n    db.add(models.Task(id=1, title='Read chapter 5', completed=True))\n    db.commit()\n    db.close()\n    r = client.put('/tasks/50', json={'id': 1, 'title': 'Ghost Update', 'completed': False})\n    assert r.status_code == 404\n    r2 = client.get('/tasks/1')\n    assert r2.status_code == 200\n    assert r2.json()['title'] == 'Read chapter 5'\n    assert r2.json()['completed'] == True\n\ntest_put_nonexistent_url_id_returns_404_regardless_of_body_id()"
+      },
+      {
+        "name": "test_put_body_id_with_only_title_update_id_still_matches_url",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task with id=12 exists (title='Review pull request', completed=false)"
+        ],
+        "actions": [
+          "Send PUT /tasks/12 with JSON body {\"id\": 5, \"title\": \"Partial Update Only Title\"}",
+          "Inspect response"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response id == 12 (URL id preserved)",
+          "Response title == 'Partial Update Only Title'",
+          "Response completed == false (unchanged)"
+        ],
+        "trace": [
+          "R-TASK-038"
+        ],
+        "executable": "import os\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom app.database import Base, engine\nBase.metadata.create_all(bind=engine)\nfrom app.main import app\nfrom fastapi.testclient import TestClient\nfrom app.database import SessionLocal\nfrom app import models\n\nclient = TestClient(app)\n\ndef test_put_body_id_with_only_title_update_id_still_matches_url():\n    db = SessionLocal()\n    db.query(models.Task).delete()\n    db.add(models.Task(id=12, title='Review pull request', completed=False))\n    db.commit()\n    db.close()\n    r = client.put('/tasks/12', json={'id': 5, 'title': 'Partial Update Only Title'})\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == 12\n    assert body['title'] == 'Partial Update Only Title'\n    assert body['completed'] == False\n\ntest_put_body_id_with_only_title_update_id_still_matches_url()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-038",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7566,
+    "output_tokens": 4459,
+    "latency_ms": 48290,
+    "wall_ms": 48290,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-038\",\n  \"reasoning\": \"R-TASK-038 requires that when a PUT /tasks/{id} request body contains an 'id' field, the system ignores it and mutates only the task addressed by the URL path parameter. Tests must verify: (1) positive \u2014 a body with a different id value still updates the correct task and the response id matches the URL id; (2) negative \u2014 the body id cannot hijack a different task's identity; (3) boundary \u2014 body id equal to URL id is a no-op on identity; (4) additional EP/DT cases covering the id-ignore behaviour with various field combinations. Mutation resilience is achieved by asserting exact response id values, exact HTTP status codes, and verifying the original task at the alternate id is untouched.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_body_id_ignored_response_id_matches_url\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Task with id=1 exists in the database (title='Read chapter 5', completed=true)\",\n        \"Task with id=99 does NOT exist in the database\"\n      ],\n      \"actions\": [\n        \"Send PUT /tasks/1 with JSON body {\\\"id\\\": 99, \\\"title\\\": \\\"Updated Title\\\", \\\"completed\\\": false}\",\n        \"Inspect response status code and body\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"Response body id == 1 (URL id, not body id 99)\",\n        \"Response body title == 'Updated Title'\",\n        \"Response body completed == false\"\n      ],\n      \"trace\": [\"R-TASK-038\"],\n      \"executable\": \"import os, sys\\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\\nfrom app.database import Base, engine\\nBase.metadata.create_all(bind=engine)\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy.orm import Session\\nfrom app.database import SessionLocal\\nfrom app import models\\n\\nclient = TestClient(app)\\n\\ndef test_put_body_id_ignored_response_id_matches_url():\\n    db = SessionLocal()\\n    db.query(models.Task).delete()\\n    task = models.Task(id=1, title='Read chapter 5', completed=True)\\n    db.add(task)\\n    db.commit()\\n    db.close()\\n    r = client.put('/tasks/1', json={'id': 99, 'title': 'Updated Title', 'completed': False})\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body['id'] == 1\\n    assert body['title'] == 'Updated Title'\\n    assert body['completed'] == False\\n\\ntest_put_body_id_ignored_response_id_matches_url()\"\n    },\n    {\n      \"name\": \"test_put_body_id_does_not_mutate_alternate_task\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Task with id=1 exists (title='Read chapter 5')\",\n        \"Task with id=2 exists (title='Book flight tickets')\"\n      ],\n      \"actions\": [\n        \"Send PUT /tasks/1 with JSON body {\\\"id\\\": 2, \\\"title\\\": \\\"Hijacked\\\", \\\"completed\\\": true}\",\n        \"Then GET /tasks/2 to verify task 2 is untouched\"\n      ],\n      \"expected\": [\n        \"PUT returns HTTP 200 with id==1 in body\",\n        \"GET /tasks/2 returns HTTP 200 with title still 'Book flight tickets' (unchanged)\"\n      ],\n      \"trace\": [\"R-TASK-038\"],\n      \"executable\": \"import os\\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\\nfrom app.database import Base, engine\\nBase.metadata.create_all(bind=engine)\\nfrom app.main import app\\nfrom fastapi.testclient import TestClient\\nfrom app.database import SessionLocal\\nfrom app import models\\n\\nclient = TestClient(app)\\n\\ndef test_put_body_id_does_not_mutate_alternate_task():\\n    db = SessionLocal()\\n    db.query(models.Task).delete()\\n    db.add(models.Task(id=1, title='Read chapter 5', completed=True))\\n    db.add(models.Task(id=2, title='Book flight tickets', completed=True))\\n    db.commit()\\n    db.close()\\n    r = client.put('/tasks/1', json={'id': 2, 'title': 'Hijacked', 'completed': True})\\n    assert r.status_code == 200\\n    assert r.json()['id'] == 1\\n    assert r.json()['title'] == 'Hijacked'\\n    r2 = client.get('/tasks/2')\\n    assert r2.status_code == 200\\n    assert r2.json()['"
+  }
+}

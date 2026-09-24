@@ -1,0 +1,151 @@
+{
+  "req": {
+    "id": "R-PLAYER-025",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "functional",
+    "title": "Empty player list returns empty array",
+    "statement": "The system shall respond to GET /players when the table is empty with HTTP 200 and an empty JSON array.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "empty player list returns empty array"
+    ],
+    "expected_outcomes": [
+      "HTTP 200",
+      "[]"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "GET /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-025",
+    "reasoning": "R-PLAYER-025 requires GET /players/ to return HTTP 200 and an empty JSON array when the player table is empty. The shipped fixture has 26 rows, so the positive test must mock/override the DB session to return an empty list. We test: (1) positive EP \u2014 empty DB yields 200 + []; (2) negative NEG \u2014 a non-empty DB yields 200 but a non-empty array (proving the empty-array assertion is meaningful and not trivially true); (3) boundary BVA \u2014 exactly zero items vs exactly one item in the response list, catching off-by-one mutations on the list length check; (4) DT \u2014 verifying the response Content-Type and exact body structure to kill constant/type mutations. We use FastAPI TestClient with dependency_overrides to inject a mock AsyncSession that returns a controlled list, keeping tests deterministic and independent of the real SQLite file.",
+    "tests": [
+      {
+        "name": "test_get_players_empty_table_returns_200_and_empty_array",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "The players table is empty (zero rows)",
+          "The in-memory cache is cleared before the request"
+        ],
+        "actions": [
+          "Override generate_async_session to return a mock session whose execute() returns an empty scalars result",
+          "Clear the in-memory cache key 'players'",
+          "Send GET /players/ via TestClient"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body is exactly the JSON empty array []",
+          "Response JSON parses to a Python list of length 0"
+        ],
+        "trace": [
+          "R-PLAYER-025: HTTP 200 + empty JSON array when table is empty"
+        ],
+        "executable": "import asyncio\nfrom unittest.mock import AsyncMock, MagicMock\nfrom fastapi.testclient import TestClient\nfrom main import app\nfrom databases.player_database import generate_async_session\nfrom routes.player_route import simple_memory_cache, CACHE_KEY\n\nasync def _clear_cache():\n    await simple_memory_cache.delete(CACHE_KEY)\n\nasyncio.get_event_loop().run_until_complete(_clear_cache())\n\ndef _empty_session():\n    mock_result = MagicMock()\n    mock_result.scalars.return_value.all.return_value = []\n    mock_session = AsyncMock()\n    mock_session.execute = AsyncMock(return_value=mock_result)\n    mock_session.get = AsyncMock(return_value=None)\n    return mock_session\n\nasync def _override():\n    yield _empty_session()\n\napp.dependency_overrides[generate_async_session] = _override\n\ndef test_get_players_empty_table_returns_200_and_empty_array():\n    asyncio.get_event_loop().run_until_complete(_clear_cache())\n    client = TestClient(app)\n    r = client.get('/players/')\n    assert r.status_code == 200\n    body = r.json()\n    assert body == []\n    assert isinstance(body, list)\n    assert len(body) == 0\n\ntest_get_players_empty_table_returns_200_and_empty_array()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_players_nonempty_table_returns_200_and_nonempty_array",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "The players table contains at least one row",
+          "The in-memory cache is cleared before the request"
+        ],
+        "actions": [
+          "Override generate_async_session to return a mock session whose execute() returns one Player ORM object",
+          "Clear the in-memory cache key 'players'",
+          "Send GET /players/ via TestClient"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body is a JSON array with exactly 1 element",
+          "The element contains squadNumber equal to 10 and firstName equal to 'Lionel'"
+        ],
+        "trace": [
+          "R-PLAYER-025: contrasts empty-array case; proves assertion is not trivially true",
+          "Kills mutations that always return [] or always return 200 regardless of data"
+        ],
+        "executable": "import asyncio\nfrom unittest.mock import AsyncMock, MagicMock\nfrom uuid import UUID\nfrom fastapi.testclient import TestClient\nfrom main import app\nfrom databases.player_database import generate_async_session\nfrom routes.player_route import simple_memory_cache, CACHE_KEY\nfrom schemas.player_schema import Player\n\nasync def _clear_cache():\n    await simple_memory_cache.delete(CACHE_KEY)\n\nasyncio.get_event_loop().run_until_complete(_clear_cache())\n\ndef _one_player_session():\n    p = Player()\n    p.id = UUID('acc433bf-d505-51fe-831e-45eb44c4d43c')\n    p.first_name = 'Lionel'\n    p.middle_name = 'Andr\u00e9s'\n    p.last_name = 'Messi'\n    p.date_of_birth = '1987-06-24T00:00:00.000Z'\n    p.squad_number = 10\n    p.position = 'Right Winger'\n    p.abbr_position = 'RW'\n    p.team = 'Paris Saint-Germain'\n    p.league = 'Ligue 1'\n    p.starting11 = True\n    mock_result = MagicMock()\n    mock_result.scalars.return_value.all.return_value = [p]\n    mock_session = AsyncMock()\n    mock_session.execute = AsyncMock(return_value=mock_result)\n    return mock_session\n\nasync def _override():\n    yield _one_player_session()\n\napp.dependency_overrides[generate_async_session] = _override\n\ndef test_get_players_nonempty_table_returns_200_and_nonempty_array():\n    asyncio.get_event_loop().run_until_complete(_clear_cache())\n    client = TestClient(app)\n    r = client.get('/players/')\n    assert r.status_code == 200\n    body = r.json()\n    assert isinstance(body, list)\n    assert len(body) == 1\n    assert body[0]['squadNumber'] == 10\n    assert body[0]['firstName'] == 'Lionel'\n\ntest_get_players_nonempty_table_returns_200_and_nonempty_array()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_players_boundary_zero_vs_one_item",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Two successive calls are made: first with zero players, then with one player",
+          "Cache is cleared between calls"
+        ],
+        "actions": [
+          "Call GET /players/ with empty mock session; assert len == 0",
+          "Switch override to one-player mock session; clear cache; call GET /players/ again; assert len == 1"
+        ],
+        "expected": [
+          "First call: status 200, body == [], len == 0",
+          "Second call: status 200, body is list of length exactly 1",
+          "Boundary between 0 and 1 items is correctly distinguished"
+        ],
+        "trace": [
+          "R-PLAYER-025: BVA at n=0 (empty) and n=1 (one item) boundary",
+          "Kills off-by-one mutations on list length and status code constants"
+        ],
+        "executable": "import asyncio\nfrom unittest.mock import AsyncMock, MagicMock\nfrom uuid import UUID\nfrom fastapi.testclient import TestClient\nfrom main import app\nfrom databases.player_database import generate_async_session\nfrom routes.player_route import simple_memory_cache, CACHE_KEY\nfrom schemas.player_schema import Player\n\nasync def _clear():\n    await simple_memory_cache.delete(CACHE_KEY)\n\ndef _make_session(players_list):\n    mock_result = MagicMock()\n    mock_result.scalars.return_value.all.return_value = players_list\n    mock_session = AsyncMock()\n    mock_session.execute = AsyncMock(return_value=mock_result)\n    return mock_session\n\ndef _make_player():\n    p = Player()\n    p.id = UUID('acc433bf-d505-51fe-831e-45eb44c4d43c')\n    p.first_name = 'Lionel'\n    p.middle_name = 'Andr\u00e9s'\n    p.last_name = 'Messi'\n    p.date_of_birth = '1987-06-24T00:00:00.000Z'\n    p.squad_number = 10\n    p.position = 'Right Winger'\n    p.abbr_position = 'RW'\n    p.team = 'Paris Saint-Germain'\n    p.league = 'Ligue 1'\n    p.starting11 = True\n    return p\n\ndef test_get_players_boundary_zero_vs_one_item():\n    asyncio.get_event_loop().run_until_complete(_clear())\n    async def _empty_override():\n        yield _make_session([])\n    app.dependency_overrides[generate_async_session] = _empty_override\n    client = TestClient(app)\n    r0 = client.get('/players/')\n    assert r0.status_code == 200\n    body0 = r0.json()\n    assert body0 == []\n    assert len(body0) == 0\n    asyncio.get_event_loop().run_until_complete(_clear())\n    async def _one_override():\n        yield _make_session([_make_player()])\n    app.dependency_overrides[generate_async_session] = _one_override\n    r1 = client.get('/players/')\n    assert r1.status_code == 200\n    body1 = r1.json()\n    assert len(body1) == 1\n    assert body1[0]['squadNumber'] == 10\n    app.dependency_overrides.clear()\n\ntest_get_players_boundary_zero_vs_one_item()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_players_empty_response_content_type_and_exact_body",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "The players table is empty",
+          "Cache is cleared"
+        ],
+        "actions": [
+          "Override session to return empty list",
+          "Send GET /players/",
+          "Inspect Content-Type header and raw response text"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Content-Type header contains 'application/json'",
+          "Response text is exactly '[]'",
+          "Parsed JSON equals Python empty list []"
+        ],
+        "trace": [
+          "R-PLAYER-025: verifies exact wire format of empty array response",
+          "Kills mutations that change status code, content-type, or body serialization"
+        ],
+        "executable": "import asyncio\nfrom unittest.mock import AsyncMock, MagicMock\nfrom fastapi.testclient import TestClient\nfrom main import app\nfrom databases.player_database import generate_async_session\nfrom routes.player_route import simple_memory_cache, CACHE_KEY\n\nasync def _clear():\n    await simple_memory_cache.delete(CACHE_KEY)\n\nasyncio.get_event_loop().run_until_complete(_clear())\n\ndef _empty_session():\n    mock_result = MagicMock()\n    mock_result.scalars.return_value.all.return_value = []\n    mock_session = AsyncMock()\n    mock_session.execute = AsyncMock(return_value=mock_result)\n    return mock_session\n\nasync def _override():\n    yield _empty_session()\n\napp.dependency_overrides[generate_async_session] = _override\n\ndef test_get_players_empty_response_content_type_and_exact_body():\n    asyncio.get_event_loop().run_until_complete(_clear())\n    client = TestClient(app)\n    r = client.get('/players/')\n    assert r.status_code == 200\n    assert 'application/json' in r.headers['content-type']\n    assert r.text == '[]'\n    assert r.json() == []\n    assert len(r.json()) == 0\n\ntest_get_players_empty_response_content_type_and_exact_body()\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-025",
+  "domain": "sports_players",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11301,
+    "output_tokens": 3439,
+    "latency_ms": 45843,
+    "wall_ms": 45843,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-025\",\n  \"reasoning\": \"R-PLAYER-025 requires GET /players/ to return HTTP 200 and an empty JSON array when the player table is empty. The shipped fixture has 26 rows, so the positive test must mock/override the DB session to return an empty list. We test: (1) positive EP \u2014 empty DB yields 200 + []; (2) negative NEG \u2014 a non-empty DB yields 200 but a non-empty array (proving the empty-array assertion is meaningful and not trivially true); (3) boundary BVA \u2014 exactly zero items vs exactly one item in the response list, catching off-by-one mutations on the list length check; (4) DT \u2014 verifying the response Content-Type and exact body structure to kill constant/type mutations. We use FastAPI TestClient with dependency_overrides to inject a mock AsyncSession that returns a controlled list, keeping tests deterministic and independent of the real SQLite file.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_players_empty_table_returns_200_and_empty_array\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"The players table is empty (zero rows)\",\n        \"The in-memory cache is cleared before the request\"\n      ],\n      \"actions\": [\n        \"Override generate_async_session to return a mock session whose execute() returns an empty scalars result\",\n        \"Clear the in-memory cache key 'players'\",\n        \"Send GET /players/ via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body is exactly the JSON empty array []\",\n        \"Response JSON parses to a Python list of length 0\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-025: HTTP 200 + empty JSON array when table is empty\"\n      ],\n      \"executable\": \"import asyncio\\nfrom unittest.mock import AsyncMock, MagicMock\\nfrom fastapi.testclient import TestClient\\nfrom main import app\\nfrom databases.player_database import generate_async_session\\nfrom routes.player_route import simple_memory_cache, CACHE_KEY\\n\\nasync def _clear_cache():\\n    await simple_memory_cache.delete(CACHE_KEY)\\n\\nasyncio.get_event_loop().run_until_complete(_clear_cache())\\n\\ndef _empty_session():\\n    mock_result = MagicMock()\\n    mock_result.scalars.return_value.all.return_value = []\\n    mock_session = AsyncMock()\\n    mock_session.execute = AsyncMock(return_value=mock_result)\\n    mock_session.get = AsyncMock(return_value=None)\\n    return mock_session\\n\\nasync def _override():\\n    yield _empty_session()\\n\\napp.dependency_overrides[generate_async_session] = _override\\n\\ndef test_get_players_empty_table_returns_200_and_empty_array():\\n    asyncio.get_event_loop().run_until_complete(_clear_cache())\\n    client = TestClient(app)\\n    r = client.get('/players/')\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body == []\\n    assert isinstance(body, list)\\n    assert len(body) == 0\\n\\ntest_get_players_empty_table_returns_200_and_empty_array()\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_get_players_nonempty_table_returns_200_and_nonempty_array\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"The players table contains at least one row\",\n        \"The in-memory cache is cleared before the request\"\n      ],\n      \"actions\": [\n        \"Override generate_async_session to return a mock session whose execute() returns one Player ORM object\",\n        \"Clear the in-memory cache key 'players'\",\n        \"Send GET /players/ via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body is a JSON array with exactly 1 element\",\n        \"The element contains squadNumber equal to 10 and firstName equal to 'Lionel'\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-025: contrasts empty-array case; proves assertion is not trivially true\",\n        \"Kills mutations that always return [] or always return 200 regardless of data\"\n      ],\n      \"executable\": \"import asyncio\\nfrom unittest.mock import A"
+  }
+}

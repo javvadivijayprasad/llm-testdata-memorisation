@@ -1,0 +1,242 @@
+{
+  "req": {
+    "id": "R-TASK-005",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Pagination via skip and limit",
+    "statement": "The system shall skip the first 'skip' items and cap the returned count at 'limit' when both are supplied to GET /tasks/.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "pagination via skip and limit"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/?skip=<s>&limit=<l>"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-005",
+    "reasoning": "The requirement mandates that GET /tasks/?skip=<s>&limit=<l> skips the first 'skip' items and caps results at 'limit'. Tests must cover: (1) positive EP \u2014 typical skip+limit returns correct slice; (2) boundary BVA \u2014 skip=0,limit=1 (minimum limit per constraint ge=1) returns exactly one item; (3) boundary BVA \u2014 limit at its maximum allowed value (1000); (4) negative NEG \u2014 skip < 0 returns 422; (5) negative NEG \u2014 limit=0 returns 422 (ge=1 constraint); (6) DT \u2014 skip beyond total count returns empty list; (7) BVA \u2014 limit=1 with skip=N-1 returns exactly the last item. Each test seeds its own data via POST, uses exact-value assertions, and tests both sides of boundary conditions to kill off-by-one and comparison-flip mutations.",
+    "tests": [
+      {
+        "name": "test_skip_and_limit_typical_slice",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty before test",
+          "5 tasks are created via POST /tasks/"
+        ],
+        "actions": [
+          "POST 5 tasks with distinct titles",
+          "GET /tasks/?skip=2&limit=2"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 2 tasks",
+          "Returned tasks are the 3rd and 4th created tasks (index 2 and 3)"
+        ],
+        "trace": [
+          "R-TASK-005: skip=2 skips first 2; limit=2 caps at 2"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\ntitles = [f\"Task-{i}\" for i in range(5)]\nfor t in titles:\n    r = client.post(\"/tasks/\", json={\"title\": t, \"completed\": False})\n    assert r.status_code == 201\n\nr = client.get(\"/tasks/?skip=2&limit=2\")\nassert r.status_code == 200\ndata = r.json()\nassert len(data) == 2\nassert data[0][\"title\"] == \"Task-2\"\nassert data[1][\"title\"] == \"Task-3\"\n"
+      },
+      {
+        "name": "test_limit_minimum_boundary_one",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty before test",
+          "3 tasks are created via POST /tasks/"
+        ],
+        "actions": [
+          "POST 3 tasks",
+          "GET /tasks/?skip=0&limit=1"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is a list of exactly 1 task",
+          "The single task is the first created task"
+        ],
+        "trace": [
+          "R-TASK-005: limit=1 is the minimum valid limit (ge=1); catches off-by-one on limit lower bound"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nfor i in range(3):\n    r = client.post(\"/tasks/\", json={\"title\": f\"BVA-Task-{i}\", \"completed\": False})\n    assert r.status_code == 201\n\nr = client.get(\"/tasks/?skip=0&limit=1\")\nassert r.status_code == 200\ndata = r.json()\nassert len(data) == 1\nassert data[0][\"title\"] == \"BVA-Task-0\"\n"
+      },
+      {
+        "name": "test_limit_zero_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty before test"
+        ],
+        "actions": [
+          "GET /tasks/?skip=0&limit=0"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response indicates validation error for limit parameter"
+        ],
+        "trace": [
+          "R-TASK-005 error pathway: limit ge=1 means limit=0 is invalid; catches boundary-flip mutation on ge=1 constraint"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nr = client.get(\"/tasks/?skip=0&limit=0\")\nassert r.status_code == 422\nbody = r.json()\nassert \"detail\" in body\n"
+      },
+      {
+        "name": "test_skip_negative_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty before test"
+        ],
+        "actions": [
+          "GET /tasks/?skip=-1&limit=10"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response indicates validation error for skip parameter"
+        ],
+        "trace": [
+          "R-TASK-005 error pathway: skip ge=0 means skip=-1 is invalid; catches comparison-flip mutation on ge=0 constraint"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nr = client.get(\"/tasks/?skip=-1&limit=10\")\nassert r.status_code == 422\nbody = r.json()\nassert \"detail\" in body\n"
+      },
+      {
+        "name": "test_skip_beyond_total_returns_empty",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty before test",
+          "3 tasks are created via POST /tasks/"
+        ],
+        "actions": [
+          "POST 3 tasks",
+          "GET /tasks/?skip=3&limit=10"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body is an empty list"
+        ],
+        "trace": [
+          "R-TASK-005: skip equals total count; no items remain; catches off-by-one on skip offset logic"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nfor i in range(3):\n    r = client.post(\"/tasks/\", json={\"title\": f\"Skip-Task-{i}\", \"completed\": False})\n    assert r.status_code == 201\n\nr = client.get(\"/tasks/?skip=3&limit=10\")\nassert r.status_code == 200\ndata = r.json()\nassert data == []\nassert len(data) == 0\n"
+      },
+      {
+        "name": "test_skip_one_less_than_total_returns_last",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty before test",
+          "3 tasks are created via POST /tasks/"
+        ],
+        "actions": [
+          "POST 3 tasks",
+          "GET /tasks/?skip=2&limit=10"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body contains exactly 1 task",
+          "The task is the last (3rd) created task"
+        ],
+        "trace": [
+          "R-TASK-005: skip=N-1 (boundary just before exhaustion) returns exactly 1 item; catches off-by-one on offset"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nfor i in range(3):\n    r = client.post(\"/tasks/\", json={\"title\": f\"Last-Task-{i}\", \"completed\": False})\n    assert r.status_code == 201\n\nr = client.get(\"/tasks/?skip=2&limit=10\")\nassert r.status_code == 200\ndata = r.json()\nassert len(data) == 1\nassert data[0][\"title\"] == \"Last-Task-2\"\n"
+      },
+      {
+        "name": "test_limit_maximum_boundary_1000",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty before test",
+          "2 tasks are created via POST /tasks/"
+        ],
+        "actions": [
+          "POST 2 tasks",
+          "GET /tasks/?skip=0&limit=1000"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body contains exactly 2 tasks (all available)"
+        ],
+        "trace": [
+          "R-TASK-005: limit=1000 is the maximum allowed (le=1000); catches off-by-one mutation on upper bound constant"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nfor i in range(2):\n    r = client.post(\"/tasks/\", json={\"title\": f\"Max-Task-{i}\", \"completed\": False})\n    assert r.status_code == 201\n\nr = client.get(\"/tasks/?skip=0&limit=1000\")\nassert r.status_code == 200\ndata = r.json()\nassert len(data) == 2\nassert data[0][\"title\"] == \"Max-Task-0\"\nassert data[1][\"title\"] == \"Max-Task-1\"\n"
+      },
+      {
+        "name": "test_limit_exceeds_maximum_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty before test"
+        ],
+        "actions": [
+          "GET /tasks/?skip=0&limit=1001"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response indicates validation error for limit parameter exceeding le=1000"
+        ],
+        "trace": [
+          "R-TASK-005 error pathway: limit le=1000 means limit=1001 is invalid; catches mutation flipping le to lt on upper bound"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nr = client.get(\"/tasks/?skip=0&limit=1001\")\nassert r.status_code == 422\nbody = r.json()\nassert \"detail\" in body\n"
+      },
+      {
+        "name": "test_skip_zero_limit_exact_count",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty before test",
+          "4 tasks are created via POST /tasks/"
+        ],
+        "actions": [
+          "POST 4 tasks",
+          "GET /tasks/?skip=0&limit=4"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body contains exactly 4 tasks",
+          "All task titles match creation order"
+        ],
+        "trace": [
+          "R-TASK-005: skip=0 and limit equals total count returns all items; catches arithmetic mutation on skip/limit interaction"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import engine\nfrom app import models\n\nmodels.Base.metadata.drop_all(bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\nclient = TestClient(app)\n\nfor i in range(4):\n    r = client.post(\"/tasks/\", json={\"title\": f\"All-Task-{i}\", \"completed\": False})\n    assert r.status_code == 201\n\nr = client.get(\"/tasks/?skip=0&limit=4\")\nassert r.status_code == 200\ndata = r.json()\nassert len(data) == 4\nfor i, item in enumerate(data):\n    assert item[\"title\"] == f\"All-Task-{i}\"\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-005",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4879,
+    "output_tokens": 3652,
+    "latency_ms": 41534,
+    "wall_ms": 41534,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-005\",\n  \"reasoning\": \"The requirement mandates that GET /tasks/?skip=<s>&limit=<l> skips the first 'skip' items and caps results at 'limit'. Tests must cover: (1) positive EP \u2014 typical skip+limit returns correct slice; (2) boundary BVA \u2014 skip=0,limit=1 (minimum limit per constraint ge=1) returns exactly one item; (3) boundary BVA \u2014 limit at its maximum allowed value (1000); (4) negative NEG \u2014 skip < 0 returns 422; (5) negative NEG \u2014 limit=0 returns 422 (ge=1 constraint); (6) DT \u2014 skip beyond total count returns empty list; (7) BVA \u2014 limit=1 with skip=N-1 returns exactly the last item. Each test seeds its own data via POST, uses exact-value assertions, and tests both sides of boundary conditions to kill off-by-one and comparison-flip mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_skip_and_limit_typical_slice\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty before test\",\n        \"5 tasks are created via POST /tasks/\"\n      ],\n      \"actions\": [\n        \"POST 5 tasks with distinct titles\",\n        \"GET /tasks/?skip=2&limit=2\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body is a list of exactly 2 tasks\",\n        \"Returned tasks are the 3rd and 4th created tasks (index 2 and 3)\"\n      ],\n      \"trace\": [\n        \"R-TASK-005: skip=2 skips first 2; limit=2 caps at 2\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import engine\\nfrom app import models\\n\\nmodels.Base.metadata.drop_all(bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\ntitles = [f\\\"Task-{i}\\\" for i in range(5)]\\nfor t in titles:\\n    r = client.post(\\\"/tasks/\\\", json={\\\"title\\\": t, \\\"completed\\\": False})\\n    assert r.status_code == 201\\n\\nr = client.get(\\\"/tasks/?skip=2&limit=2\\\")\\nassert r.status_code == 200\\ndata = r.json()\\nassert len(data) == 2\\nassert data[0][\\\"title\\\"] == \\\"Task-2\\\"\\nassert data[1][\\\"title\\\"] == \\\"Task-3\\\"\\n\"\n    },\n    {\n      \"name\": \"test_limit_minimum_boundary_one\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is empty before test\",\n        \"3 tasks are created via POST /tasks/\"\n      ],\n      \"actions\": [\n        \"POST 3 tasks\",\n        \"GET /tasks/?skip=0&limit=1\"\n      ],\n      \"expected\": [\n        \"HTTP 200\",\n        \"Response body is a list of exactly 1 task\",\n        \"The single task is the first created task\"\n      ],\n      \"trace\": [\n        \"R-TASK-005: limit=1 is the minimum valid limit (ge=1); catches off-by-one on limit lower bound\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import engine\\nfrom app import models\\n\\nmodels.Base.metadata.drop_all(bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\nclient = TestClient(app)\\n\\nfor i in range(3):\\n    r = client.post(\\\"/tasks/\\\", json={\\\"title\\\": f\\\"BVA-Task-{i}\\\", \\\"completed\\\": False})\\n    assert r.status_code == 201\\n\\nr = client.get(\\\"/tasks/?skip=0&limit=1\\\")\\nassert r.status_code == 200\\ndata = r.json()\\nassert len(data) == 1\\nassert data[0][\\\"title\\\"] == \\\"BVA-Task-0\\\"\\n\"\n    },\n    {\n      \"name\": \"test_limit_zero_rejected\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty before test\"\n      ],\n      \"actions\": [\n        \"GET /tasks/?skip=0&limit=0\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity\",\n        \"Response indicates validation error for limit parameter\"\n      ],\n      \"trace\": [\n        \"R-TASK-005 error pathway: limit ge=1 means limit=0 is invalid; catches boundary-flip mutation on ge=1 constraint\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import engine\\nfrom app import models\\n\\nmodels.Base.metadata.drop_all(bind=engine)\\nmodels.Base.metadata.create_all(bind"
+  }
+}

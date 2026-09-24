@@ -1,0 +1,184 @@
+{
+  "req": {
+    "id": "R-TASK-006",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "validation",
+    "title": "Reject negative skip",
+    "statement": "The system shall respond with HTTP 422 when the skip parameter is negative.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "reject negative skip"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 422"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/?skip=-1"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-006",
+    "reasoning": "R-TASK-006 requires HTTP 422 when skip < 0. The FastAPI endpoint uses Query(0, ge=0) which enforces skip >= 0. Tests must cover: (1) positive case \u2014 skip=0 (boundary minimum, valid) returns 200; (2) negative case \u2014 skip=-1 returns 422; (3) boundary case \u2014 skip=-1 vs skip=0 to catch off-by-one mutations on the ge=0 constraint. Additional tests cover skip=1 (valid above boundary, EP positive) and skip=-2 (deeper negative, NEG heuristic \u2014 not EP, since EP on a negative kind would be a logical contradiction per the rule that flagged test[4]). The fix for the violation is to change test[4] (skip=-2) from heuristic=EP to heuristic=NEG, which correctly classifies it as a negative error-path test rather than an equivalence partition representative.",
+    "tests": [
+      {
+        "name": "test_skip_zero_returns_200",
+        "kind": "positive",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is empty (no pre-loaded rows)"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=0 via TestClient"
+        ],
+        "expected": [
+          "HTTP 200 is returned",
+          "Response body is a JSON array (empty list)"
+        ],
+        "trace": [
+          "R-TASK-006: skip=0 is the minimum valid value (ge=0); must NOT be rejected",
+          "BVA: lower boundary of valid partition; catches ge->gt mutation"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\nr = client.get(\"/tasks/?skip=0\")\nassert r.status_code == 200\nassert r.json() == []"
+      },
+      {
+        "name": "test_skip_negative_one_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is empty"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=-1 via TestClient"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity is returned",
+          "Response body contains 'detail' key with validation error info"
+        ],
+        "trace": [
+          "R-TASK-006: skip=-1 violates ge=0 constraint; system must respond 422",
+          "NEG: exact status code 422 asserted; catches mutations that change ge->gt or suppress validation"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\nr = client.get(\"/tasks/?skip=-1\")\nassert r.status_code == 422\nbody = r.json()\nassert \"detail\" in body"
+      },
+      {
+        "name": "test_skip_boundary_zero_vs_negative_one",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is empty"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=0 \u2014 expect 200",
+          "Send GET /tasks/?skip=-1 \u2014 expect 422"
+        ],
+        "expected": [
+          "skip=0 returns exactly HTTP 200",
+          "skip=-1 returns exactly HTTP 422",
+          "The two status codes differ, confirming the boundary is at 0"
+        ],
+        "trace": [
+          "R-TASK-006: boundary between valid (0) and invalid (-1) skip values",
+          "BVA + comparison-mutation: catches ge->gt (would reject 0) and ge->le (would accept -1)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\nr_valid = client.get(\"/tasks/?skip=0\")\nassert r_valid.status_code == 200\nr_invalid = client.get(\"/tasks/?skip=-1\")\nassert r_invalid.status_code == 422\nassert r_valid.status_code != r_invalid.status_code"
+      },
+      {
+        "name": "test_skip_positive_one_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is empty"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=1 via TestClient"
+        ],
+        "expected": [
+          "HTTP 200 is returned",
+          "Response body is a JSON array"
+        ],
+        "trace": [
+          "R-TASK-006: skip=1 is in the valid equivalence partition (skip >= 0)",
+          "EP: representative of valid-positive partition; kills mutations that flip ge to == 0 only"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\nr = client.get(\"/tasks/?skip=1\")\nassert r.status_code == 200\nassert isinstance(r.json(), list)"
+      },
+      {
+        "name": "test_skip_negative_two_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is empty"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=-2 via TestClient"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity is returned",
+          "Response body contains 'detail' key"
+        ],
+        "trace": [
+          "R-TASK-006: skip=-2 is in the invalid partition (skip < 0), deeper than -1",
+          "NEG: error-path test for a value further into the invalid range; kills mutations that only special-case -1"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\nr = client.get(\"/tasks/?skip=-2\")\nassert r.status_code == 422\nbody = r.json()\nassert \"detail\" in body\nassert r.status_code != 200"
+      },
+      {
+        "name": "test_skip_negative_one_detail_structure",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database is empty"
+        ],
+        "actions": [
+          "Send GET /tasks/?skip=-1 via TestClient",
+          "Inspect the detail array in the response body"
+        ],
+        "expected": [
+          "HTTP 422 is returned",
+          "Response JSON has a 'detail' key that is a non-empty list",
+          "First error entry references 'skip' in its location"
+        ],
+        "trace": [
+          "R-TASK-006: validation error payload must identify the offending parameter",
+          "NEG + DT: verifies that the 422 body is well-formed and points to 'skip', not a generic error"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\nclient = TestClient(app)\nr = client.get(\"/tasks/?skip=-1\")\nassert r.status_code == 422\nbody = r.json()\nassert \"detail\" in body\ndetail = body[\"detail\"]\nassert isinstance(detail, list)\nassert len(detail) >= 1\nlocs = [str(err.get(\"loc\", \"\")) for err in detail]\nassert any(\"skip\" in loc for loc in locs)"
+      }
+    ]
+  },
+  "req_id": "R-TASK-006",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4842,
+    "output_tokens": 2214,
+    "latency_ms": 29625,
+    "wall_ms": 29625,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-006\",\n  \"reasoning\": \"R-TASK-006 requires HTTP 422 when skip < 0. The FastAPI endpoint uses Query(0, ge=0) which enforces skip >= 0. Tests must cover: (1) positive case \u2014 skip=0 (boundary minimum, valid) returns 200; (2) negative case \u2014 skip=-1 returns 422; (3) boundary case \u2014 skip=-1 vs skip=0 to catch off-by-one mutations on the ge=0 constraint. Additional tests cover skip=1 (valid above boundary) and skip=-2 (deeper negative) to kill comparison-operator mutations (ge vs gt, etc.).\",\n  \"tests\": [\n    {\n      \"name\": \"test_skip_zero_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is empty (no pre-loaded rows)\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/?skip=0 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 200 is returned\",\n        \"Response body is a JSON array (empty list)\"\n      ],\n      \"trace\": [\n        \"R-TASK-006: skip=0 is the minimum valid value (ge=0); must NOT be rejected\",\n        \"BVA: lower boundary of valid partition; catches ge->gt mutation\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_skip_zero_returns_200():\\n    client = TestClient(app)\\n    r = client.get(\\\"/tasks/?skip=0\\\")\\n    assert r.status_code == 200\\n    assert r.json() == []\\n\\ntest_skip_zero_returns_200()\"\n    },\n    {\n      \"name\": \"test_skip_negative_one_returns_422\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is empty\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/?skip=-1 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity is returned\",\n        \"Response body contains 'detail' key with validation error info\"\n      ],\n      \"trace\": [\n        \"R-TASK-006: skip=-1 violates ge=0 constraint; system must respond 422\",\n        \"NEG: exact status code 422 asserted; catches mutations that change ge->gt or suppress validation\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_skip_negative_one_returns_422():\\n    client = TestClient(app)\\n    r = client.get(\\\"/tasks/?skip=-1\\\")\\n    assert r.status_code == 422\\n    body = r.json()\\n    assert \\\"detail\\\" in body\\n\\ntest_skip_negative_one_returns_422()\"\n    },\n    {\n      \"name\": \"test_skip_boundary_zero_vs_negative_one\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is empty\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/?skip=0 \u2014 expect 200\",\n        \"Send GET /tasks/?skip=-1 \u2014 expect 422\"\n      ],\n      \"expected\": [\n        \"skip=0 returns exactly HTTP 200\",\n        \"skip=-1 returns exactly HTTP 422\",\n        \"The two status codes differ, confirming the boundary is at 0\"\n      ],\n      \"trace\": [\n        \"R-TASK-006: boundary between valid (0) and invalid (-1) skip values\",\n        \"BVA + comparison-mutation: catches ge->gt (would reject 0) and ge->le (would accept -1)\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_skip_boundary_zero_vs_negative_one():\\n    client = TestClient(app)\\n    r_valid = client.get(\\\"/tasks/?skip=0\\\")\\n    assert r_valid.status_code == 200\\n    r_invalid = client.get(\\\"/tasks/?skip=-1\\\")\\n    assert r_invalid.status_code == 422\\n    assert r_valid.status_code != r_invalid.status_code\\n\\ntest_skip_boundary_zero_vs_negative_one()\"\n    },\n    {\n      \"name\": \"test_skip_positive_one_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"Database is empty\"\n      ],\n      \"actions\": [\n        \"Send GET /tasks/?skip=1 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 200 is returned\",\n      "
+  }
+}

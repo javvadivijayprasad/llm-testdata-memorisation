@@ -1,0 +1,197 @@
+{
+  "req": {
+    "id": "R-TASK-027",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "idempotency",
+    "title": "PUT is idempotent",
+    "statement": "The system shall produce the same terminal state when PUT is repeated with the same body for the same task_id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "put is idempotent"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-027",
+    "reasoning": "The requirement states PUT /tasks/{task_id} must be idempotent: repeating the same PUT with the same body must yield the same terminal state. Tests cover: (1) positive EP \u2014 two identical PUTs produce identical response bodies and HTTP 200; (2) negative NEG \u2014 PUT to a non-existent task_id returns 404 on every call; (3) boundary BVA \u2014 PUT with a title at the max-length boundary (100 chars) is idempotent; (4) STC \u2014 state transition from incomplete\u2192complete is stable across repeated PUTs; (5) DT \u2014 PUT with all optional fields supplied is idempotent. Each test asserts exact field values to kill constant-mutation, operator-flip, and boolean-negation mutants.",
+    "tests": [
+      {
+        "name": "test_put_idempotent_same_response_twice",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task with id=7 exists: title='Fix login bug', completed=false",
+          "Database is in the pre-loaded state"
+        ],
+        "actions": [
+          "PUT /tasks/7 with body {title: 'Fix login bug updated', completed: true}",
+          "Record response body r1",
+          "PUT /tasks/7 with identical body again",
+          "Record response body r2"
+        ],
+        "expected": [
+          "Both responses return HTTP 200",
+          "r1 and r2 have identical id, title, description, completed fields",
+          "completed == true in both responses",
+          "title == 'Fix login bug updated' in both responses"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_idempotent_same_response_twice():\n    client = TestClient(app)\n    payload = {\"title\": \"Fix login bug updated\", \"completed\": True}\n    r1 = client.put(\"/tasks/7\", json=payload)\n    assert r1.status_code == 200\n    body1 = r1.json()\n    assert body1[\"id\"] == 7\n    assert body1[\"title\"] == \"Fix login bug updated\"\n    assert body1[\"completed\"] is True\n\n    r2 = client.put(\"/tasks/7\", json=payload)\n    assert r2.status_code == 200\n    body2 = r2.json()\n    assert body2[\"id\"] == 7\n    assert body2[\"title\"] == \"Fix login bug updated\"\n    assert body2[\"completed\"] is True\n\n    assert body1[\"id\"] == body2[\"id\"]\n    assert body1[\"title\"] == body2[\"title\"]\n    assert body1[\"description\"] == body2[\"description\"]\n    assert body1[\"completed\"] == body2[\"completed\"]\n"
+      },
+      {
+        "name": "test_put_nonexistent_task_returns_404_idempotently",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Task with id=9999 does not exist in the pre-loaded dataset"
+        ],
+        "actions": [
+          "PUT /tasks/9999 with valid body",
+          "Record status code s1",
+          "PUT /tasks/9999 with identical body again",
+          "Record status code s2"
+        ],
+        "expected": [
+          "Both calls return HTTP 404",
+          "Both response bodies contain detail message referencing task id 9999"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_nonexistent_task_returns_404_idempotently():\n    client = TestClient(app)\n    payload = {\"title\": \"Ghost task\", \"completed\": False}\n    r1 = client.put(\"/tasks/9999\", json=payload)\n    assert r1.status_code == 404\n    detail1 = r1.json()[\"detail\"]\n    assert \"9999\" in detail1\n\n    r2 = client.put(\"/tasks/9999\", json=payload)\n    assert r2.status_code == 404\n    detail2 = r2.json()[\"detail\"]\n    assert \"9999\" in detail2\n\n    assert r1.status_code == r2.status_code\n    assert detail1 == detail2\n"
+      },
+      {
+        "name": "test_put_idempotent_title_at_max_length_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task with id=10 exists: title='Organize desk', completed=false",
+          "Max title length is 100 characters per schema"
+        ],
+        "actions": [
+          "Construct a title string of exactly 100 characters",
+          "PUT /tasks/10 with that title",
+          "PUT /tasks/10 with the identical 100-char title again",
+          "Assert both responses are 200 with identical title field"
+        ],
+        "expected": [
+          "Both PUTs return HTTP 200",
+          "title in both responses equals the 100-character string exactly",
+          "len(title) == 100 in both responses"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_idempotent_title_at_max_length_boundary():\n    client = TestClient(app)\n    max_title = \"A\" * 100\n    assert len(max_title) == 100\n    payload = {\"title\": max_title, \"completed\": False}\n\n    r1 = client.put(\"/tasks/10\", json=payload)\n    assert r1.status_code == 200\n    body1 = r1.json()\n    assert body1[\"title\"] == max_title\n    assert len(body1[\"title\"]) == 100\n    assert body1[\"completed\"] is False\n    assert body1[\"id\"] == 10\n\n    r2 = client.put(\"/tasks/10\", json=payload)\n    assert r2.status_code == 200\n    body2 = r2.json()\n    assert body2[\"title\"] == max_title\n    assert len(body2[\"title\"]) == 100\n    assert body2[\"completed\"] is False\n    assert body2[\"id\"] == 10\n\n    assert body1[\"title\"] == body2[\"title\"]\n    assert body1[\"completed\"] == body2[\"completed\"]\n"
+      },
+      {
+        "name": "test_put_idempotent_state_transition_incomplete_to_complete",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task with id=4 exists: title='Prepare meeting agenda', completed=false"
+        ],
+        "actions": [
+          "Verify initial state via GET /tasks/4 shows completed=false",
+          "PUT /tasks/4 with completed=true",
+          "PUT /tasks/4 with completed=true again (repeat)",
+          "GET /tasks/4 to verify terminal state"
+        ],
+        "expected": [
+          "First PUT returns 200 with completed=true",
+          "Second PUT returns 200 with completed=true",
+          "Final GET returns completed=true",
+          "id remains 4 throughout"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_idempotent_state_transition_incomplete_to_complete():\n    client = TestClient(app)\n    get0 = client.get(\"/tasks/4\")\n    assert get0.status_code == 200\n    assert get0.json()[\"completed\"] is False\n    assert get0.json()[\"id\"] == 4\n\n    payload = {\"title\": \"Prepare meeting agenda\", \"completed\": True}\n    r1 = client.put(\"/tasks/4\", json=payload)\n    assert r1.status_code == 200\n    assert r1.json()[\"completed\"] is True\n    assert r1.json()[\"id\"] == 4\n    assert r1.json()[\"title\"] == \"Prepare meeting agenda\"\n\n    r2 = client.put(\"/tasks/4\", json=payload)\n    assert r2.status_code == 200\n    assert r2.json()[\"completed\"] is True\n    assert r2.json()[\"id\"] == 4\n    assert r2.json()[\"title\"] == \"Prepare meeting agenda\"\n\n    get_final = client.get(\"/tasks/4\")\n    assert get_final.status_code == 200\n    assert get_final.json()[\"completed\"] is True\n    assert get_final.json()[\"id\"] == 4\n"
+      },
+      {
+        "name": "test_put_idempotent_all_fields_supplied",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task with id=5 exists: title='Write project report', completed=false"
+        ],
+        "actions": [
+          "PUT /tasks/5 with all optional fields: title, description, completed",
+          "PUT /tasks/5 with identical body a second time",
+          "Assert both responses have identical id, title, description, completed"
+        ],
+        "expected": [
+          "Both PUTs return HTTP 200",
+          "id == 5 in both",
+          "title == 'Write project report revised' in both",
+          "description == 'Updated description text.' in both",
+          "completed == true in both"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_idempotent_all_fields_supplied():\n    client = TestClient(app)\n    payload = {\n        \"title\": \"Write project report revised\",\n        \"description\": \"Updated description text.\",\n        \"completed\": True\n    }\n    r1 = client.put(\"/tasks/5\", json=payload)\n    assert r1.status_code == 200\n    b1 = r1.json()\n    assert b1[\"id\"] == 5\n    assert b1[\"title\"] == \"Write project report revised\"\n    assert b1[\"description\"] == \"Updated description text.\"\n    assert b1[\"completed\"] is True\n\n    r2 = client.put(\"/tasks/5\", json=payload)\n    assert r2.status_code == 200\n    b2 = r2.json()\n    assert b2[\"id\"] == 5\n    assert b2[\"title\"] == \"Write project report revised\"\n    assert b2[\"description\"] == \"Updated description text.\"\n    assert b2[\"completed\"] is True\n\n    assert b1[\"id\"] == b2[\"id\"]\n    assert b1[\"title\"] == b2[\"title\"]\n    assert b1[\"description\"] == b2[\"description\"]\n    assert b1[\"completed\"] == b2[\"completed\"]\n"
+      },
+      {
+        "name": "test_put_idempotent_title_one_over_max_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task with id=6 exists",
+          "Max title length is 100 characters; 101 chars must be rejected"
+        ],
+        "actions": [
+          "Construct a title of 101 characters",
+          "PUT /tasks/6 with that title",
+          "PUT /tasks/6 with identical 101-char title again",
+          "Assert both return 422 (validation error)"
+        ],
+        "expected": [
+          "Both PUTs return HTTP 422",
+          "Task state is unchanged (GET /tasks/6 still has original title)"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_put_idempotent_title_one_over_max_rejected():\n    client = TestClient(app)\n    over_title = \"B\" * 101\n    assert len(over_title) == 101\n    payload = {\"title\": over_title, \"completed\": False}\n\n    r1 = client.put(\"/tasks/6\", json=payload)\n    assert r1.status_code == 422\n\n    r2 = client.put(\"/tasks/6\", json=payload)\n    assert r2.status_code == 422\n\n    get_r = client.get(\"/tasks/6\")\n    assert get_r.status_code == 200\n    assert get_r.json()[\"title\"] == \"Run unit tests\"\n    assert get_r.json()[\"completed\"] is False\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-027",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5929,
+    "output_tokens": 3466,
+    "latency_ms": 40010,
+    "wall_ms": 40010,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-027\",\n  \"reasoning\": \"The requirement states PUT /tasks/{task_id} must be idempotent: repeating the same PUT with the same body must yield the same terminal state. Tests cover: (1) positive EP \u2014 two identical PUTs produce identical response bodies and HTTP 200; (2) negative NEG \u2014 PUT to a non-existent task_id returns 404 on every call; (3) boundary BVA \u2014 PUT with a title at the max-length boundary (100 chars) is idempotent; (4) STC \u2014 state transition from incomplete\u2192complete is stable across repeated PUTs; (5) DT \u2014 PUT with all optional fields supplied is idempotent. Each test asserts exact field values to kill constant-mutation, operator-flip, and boolean-negation mutants.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_idempotent_same_response_twice\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Task with id=7 exists: title='Fix login bug', completed=false\",\n        \"Database is in the pre-loaded state\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/7 with body {title: 'Fix login bug updated', completed: true}\",\n        \"Record response body r1\",\n        \"PUT /tasks/7 with identical body again\",\n        \"Record response body r2\"\n      ],\n      \"expected\": [\n        \"Both responses return HTTP 200\",\n        \"r1 and r2 have identical id, title, description, completed fields\",\n        \"completed == true in both responses\",\n        \"title == 'Fix login bug updated' in both responses\"\n      ],\n      \"trace\": [\"R-TASK-027\"],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_put_idempotent_same_response_twice():\\n    client = TestClient(app)\\n    payload = {\\\"title\\\": \\\"Fix login bug updated\\\", \\\"completed\\\": True}\\n    r1 = client.put(\\\"/tasks/7\\\", json=payload)\\n    assert r1.status_code == 200\\n    body1 = r1.json()\\n    assert body1[\\\"id\\\"] == 7\\n    assert body1[\\\"title\\\"] == \\\"Fix login bug updated\\\"\\n    assert body1[\\\"completed\\\"] is True\\n\\n    r2 = client.put(\\\"/tasks/7\\\", json=payload)\\n    assert r2.status_code == 200\\n    body2 = r2.json()\\n    assert body2[\\\"id\\\"] == 7\\n    assert body2[\\\"title\\\"] == \\\"Fix login bug updated\\\"\\n    assert body2[\\\"completed\\\"] is True\\n\\n    assert body1[\\\"id\\\"] == body2[\\\"id\\\"]\\n    assert body1[\\\"title\\\"] == body2[\\\"title\\\"]\\n    assert body1[\\\"description\\\"] == body2[\\\"description\\\"]\\n    assert body1[\\\"completed\\\"] == body2[\\\"completed\\\"]\\n\"\n    },\n    {\n      \"name\": \"test_put_nonexistent_task_returns_404_idempotently\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Task with id=9999 does not exist in the pre-loaded dataset\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/9999 with valid body\",\n        \"Record status code s1\",\n        \"PUT /tasks/9999 with identical body again\",\n        \"Record status code s2\"\n      ],\n      \"expected\": [\n        \"Both calls return HTTP 404\",\n        \"Both response bodies contain detail message referencing task id 9999\"\n      ],\n      \"trace\": [\"R-TASK-027\"],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_put_nonexistent_task_returns_404_idempotently():\\n    client = TestClient(app)\\n    payload = {\\\"title\\\": \\\"Ghost task\\\", \\\"completed\\\": False}\\n    r1 = client.put(\\\"/tasks/9999\\\", json=payload)\\n    assert r1.status_code == 404\\n    detail1 = r1.json()[\\\"detail\\\"]\\n    assert \\\"9999\\\" in detail1\\n\\n    r2 = client.put(\\\"/tasks/9999\\\", json=payload)\\n    assert r2.status_code == 404\\n    detail2 = r2.json()[\\\"detail\\\"]\\n    assert \\\"9999\\\" in detail2\\n\\n    assert r1.status_code == r2.status_code\\n    assert detail1 == detail2\\n\"\n    },\n    {\n      \"name\": \"test_put_idempotent_title_at_max_length_boundary\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Task with id=10 exists: title='Organize desk', completed=false\",\n        \"Max title length is 100 characters per schema\"\n      ],\n      \"acti"
+  }
+}

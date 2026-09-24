@@ -1,0 +1,129 @@
+{
+  "req": {
+    "id": "R-PLAYER-025",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "functional",
+    "title": "Empty player list returns empty array",
+    "statement": "The system shall respond to GET /players when the table is empty with HTTP 200 and an empty JSON array.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "empty player list returns empty array"
+    ],
+    "expected_outcomes": [
+      "HTTP 200",
+      "[]"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "GET /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-025",
+    "reasoning": "R-PLAYER-025 requires that GET /players/ returns HTTP 200 and an empty JSON array when the player table is empty. The test suite must cover: (1) positive case \u2014 empty table yields 200 + []; (2) negative case \u2014 verifying the endpoint does NOT return a non-200 status or non-array body when the table is empty; (3) boundary case \u2014 the transition from zero rows to one row confirms the empty-array response is state-dependent. We override the DB session dependency to inject an in-memory SQLite session with no rows, ensuring determinism and isolation from the pre-loaded fixture data. Mutation resilience is achieved by asserting exact status codes (200 not >=200), exact body type and length ([] not just truthy), and exact header values.",
+    "tests": [
+      {
+        "name": "test_get_players_empty_table_returns_200_and_empty_array",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "The players table is empty (no rows)",
+          "The FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "Override the generate_async_session dependency with an async SQLite in-memory session containing no Player rows",
+          "Send GET /players/ via TestClient"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body is exactly an empty JSON array []",
+          "Response Content-Type is application/json"
+        ],
+        "trace": [
+          "R-PLAYER-025: HTTP 200 on empty table",
+          "R-PLAYER-025: empty JSON array body"
+        ],
+        "executable": "import asyncio\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession\nfrom sqlalchemy.orm import sessionmaker\nfrom main import app\nfrom databases.player_database import Base, generate_async_session\n\nengine = create_async_engine(\"sqlite+aiosqlite:///:memory:\", future=True)\nasync def _setup():\n    async with engine.begin() as conn:\n        await conn.run_sync(Base.metadata.create_all)\nasyncio.get_event_loop().run_until_complete(_setup())\nAsyncTestSession = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)\n\nasync def override_session():\n    async with AsyncTestSession() as session:\n        yield session\n\napp.dependency_overrides[generate_async_session] = override_session\nclient = TestClient(app)\n\ndef test_get_players_empty_table_returns_200_and_empty_array():\n    r = client.get(\"/players/\")\n    assert r.status_code == 200\n    body = r.json()\n    assert isinstance(body, list)\n    assert len(body) == 0\n    assert body == []\n    assert \"application/json\" in r.headers[\"content-type\"]\n\ntest_get_players_empty_table_returns_200_and_empty_array()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_players_empty_table_does_not_return_4xx_or_5xx",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "The players table is empty (no rows)",
+          "The FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "Override the generate_async_session dependency with an empty in-memory SQLite session",
+          "Send GET /players/ via TestClient",
+          "Assert that the status code is NOT in the 4xx or 5xx range"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200, not 404, not 500, not any 4xx/5xx",
+          "Response body is not null, not a dict with an error key"
+        ],
+        "trace": [
+          "R-PLAYER-025: error pathway \u2014 HTTP 4xx on client error must NOT fire for empty table",
+          "R-PLAYER-025: error pathway \u2014 HTTP 5xx on server error must NOT fire for empty table"
+        ],
+        "executable": "import asyncio\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession\nfrom sqlalchemy.orm import sessionmaker\nfrom main import app\nfrom databases.player_database import Base, generate_async_session\n\nengine2 = create_async_engine(\"sqlite+aiosqlite:///:memory:\", future=True)\nasync def _setup2():\n    async with engine2.begin() as conn:\n        await conn.run_sync(Base.metadata.create_all)\nasyncio.get_event_loop().run_until_complete(_setup2())\nAsyncTestSession2 = sessionmaker(engine2, class_=AsyncSession, expire_on_commit=False)\n\nasync def override_session2():\n    async with AsyncTestSession2() as session:\n        yield session\n\napp.dependency_overrides[generate_async_session] = override_session2\nclient2 = TestClient(app)\n\ndef test_get_players_empty_table_does_not_return_4xx_or_5xx():\n    r = client2.get(\"/players/\")\n    assert r.status_code == 200\n    assert r.status_code != 404\n    assert r.status_code != 500\n    assert r.status_code < 400\n    body = r.json()\n    assert \"detail\" not in body if isinstance(body, dict) else True\n\ntest_get_players_empty_table_does_not_return_4xx_or_5xx()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_get_players_boundary_zero_vs_one_row",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "The players table starts empty (zero rows \u2014 boundary at N=0)",
+          "One player row is then inserted (N=1 \u2014 boundary at N=1)",
+          "The FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "Override the generate_async_session dependency with an in-memory SQLite session",
+          "Send GET /players/ with zero rows \u2014 assert 200 and []",
+          "Insert exactly one Player row directly into the session",
+          "Clear the in-memory cache so the route re-queries the DB",
+          "Send GET /players/ again \u2014 assert 200 and list of length exactly 1"
+        ],
+        "expected": [
+          "With 0 rows: HTTP 200 and body == []",
+          "With 1 row: HTTP 200 and body is a list of length exactly 1",
+          "The transition from 0 to 1 confirms the empty-array response is state-dependent, not hardcoded"
+        ],
+        "trace": [
+          "R-PLAYER-025: BVA boundary N=0 (empty array) vs N=1 (non-empty array)",
+          "R-PLAYER-025: STC \u2014 state transition from empty to non-empty table"
+        ],
+        "executable": "import asyncio\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession\nfrom sqlalchemy.orm import sessionmaker\nfrom main import app\nfrom databases.player_database import Base, generate_async_session\nfrom schemas.player_schema import Player\nfrom routes.player_route import simple_memory_cache, CACHE_KEY\nfrom uuid import uuid4\n\nengine3 = create_async_engine(\"sqlite+aiosqlite:///:memory:\", future=True)\nasync def _setup3():\n    async with engine3.begin() as conn:\n        await conn.run_sync(Base.metadata.create_all)\nasyncio.get_event_loop().run_until_complete(_setup3())\nAsyncTestSession3 = sessionmaker(engine3, class_=AsyncSession, expire_on_commit=False)\n\nasync def override_session3():\n    async with AsyncTestSession3() as session:\n        yield session\n\napp.dependency_overrides[generate_async_session] = override_session3\nclient3 = TestClient(app)\n\ndef test_get_players_boundary_zero_vs_one_row():\n    asyncio.get_event_loop().run_until_complete(simple_memory_cache.clear(CACHE_KEY))\n    r0 = client3.get(\"/players/\")\n    assert r0.status_code == 200\n    assert r0.json() == []\n    assert len(r0.json()) == 0\n    async def _insert():\n        async with AsyncTestSession3() as s:\n            p = Player(id=uuid4(), first_name=\"Test\", last_name=\"Player\", squad_number=99, position=\"Goalkeeper\")\n            s.add(p)\n            await s.commit()\n    asyncio.get_event_loop().run_until_complete(_insert())\n    asyncio.get_event_loop().run_until_complete(simple_memory_cache.clear(CACHE_KEY))\n    r1 = client3.get(\"/players/\")\n    assert r1.status_code == 200\n    body1 = r1.json()\n    assert isinstance(body1, list)\n    assert len(body1) == 1\n\ntest_get_players_boundary_zero_vs_one_row()\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-025",
+  "domain": "sports_players",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11197,
+    "output_tokens": 2479,
+    "latency_ms": 33915,
+    "wall_ms": 33915,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-025\",\n  \"reasoning\": \"R-PLAYER-025 requires that GET /players/ returns HTTP 200 and an empty JSON array when the player table is empty. The test suite must cover: (1) positive case \u2014 empty table yields 200 + []; (2) negative case \u2014 verifying the endpoint does NOT return a non-200 status or non-array body when the table is empty; (3) boundary case \u2014 the transition from zero rows to one row confirms the empty-array response is state-dependent. We override the DB session dependency to inject an in-memory SQLite session with no rows, ensuring determinism and isolation from the pre-loaded fixture data. Mutation resilience is achieved by asserting exact status codes (200 not >=200), exact body type and length ([] not just truthy), and exact header values.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_players_empty_table_returns_200_and_empty_array\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"The players table is empty (no rows)\",\n        \"The FastAPI app is running in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"Override the generate_async_session dependency with an async SQLite in-memory session containing no Player rows\",\n        \"Send GET /players/ via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body is exactly an empty JSON array []\",\n        \"Response Content-Type is application/json\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-025: HTTP 200 on empty table\",\n        \"R-PLAYER-025: empty JSON array body\"\n      ],\n      \"executable\": \"import asyncio\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession\\nfrom sqlalchemy.orm import sessionmaker\\nfrom main import app\\nfrom databases.player_database import Base, generate_async_session\\n\\nengine = create_async_engine(\\\"sqlite+aiosqlite:///:memory:\\\", future=True)\\nasync def _setup():\\n    async with engine.begin() as conn:\\n        await conn.run_sync(Base.metadata.create_all)\\nasyncio.get_event_loop().run_until_complete(_setup())\\nAsyncTestSession = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)\\n\\nasync def override_session():\\n    async with AsyncTestSession() as session:\\n        yield session\\n\\napp.dependency_overrides[generate_async_session] = override_session\\nclient = TestClient(app)\\n\\ndef test_get_players_empty_table_returns_200_and_empty_array():\\n    r = client.get(\\\"/players/\\\")\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert isinstance(body, list)\\n    assert len(body) == 0\\n    assert body == []\\n    assert \\\"application/json\\\" in r.headers[\\\"content-type\\\"]\\n\\ntest_get_players_empty_table_returns_200_and_empty_array()\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_get_players_empty_table_does_not_return_4xx_or_5xx\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"The players table is empty (no rows)\",\n        \"The FastAPI app is running in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"Override the generate_async_session dependency with an empty in-memory SQLite session\",\n        \"Send GET /players/ via TestClient\",\n        \"Assert that the status code is NOT in the 4xx or 5xx range\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200, not 404, not 500, not any 4xx/5xx\",\n        \"Response body is not null, not a dict with an error key\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-025: error pathway \u2014 HTTP 4xx on client error must NOT fire for empty table\",\n        \"R-PLAYER-025: error pathway \u2014 HTTP 5xx on server error must NOT fire for empty table\"\n      ],\n      \"executable\": \"import asyncio\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy.ext.asyncio import create_async_engine, AsyncSession\\nfrom sqlalchemy.orm import sessionmaker\\nfrom main import app\\nfrom databases.player_database import Base, generate_async_session\\"
+  }
+}

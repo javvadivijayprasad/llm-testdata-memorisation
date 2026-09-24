@@ -1,0 +1,206 @@
+{
+  "req": {
+    "id": "R-FLASKR-017",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Update existing post",
+    "statement": "The system shall update the row when POST /<id>/update is called by the post's author with a title and body, and redirect to /.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "update existing post"
+    ],
+    "expected_outcomes": [
+      "post row updated",
+      "302 redirect"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /<id>/update"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-017",
+    "reasoning": "The requirement states that POST /<id>/update by the post's author with a valid title and body must update the DB row and return a 302 redirect to /. I designed: (1) a positive EP test confirming the happy path \u2014 correct author, valid title+body \u2192 302 to /, DB row updated; (2) a negative NEG test where a non-author (user 'other') attempts to update user 1's post \u2192 403; (3) a boundary BVA test where title is an empty string \u2192 no redirect, error message shown (title required); (4) a DT test covering the unauthenticated case \u2192 redirect to /auth/login; (5) a STC test verifying the DB state transition \u2014 title and body are actually changed in the database after a successful update. Each test uses exact-value assertions to kill operator-flip and constant-bump mutations.",
+    "tests": [
+      {
+        "name": "test_update_post_happy_path_redirects_to_index",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "DB contains post id=1 authored by user id=1 (username='test')",
+          "User 'test' is logged in via session"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/update with title='updated title', body='updated body'"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/'"
+        ],
+        "trace": [
+          "R-FLASKR-017"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_post_happy_path_redirects_to_index():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    r = client.post('/1/update', data={'title': 'updated title', 'body': 'updated body'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n\ntest_update_post_happy_path_redirects_to_index()"
+      },
+      {
+        "name": "test_update_post_db_row_actually_changed",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "DB contains post id=1 with title='test title', body='test\\nbody'",
+          "User 'test' is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/update with title='new title', body='new body'",
+          "Query DB directly for post id=1"
+        ],
+        "expected": [
+          "DB row title equals 'new title'",
+          "DB row body equals 'new body'",
+          "State transition: old title 'test title' no longer present"
+        ],
+        "trace": [
+          "R-FLASKR-017"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_post_db_row_actually_changed():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    r = client.post('/1/update', data={'title': 'new title', 'body': 'new body'})\n    assert r.status_code == 302\n    with app.app_context():\n        from flaskr.db import get_db\n        row = get_db().execute('SELECT title, body FROM post WHERE id = 1').fetchone()\n        assert row['title'] == 'new title'\n        assert row['body'] == 'new body'\n\ntest_update_post_db_row_actually_changed()"
+      },
+      {
+        "name": "test_update_post_empty_title_returns_error",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "DB contains post id=1 authored by user id=1",
+          "User 'test' is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/update with title='', body='some body'"
+        ],
+        "expected": [
+          "Response status code is NOT 302 (no redirect)",
+          "Response body contains 'Title is required.'",
+          "DB row title remains unchanged as 'test title'"
+        ],
+        "trace": [
+          "R-FLASKR-017"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_post_empty_title_returns_error():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    r = client.post('/1/update', data={'title': '', 'body': 'some body'})\n    assert r.status_code == 200\n    assert b'Title is required.' in r.data\n    with app.app_context():\n        from flaskr.db import get_db\n        row = get_db().execute('SELECT title FROM post WHERE id = 1').fetchone()\n        assert row['title'] == 'test title'\n\ntest_update_post_empty_title_returns_error()"
+      },
+      {
+        "name": "test_update_post_by_non_author_returns_403",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "DB contains post id=1 authored by user id=1 (username='test')",
+          "User 'other' (id=2) is logged in \u2014 not the author"
+        ],
+        "actions": [
+          "POST /auth/login with username='other', password='other'",
+          "POST /1/update with title='hacked title', body='hacked body'"
+        ],
+        "expected": [
+          "Response status code is exactly 403",
+          "DB row title remains 'test title' (unchanged)"
+        ],
+        "trace": [
+          "R-FLASKR-017"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_post_by_non_author_returns_403():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    client.post('/auth/login', data={'username': 'other', 'password': 'other'})\n    r = client.post('/1/update', data={'title': 'hacked title', 'body': 'hacked body'})\n    assert r.status_code == 403\n    with app.app_context():\n        from flaskr.db import get_db\n        row = get_db().execute('SELECT title FROM post WHERE id = 1').fetchone()\n        assert row['title'] == 'test title'\n\ntest_update_post_by_non_author_returns_403()"
+      },
+      {
+        "name": "test_update_post_unauthenticated_redirects_to_login",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "No user is logged in (no session cookie)",
+          "DB contains post id=1"
+        ],
+        "actions": [
+          "POST /1/update with title='x', body='y' without logging in"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/auth/login'",
+          "DB row title remains 'test title'"
+        ],
+        "trace": [
+          "R-FLASKR-017"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_post_unauthenticated_redirects_to_login():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    r = client.post('/1/update', data={'title': 'x', 'body': 'y'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'\n    with app.app_context():\n        from flaskr.db import get_db\n        row = get_db().execute('SELECT title FROM post WHERE id = 1').fetchone()\n        assert row['title'] == 'test title'\n\ntest_update_post_unauthenticated_redirects_to_login()"
+      },
+      {
+        "name": "test_update_nonexistent_post_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "DB contains only post id=1",
+          "User 'test' is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /2/update with title='x', body='y' (post id=2 does not exist)"
+        ],
+        "expected": [
+          "Response status code is exactly 404"
+        ],
+        "trace": [
+          "R-FLASKR-017"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_nonexistent_post_returns_404():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    r = client.post('/2/update', data={'title': 'x', 'body': 'y'})\n    assert r.status_code == 404\n\ntest_update_nonexistent_post_returns_404()"
+      },
+      {
+        "name": "test_update_post_body_can_be_empty_string",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "DB contains post id=1 authored by user id=1",
+          "User 'test' is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/update with title='valid title', body='' (empty body is allowed)"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/'",
+          "DB row body equals '' (empty string)"
+        ],
+        "trace": [
+          "R-FLASKR-017"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_update_post_body_can_be_empty_string():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        from flaskr.db import init_db\n        init_db()\n    client = app.test_client()\n    client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    r = client.post('/1/update', data={'title': 'valid title', 'body': ''})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    with app.app_context():\n        from flaskr.db import get_db\n        row = get_db().execute('SELECT title, body FROM post WHERE id = 1').fetchone()\n        assert row['title'] == 'valid title'\n        assert row['body'] == ''\n\ntest_update_post_body_can_be_empty_string()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-017",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5468,
+    "output_tokens": 3448,
+    "latency_ms": 39460,
+    "wall_ms": 39460,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-017\",\n  \"reasoning\": \"The requirement states that POST /<id>/update by the post's author with a valid title and body must update the DB row and return a 302 redirect to /. I designed: (1) a positive EP test confirming the happy path \u2014 correct author, valid title+body \u2192 302 to /, DB row updated; (2) a negative NEG test where a non-author (user 'other') attempts to update user 1's post \u2192 403; (3) a boundary BVA test where title is an empty string \u2192 no redirect, error message shown (title required); (4) a DT test covering the unauthenticated case \u2192 redirect to /auth/login; (5) a STC test verifying the DB state transition \u2014 title and body are actually changed in the database after a successful update. Each test uses exact-value assertions to kill operator-flip and constant-bump mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_update_post_happy_path_redirects_to_index\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"DB contains post id=1 authored by user id=1 (username='test')\",\n        \"User 'test' is logged in via session\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='test', password='test'\",\n        \"POST /1/update with title='updated title', body='updated body'\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header is exactly '/'\"\n      ],\n      \"trace\": [\"R-FLASKR-017\"],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_update_post_happy_path_redirects_to_index():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\\n    assert r.status_code == 302\\n    r = client.post('/1/update', data={'title': 'updated title', 'body': 'updated body'})\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/'\\n\\ntest_update_post_happy_path_redirects_to_index()\"\n    },\n    {\n      \"name\": \"test_update_post_db_row_actually_changed\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"DB contains post id=1 with title='test title', body='test\\\\nbody'\",\n        \"User 'test' is logged in\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='test', password='test'\",\n        \"POST /1/update with title='new title', body='new body'\",\n        \"Query DB directly for post id=1\"\n      ],\n      \"expected\": [\n        \"DB row title equals 'new title'\",\n        \"DB row body equals 'new body'\",\n        \"State transition: old title 'test title' no longer present\"\n      ],\n      \"trace\": [\"R-FLASKR-017\"],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_update_post_db_row_actually_changed():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        from flaskr.db import init_db\\n        init_db()\\n    client = app.test_client()\\n    client.post('/auth/login', data={'username': 'test', 'password': 'test'})\\n    r = client.post('/1/update', data={'title': 'new title', 'body': 'new body'})\\n    assert r.status_code == 302\\n    with app.app_context():\\n        from flaskr.db import get_db\\n        row = get_db().execute('SELECT title, body FROM post WHERE id = 1').fetchone()\\n        assert row['title'] == 'new title'\\n        assert row['body'] == 'new body'\\n\\ntest_update_post_db_row_actually_changed()\"\n    },\n    {\n      \"name\": \"test_update_post_empty_title_returns_error\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"DB contains post id=1 authored by user id=1\",\n        \"User 'test' is logged in\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='test', password='test'\",\n      "
+  }
+}

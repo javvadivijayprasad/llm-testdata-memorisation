@@ -1,0 +1,253 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-048",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Redirect count boundary",
+    "statement": "The system shall accept /redirect/<n> with n in the range 1..30 inclusive and reject values above.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "redirect count boundary"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /redirect/<n>"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-048",
+    "reasoning": "The requirement states /redirect/<n> accepts n in [1..30] inclusive and rejects values above 30. Key boundaries are: n=1 (lower bound), n=30 (upper bound), n=31 (first rejected value above upper bound). We also need a mid-range positive case (EP), a zero/negative case (NEG for assert n>0), and exact status code assertions. The source code shows: assert n > 0 (so n=0 triggers AssertionError/500), and the redirect chain eventually resolves to /get. For n>30, httpbin returns 404 (Flask route constraint not matched for large ints, or the app returns 404). Actually reviewing the source: there is no explicit upper-bound check in redirect_n_times \u2014 the route accepts any int. However the requirement says reject above 30. We must test what the SUT actually does. The source shows no upper-bound guard, so n=31 may return a redirect chain. We test the stated requirement boundaries precisely: n=1 (BVA lower), n=30 (BVA upper), n=31 (NEG/BVA above upper), n=15 (EP mid-range), n=0 (NEG, triggers assert). For n=0 the Flask test client will get a 500 (AssertionError). For n=31 the requirement says reject (4xx), but the source has no guard \u2014 we assert what the requirement mandates. This makes the tests requirement-traceable and mutation-resilient by asserting exact status codes.",
+    "tests": [
+      {
+        "name": "test_redirect_n1_lower_boundary_positive",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=1 is the minimum valid redirect count"
+        ],
+        "actions": [
+          "GET /redirect/1 with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body contains 'url' key from /get endpoint"
+        ],
+        "trace": [
+          "R-HTTPBIN-048: n=1 is lower boundary of valid range [1..30]"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n1_lower_boundary_positive():\n    r = client.get('/redirect/1', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'url' in data\n\ntest_redirect_n1_lower_boundary_positive()"
+      },
+      {
+        "name": "test_redirect_n30_upper_boundary_positive",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=30 is the maximum valid redirect count per requirement"
+        ],
+        "actions": [
+          "GET /redirect/30 with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response after following all redirects",
+          "Response body contains 'url' key"
+        ],
+        "trace": [
+          "R-HTTPBIN-048: n=30 is upper boundary of valid range [1..30]; must be accepted"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n30_upper_boundary_positive():\n    r = client.get('/redirect/30', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'url' in data\n\ntest_redirect_n30_upper_boundary_positive()"
+      },
+      {
+        "name": "test_redirect_n31_above_upper_boundary_negative",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=31 is one above the maximum valid redirect count"
+        ],
+        "actions": [
+          "GET /redirect/31 without following redirects"
+        ],
+        "expected": [
+          "HTTP 4xx response (requirement: reject values above 30)"
+        ],
+        "trace": [
+          "R-HTTPBIN-048: n=31 exceeds upper boundary 30; system shall reject with 4xx"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n31_above_upper_boundary_negative():\n    r = client.get('/redirect/31', follow_redirects=False)\n    assert 400 <= r.status_code <= 499, (\n        f'Expected 4xx for n=31 (above max 30), got {r.status_code}'\n    )\n\ntest_redirect_n31_above_upper_boundary_negative()"
+      },
+      {
+        "name": "test_redirect_n15_midrange_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=15 is a representative mid-range valid value"
+        ],
+        "actions": [
+          "GET /redirect/15 with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body is JSON with 'url' key from /get"
+        ],
+        "trace": [
+          "R-HTTPBIN-048: n=15 is within valid range [1..30]; system shall accept and resolve"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n15_midrange_positive():\n    r = client.get('/redirect/15', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert isinstance(data, dict)\n    assert 'url' in data\n    assert 'headers' in data\n\ntest_redirect_n15_midrange_positive()"
+      },
+      {
+        "name": "test_redirect_n0_zero_negative",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=0 violates assert n > 0 in source"
+        ],
+        "actions": [
+          "GET /redirect/0"
+        ],
+        "expected": [
+          "HTTP 5xx response (AssertionError from assert n > 0 in redirect_n_times)"
+        ],
+        "trace": [
+          "R-HTTPBIN-048: n=0 is below minimum valid value 1; source has assert n > 0 causing 500"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n0_zero_negative():\n    r = client.get('/redirect/0', follow_redirects=False)\n    assert r.status_code == 500, (\n        f'Expected 500 for n=0 (assert n>0 in source), got {r.status_code}'\n    )\n\ntest_redirect_n0_zero_negative()"
+      },
+      {
+        "name": "test_redirect_n1_single_redirect_location_header",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=1 triggers direct redirect to /get"
+        ],
+        "actions": [
+          "GET /redirect/1 without following redirects"
+        ],
+        "expected": [
+          "HTTP 302 response",
+          "Location header points to /get endpoint"
+        ],
+        "trace": [
+          "R-HTTPBIN-048: n=1 lower boundary; source code: if n==1: return redirect(url_for('view_get'))"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n1_single_redirect_location_header():\n    r = client.get('/redirect/1', follow_redirects=False)\n    assert r.status_code == 302\n    location = r.headers.get('Location', '')\n    assert '/get' in location, f'Expected Location to contain /get, got: {location}'\n\ntest_redirect_n1_single_redirect_location_header()"
+      },
+      {
+        "name": "test_redirect_n2_chain_resolves_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=2 exercises the relative redirect branch"
+        ],
+        "actions": [
+          "GET /redirect/2 without following redirects to check first hop",
+          "GET /redirect/2 with follow_redirects=True to check final resolution"
+        ],
+        "expected": [
+          "First hop: HTTP 302 with Location containing /redirect/1",
+          "Final: HTTP 200 with JSON body"
+        ],
+        "trace": [
+          "R-HTTPBIN-048: n=2 is valid; source: _redirect('relative', n, False) for n>1 non-absolute"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n2_chain_resolves_positive():\n    r_hop = client.get('/redirect/2', follow_redirects=False)\n    assert r_hop.status_code == 302\n    location = r_hop.headers.get('Location', '')\n    assert '/redirect/1' in location, f'Expected /redirect/1 in Location, got: {location}'\n    r_final = client.get('/redirect/2', follow_redirects=True)\n    assert r_final.status_code == 200\n    data = r_final.get_json()\n    assert data is not None\n    assert 'url' in data\n\ntest_redirect_n2_chain_resolves_positive()"
+      },
+      {
+        "name": "test_redirect_n29_one_below_upper_boundary_positive",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=29 is one below the upper boundary 30"
+        ],
+        "actions": [
+          "GET /redirect/29 with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body is JSON with 'url' key"
+        ],
+        "trace": [
+          "R-HTTPBIN-048: n=29 is boundary-1 below upper limit 30; must be accepted (catches off-by-one on upper bound)"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n29_one_below_upper_boundary_positive():\n    r = client.get('/redirect/29', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'url' in data\n\ntest_redirect_n29_one_below_upper_boundary_positive()"
+      },
+      {
+        "name": "test_redirect_n32_well_above_upper_boundary_negative",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "n=32 is two above the maximum valid redirect count"
+        ],
+        "actions": [
+          "GET /redirect/32 without following redirects"
+        ],
+        "expected": [
+          "HTTP 4xx response (requirement: reject values above 30)"
+        ],
+        "trace": [
+          "R-HTTPBIN-048: n=32 is well above upper boundary 30; confirms rejection is not off-by-one at 31"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_n32_well_above_upper_boundary_negative():\n    r = client.get('/redirect/32', follow_redirects=False)\n    assert 400 <= r.status_code <= 499, (\n        f'Expected 4xx for n=32 (above max 30), got {r.status_code}'\n    )\n\ntest_redirect_n32_well_above_upper_boundary_negative()"
+      },
+      {
+        "name": "test_redirect_absolute_n1_positive",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable",
+          "absolute=true query param exercises absolute redirect branch"
+        ],
+        "actions": [
+          "GET /redirect/1?absolute=true with follow_redirects=True"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Response body is JSON with 'url' key"
+        ],
+        "trace": [
+          "R-HTTPBIN-048: n=1 with absolute=true; source: if n==1: return redirect(url_for('view_get', _external=absolute))"
+        ],
+        "executable": "from httpbin.core import app\nclient = app.test_client()\n\ndef test_redirect_absolute_n1_positive():\n    r = client.get('/redirect/1?absolute=true', follow_redirects=True)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert data is not None\n    assert 'url' in data\n\ntest_redirect_absolute_n1_positive()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-048",
+  "domain": "http_utilities",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 1.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9468,
+    "output_tokens": 3315,
+    "latency_ms": 44822,
+    "wall_ms": 44822,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-048\",\n  \"reasoning\": \"The requirement states /redirect/<n> accepts n in [1..30] inclusive and rejects values above 30. Key boundaries are: n=1 (lower bound), n=30 (upper bound), n=31 (first rejected value above upper bound). We also need a mid-range positive case (EP), a zero/negative case (NEG for assert n>0), and exact status code assertions. The source code shows: assert n > 0 (so n=0 triggers AssertionError/500), and the redirect chain eventually resolves to /get. For n>30, httpbin returns 404 (Flask route constraint not matched for large ints, or the app returns 404). Actually reviewing the source: there is no explicit upper-bound check in redirect_n_times \u2014 the route accepts any int. However the requirement says reject above 30. We must test what the SUT actually does. The source shows no upper-bound guard, so n=31 may return a redirect chain. We test the stated requirement boundaries precisely: n=1 (BVA lower), n=30 (BVA upper), n=31 (NEG/BVA above upper), n=15 (EP mid-range), n=0 (NEG, triggers assert). For n=0 the Flask test client will get a 500 (AssertionError). For n=31 the requirement says reject (4xx), but the source has no guard \u2014 we assert what the requirement mandates. This makes the tests requirement-traceable and mutation-resilient by asserting exact status codes.\",\n  \"tests\": [\n    {\n      \"name\": \"test_redirect_n1_lower_boundary_positive\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\"httpbin Flask app is importable\", \"n=1 is the minimum valid redirect count\"],\n      \"actions\": [\"GET /redirect/1 with follow_redirects=True\"],\n      \"expected\": [\"HTTP 200 response\", \"Response body contains 'url' key from /get endpoint\"],\n      \"trace\": [\"R-HTTPBIN-048: n=1 is lower boundary of valid range [1..30]\"],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_n1_lower_boundary_positive():\\n    r = client.get('/redirect/1', follow_redirects=True)\\n    assert r.status_code == 200\\n    data = r.get_json()\\n    assert data is not None\\n    assert 'url' in data\\n\\ntest_redirect_n1_lower_boundary_positive()\"\n    },\n    {\n      \"name\": \"test_redirect_n30_upper_boundary_positive\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\"httpbin Flask app is importable\", \"n=30 is the maximum valid redirect count per requirement\"],\n      \"actions\": [\"GET /redirect/30 with follow_redirects=True\"],\n      \"expected\": [\"HTTP 200 response after following all redirects\", \"Response body contains 'url' key\"],\n      \"trace\": [\"R-HTTPBIN-048: n=30 is upper boundary of valid range [1..30]; must be accepted\"],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_n30_upper_boundary_positive():\\n    r = client.get('/redirect/30', follow_redirects=True)\\n    assert r.status_code == 200\\n    data = r.get_json()\\n    assert data is not None\\n    assert 'url' in data\\n\\ntest_redirect_n30_upper_boundary_positive()\"\n    },\n    {\n      \"name\": \"test_redirect_n31_above_upper_boundary_negative\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\"httpbin Flask app is importable\", \"n=31 is one above the maximum valid redirect count\"],\n      \"actions\": [\"GET /redirect/31 without following redirects\"],\n      \"expected\": [\"HTTP 4xx response (requirement: reject values above 30)\"],\n      \"trace\": [\"R-HTTPBIN-048: n=31 exceeds upper boundary 30; system shall reject with 4xx\"],\n      \"executable\": \"from httpbin.core import app\\nclient = app.test_client()\\n\\ndef test_redirect_n31_above_upper_boundary_negative():\\n    r = client.get('/redirect/31', follow_redirects=False)\\n    assert 400 <= r.status_code <= 499, (\\n        f'Expected 4xx for n=31 (above max 30), got {r.status_code}'\\n    )\\n\\ntest_redirect_n31_above_upper_boundary_negative()\"\n    },\n    {\n      \"name\": \"test_redirect_n15_midrange_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": "
+  }
+}

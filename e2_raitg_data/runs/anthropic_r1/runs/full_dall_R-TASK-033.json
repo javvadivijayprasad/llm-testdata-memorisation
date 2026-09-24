@@ -1,0 +1,123 @@
+{
+  "req": {
+    "id": "R-TASK-033",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "List returns empty array when db empty",
+    "statement": "The system shall return an empty JSON array on GET /tasks/ when no tasks exist.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "list returns empty array when db empty"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-033",
+    "reasoning": "R-TASK-033 requires GET /tasks/ to return an empty JSON array when no tasks exist. To test this deterministically, we must override the database dependency to use an in-memory SQLite DB with no rows. Three tests are designed: (1) positive \u2014 empty DB yields [], status 200, Content-Type JSON; (2) negative \u2014 invalid query param yields 422 (client error path); (3) boundary \u2014 DB with exactly zero rows vs one row, asserting the transition from [] to a single-element array, catching off-by-one and comparison mutations.",
+    "tests": [
+      {
+        "name": "test_get_tasks_empty_db_returns_empty_array",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains zero task rows",
+          "GET /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "Override get_db dependency with in-memory SQLite session containing no rows",
+          "Send GET /tasks/ with TestClient"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body is exactly []",
+          "Content-Type header contains application/json"
+        ],
+        "trace": [
+          "R-TASK-033: system shall return empty JSON array on GET /tasks/ when no tasks exist"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\ndef test_get_tasks_empty_db_returns_empty_array():\n    engine = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\n    models.Base.metadata.create_all(bind=engine)\n    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n    def override_get_db():\n        db = TestSession()\n        try:\n            yield db\n        finally:\n            db.close()\n\n    app.dependency_overrides[get_db] = override_get_db\n    client = TestClient(app)\n    response = client.get(\"/tasks/\")\n    app.dependency_overrides.clear()\n\n    assert response.status_code == 200\n    assert response.json() == []\n    assert \"application/json\" in response.headers[\"content-type\"]\n\ntest_get_tasks_empty_db_returns_empty_array()"
+      },
+      {
+        "name": "test_get_tasks_invalid_query_param_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains zero task rows",
+          "GET /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "Override get_db dependency with empty in-memory SQLite session",
+          "Send GET /tasks/?skip=-1 (violates ge=0 constraint)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 422",
+          "Response body contains 'detail' key indicating validation error"
+        ],
+        "trace": [
+          "R-TASK-033: error pathway \u2014 HTTP 4xx on client error",
+          "FastAPI Query(skip, ge=0) rejects negative skip values with 422"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\ndef test_get_tasks_invalid_query_param_returns_422():\n    engine = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\n    models.Base.metadata.create_all(bind=engine)\n    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\n    def override_get_db():\n        db = TestSession()\n        try:\n            yield db\n        finally:\n            db.close()\n\n    app.dependency_overrides[get_db] = override_get_db\n    client = TestClient(app)\n    response = client.get(\"/tasks/?skip=-1\")\n    app.dependency_overrides.clear()\n\n    assert response.status_code == 422\n    body = response.json()\n    assert \"detail\" in body\n\ntest_get_tasks_invalid_query_param_returns_422()"
+      },
+      {
+        "name": "test_get_tasks_zero_vs_one_row_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database starts with zero task rows",
+          "GET /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "Override get_db with empty in-memory SQLite session",
+          "Assert GET /tasks/ returns exactly [] (zero rows)",
+          "Insert exactly one task row into the in-memory DB",
+          "Assert GET /tasks/ returns exactly one-element array with correct fields"
+        ],
+        "expected": [
+          "With 0 rows: status 200, body == []",
+          "With 1 row: status 200, body is list of length 1",
+          "Single task has title 'Read chapter 5', completed True"
+        ],
+        "trace": [
+          "R-TASK-033: boundary between empty and non-empty \u2014 zero rows must yield [], one row must yield single-element array",
+          "BVA: n=0 (empty), n=1 (first non-empty) catches off-by-one mutations in crud.get_tasks"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\ndef test_get_tasks_zero_vs_one_row_boundary():\n    engine = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\n    models.Base.metadata.create_all(bind=engine)\n    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n    shared_db = TestSession()\n\n    def override_get_db():\n        try:\n            yield shared_db\n        finally:\n            pass\n\n    app.dependency_overrides[get_db] = override_get_db\n    client = TestClient(app)\n\n    r0 = client.get(\"/tasks/\")\n    assert r0.status_code == 200\n    assert r0.json() == []\n\n    task = models.Task(title=\"Read chapter 5\", description=None, completed=True)\n    shared_db.add(task)\n    shared_db.commit()\n\n    r1 = client.get(\"/tasks/\")\n    assert r1.status_code == 200\n    body = r1.json()\n    assert len(body) == 1\n    assert body[0][\"title\"] == \"Read chapter 5\"\n    assert body[0][\"completed\"] is True\n\n    shared_db.close()\n    app.dependency_overrides.clear()\n\ntest_get_tasks_zero_vs_one_row_boundary()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-033",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7562,
+    "output_tokens": 1930,
+    "latency_ms": 25873,
+    "wall_ms": 25873,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-033\",\n  \"reasoning\": \"R-TASK-033 requires GET /tasks/ to return an empty JSON array when no tasks exist. To test this deterministically, we must override the database dependency to use an in-memory SQLite DB with no rows. Three tests are designed: (1) positive \u2014 empty DB yields [], status 200, Content-Type JSON; (2) negative \u2014 invalid query param yields 422 (client error path); (3) boundary \u2014 DB with exactly zero rows vs one row, asserting the transition from [] to a single-element array, catching off-by-one and comparison mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_tasks_empty_db_returns_empty_array\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains zero task rows\",\n        \"GET /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"Override get_db dependency with in-memory SQLite session containing no rows\",\n        \"Send GET /tasks/ with TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body is exactly []\",\n        \"Content-Type header contains application/json\"\n      ],\n      \"trace\": [\n        \"R-TASK-033: system shall return empty JSON array on GET /tasks/ when no tasks exist\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\ndef test_get_tasks_empty_db_returns_empty_array():\\n    engine = create_engine(\\\"sqlite:///:memory:\\\", connect_args={\\\"check_same_thread\\\": False})\\n    models.Base.metadata.create_all(bind=engine)\\n    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\n\\n    def override_get_db():\\n        db = TestSession()\\n        try:\\n            yield db\\n        finally:\\n            db.close()\\n\\n    app.dependency_overrides[get_db] = override_get_db\\n    client = TestClient(app)\\n    response = client.get(\\\"/tasks/\\\")\\n    app.dependency_overrides.clear()\\n\\n    assert response.status_code == 200\\n    assert response.json() == []\\n    assert \\\"application/json\\\" in response.headers[\\\"content-type\\\"]\\n\\ntest_get_tasks_empty_db_returns_empty_array()\"\n    },\n    {\n      \"name\": \"test_get_tasks_invalid_query_param_returns_422\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database contains zero task rows\",\n        \"GET /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"Override get_db dependency with empty in-memory SQLite session\",\n        \"Send GET /tasks/?skip=-1 (violates ge=0 constraint)\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 422\",\n        \"Response body contains 'detail' key indicating validation error\"\n      ],\n      \"trace\": [\n        \"R-TASK-033: error pathway \u2014 HTTP 4xx on client error\",\n        \"FastAPI Query(skip, ge=0) rejects negative skip values with 422\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\ndef test_get_tasks_invalid_query_param_returns_422():\\n    engine = create_engine(\\\"sqlite:///:memory:\\\", connect_args={\\\"check_same_thread\\\": False})\\n    models.Base.metadata.create_all(bind=engine)\\n    TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\n\\n    def override_get_db():\\n        db = TestSession()\\n        try:\\n            yield db\\n        finally:\\n            db.close()\\n\\n    app.dependency_overrides[get_db] = override_get_db\\n    client = TestClient(app)\\n    response = client.get(\\\"/tasks/?skip=-1\\\")\\n    app.dependency_overrides.clear()\\n\\n    assert response.status_code == 422\\n    body = response.json()\\n    assert \\\"detail\\\" in body\\n\\ntest_get_tasks_invalid_query_param_returns_422()\"\n    },\n    {\n      "
+  }
+}

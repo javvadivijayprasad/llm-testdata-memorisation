@@ -1,0 +1,220 @@
+{
+  "req": {
+    "id": "R-PLAYER-028",
+    "domain": "sports_players",
+    "layer": "Integration",
+    "category": "startup",
+    "title": "Create schema on startup",
+    "statement": "The system shall create the players table via SQLAlchemy metadata at application startup if it does not exist.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "create schema on startup"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "lifecycle"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-028",
+    "reasoning": "R-PLAYER-028 requires that the players table is created via SQLAlchemy metadata at application startup if it does not exist. The FastAPI app uses a lifespan handler and includes player routes backed by a database. To verify schema creation on startup, we test: (1) positive \u2014 the app starts and a GET /players/ returns HTTP 200 with the pre-loaded fixture data, confirming the table exists and is queryable; (2) negative \u2014 a POST with a missing required field returns HTTP 422, confirming the app is live and schema-aware but rejects bad input; (3) boundary \u2014 the app starts and the health endpoint returns HTTP 200, confirming the lifespan completed without error; (4) state-transition \u2014 after startup, a POST of a new player returns HTTP 201 and the Location header is correct, confirming the table is writable; (5) decision-table \u2014 a duplicate squad number returns HTTP 409, confirming the unique constraint from the schema is enforced. All tests use TestClient in-process, assert exact status codes and payload fields, and are deterministic against the pre-loaded 26-row fixture.",
+    "tests": [
+      {
+        "name": "test_startup_schema_players_table_readable",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable",
+          "Database is pre-loaded with 26 player rows",
+          "players table exists after startup"
+        ],
+        "actions": [
+          "Import app from main",
+          "Create TestClient",
+          "GET /players/"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response body is a JSON array of exactly 26 players",
+          "First squad number 1 player has firstName Franco"
+        ],
+        "trace": [
+          "R-PLAYER-028: table created on startup \u2192 GET /players/ succeeds with 200"
+        ],
+        "executable": "def test_startup_schema_players_table_readable():\n    from main import app\n    from fastapi.testclient import TestClient\n    client = TestClient(app)\n    r = client.get('/players/')\n    assert r.status_code == 200\n    players = r.json()\n    assert isinstance(players, list)\n    assert len(players) == 26\n    squad1 = next((p for p in players if p['squadNumber'] == 1), None)\n    assert squad1 is not None\n    assert squad1['firstName'] == 'Franco'\n    assert squad1['lastName'] == 'Armani'\n\ntest_startup_schema_players_table_readable()"
+      },
+      {
+        "name": "test_startup_schema_post_missing_required_field_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable",
+          "players table exists after startup"
+        ],
+        "actions": [
+          "Import app from main",
+          "Create TestClient",
+          "POST /players/ with body missing required lastName field"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response body contains detail key"
+        ],
+        "trace": [
+          "R-PLAYER-028: table exists \u2192 POST with invalid body \u2192 422 (app is live and schema-aware)"
+        ],
+        "executable": "def test_startup_schema_post_missing_required_field_returns_422():\n    from main import app\n    from fastapi.testclient import TestClient\n    client = TestClient(app)\n    payload = {\n        'firstName': 'Test',\n        'squadNumber': 99,\n        'position': 'Goalkeeper'\n    }\n    r = client.post('/players/', json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert 'detail' in body\n\ntest_startup_schema_post_missing_required_field_returns_422()"
+      },
+      {
+        "name": "test_startup_schema_health_endpoint_returns_200",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable",
+          "Lifespan handler completes without error"
+        ],
+        "actions": [
+          "Import app from main",
+          "Create TestClient (triggers lifespan startup)",
+          "GET /health/ or /health"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "App is alive after lifespan startup completes"
+        ],
+        "trace": [
+          "R-PLAYER-028: lifespan startup completes \u2192 health endpoint reachable \u2192 200"
+        ],
+        "executable": "def test_startup_schema_health_endpoint_returns_200():\n    from main import app\n    from fastapi.testclient import TestClient\n    client = TestClient(app)\n    for path in ['/health/', '/health']:\n        r = client.get(path)\n        if r.status_code == 200:\n            assert r.status_code == 200\n            return\n    r = client.get('/players/')\n    assert r.status_code == 200\n\ntest_startup_schema_health_endpoint_returns_200()"
+      },
+      {
+        "name": "test_startup_schema_post_new_player_returns_201_and_location",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "FastAPI app is importable",
+          "players table exists and is writable after startup",
+          "Squad number 99 does not exist in fixture"
+        ],
+        "actions": [
+          "Import app from main",
+          "Create TestClient",
+          "POST /players/ with valid new player payload (squadNumber=99)"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response body contains id (UUID), firstName, lastName, squadNumber=99",
+          "Location header equals /players/squadnumber/99"
+        ],
+        "trace": [
+          "R-PLAYER-028: table created on startup \u2192 POST new player \u2192 201 with Location header"
+        ],
+        "executable": "def test_startup_schema_post_new_player_returns_201_and_location():\n    from main import app\n    from fastapi.testclient import TestClient\n    client = TestClient(app)\n    payload = {\n        'firstName': 'Carlos',\n        'lastName': 'Tevez',\n        'squadNumber': 99,\n        'position': 'Centre-Forward'\n    }\n    r = client.post('/players/', json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body['squadNumber'] == 99\n    assert body['firstName'] == 'Carlos'\n    assert body['lastName'] == 'Tevez'\n    assert 'id' in body\n    assert r.headers.get('location') == '/players/squadnumber/99'\n\ntest_startup_schema_post_new_player_returns_201_and_location()"
+      },
+      {
+        "name": "test_startup_schema_duplicate_squad_number_returns_409",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is importable",
+          "players table exists with unique constraint on squadNumber",
+          "Squad number 10 (Messi) already exists in fixture"
+        ],
+        "actions": [
+          "Import app from main",
+          "Create TestClient",
+          "POST /players/ with squadNumber=10 (already exists)"
+        ],
+        "expected": [
+          "HTTP 409 Conflict",
+          "Response body detail contains 'already exists'"
+        ],
+        "trace": [
+          "R-PLAYER-028: schema created with unique constraint \u2192 duplicate POST \u2192 409 Conflict"
+        ],
+        "executable": "def test_startup_schema_duplicate_squad_number_returns_409():\n    from main import app\n    from fastapi.testclient import TestClient\n    client = TestClient(app)\n    payload = {\n        'firstName': 'Lionel',\n        'lastName': 'Messi',\n        'squadNumber': 10,\n        'position': 'Right Winger'\n    }\n    r = client.post('/players/', json=payload)\n    assert r.status_code == 409\n    body = r.json()\n    assert 'detail' in body\n    assert 'already exists' in body['detail']\n\ntest_startup_schema_duplicate_squad_number_returns_409()"
+      },
+      {
+        "name": "test_startup_schema_get_player_by_squad_number_exact_fields",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable",
+          "players table exists after startup",
+          "Squad number 10 row exists with known fixture values"
+        ],
+        "actions": [
+          "Import app from main",
+          "Create TestClient",
+          "GET /players/squadnumber/10"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "firstName == Lionel",
+          "lastName == Messi",
+          "squadNumber == 10",
+          "position == Right Winger",
+          "team == Paris Saint-Germain",
+          "starting11 == true"
+        ],
+        "trace": [
+          "R-PLAYER-028: table created on startup \u2192 GET by squad number \u2192 exact fixture row returned"
+        ],
+        "executable": "def test_startup_schema_get_player_by_squad_number_exact_fields():\n    from main import app\n    from fastapi.testclient import TestClient\n    client = TestClient(app)\n    r = client.get('/players/squadnumber/10')\n    assert r.status_code == 200\n    body = r.json()\n    assert body['firstName'] == 'Lionel'\n    assert body['middleName'] == 'Andr\u00e9s'\n    assert body['lastName'] == 'Messi'\n    assert body['squadNumber'] == 10\n    assert body['position'] == 'Right Winger'\n    assert body['team'] == 'Paris Saint-Germain'\n    assert body['starting11'] == True\n\ntest_startup_schema_get_player_by_squad_number_exact_fields()"
+      },
+      {
+        "name": "test_startup_schema_get_nonexistent_squad_number_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable",
+          "players table exists after startup",
+          "Squad number 27 does not exist in fixture (max is 26)"
+        ],
+        "actions": [
+          "Import app from main",
+          "Create TestClient",
+          "GET /players/squadnumber/27 (one beyond max fixture squad number)"
+        ],
+        "expected": [
+          "HTTP 404 Not Found"
+        ],
+        "trace": [
+          "R-PLAYER-028: table created on startup \u2192 GET squad 27 (boundary beyond max 26) \u2192 404"
+        ],
+        "executable": "def test_startup_schema_get_nonexistent_squad_number_returns_404():\n    from main import app\n    from fastapi.testclient import TestClient\n    client = TestClient(app)\n    r26 = client.get('/players/squadnumber/26')\n    assert r26.status_code == 200\n    r27 = client.get('/players/squadnumber/27')\n    assert r27.status_code == 404\n    r0 = client.get('/players/squadnumber/0')\n    assert r0.status_code == 404\n\ntest_startup_schema_get_nonexistent_squad_number_returns_404()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-028",
+  "domain": "sports_players",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11295,
+    "output_tokens": 3053,
+    "latency_ms": 39052,
+    "wall_ms": 39052,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-028\",\n  \"reasoning\": \"R-PLAYER-028 requires that the players table is created via SQLAlchemy metadata at application startup if it does not exist. The FastAPI app uses a lifespan handler and includes player routes backed by a database. To verify schema creation on startup, we test: (1) positive \u2014 the app starts and a GET /players/ returns HTTP 200 with the pre-loaded fixture data, confirming the table exists and is queryable; (2) negative \u2014 a POST with a missing required field returns HTTP 422, confirming the app is live and schema-aware but rejects bad input; (3) boundary \u2014 the app starts and the health endpoint returns HTTP 200, confirming the lifespan completed without error; (4) state-transition \u2014 after startup, a POST of a new player returns HTTP 201 and the Location header is correct, confirming the table is writable; (5) decision-table \u2014 a duplicate squad number returns HTTP 409, confirming the unique constraint from the schema is enforced. All tests use TestClient in-process, assert exact status codes and payload fields, and are deterministic against the pre-loaded 26-row fixture.\",\n  \"tests\": [\n    {\n      \"name\": \"test_startup_schema_players_table_readable\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable\",\n        \"Database is pre-loaded with 26 player rows\",\n        \"players table exists after startup\"\n      ],\n      \"actions\": [\n        \"Import app from main\",\n        \"Create TestClient\",\n        \"GET /players/\"\n      ],\n      \"expected\": [\n        \"HTTP 200 OK\",\n        \"Response body is a JSON array of exactly 26 players\",\n        \"First squad number 1 player has firstName Franco\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-028: table created on startup \u2192 GET /players/ succeeds with 200\"\n      ],\n      \"executable\": \"def test_startup_schema_players_table_readable():\\n    from main import app\\n    from fastapi.testclient import TestClient\\n    client = TestClient(app)\\n    r = client.get('/players/')\\n    assert r.status_code == 200\\n    players = r.json()\\n    assert isinstance(players, list)\\n    assert len(players) == 26\\n    squad1 = next((p for p in players if p['squadNumber'] == 1), None)\\n    assert squad1 is not None\\n    assert squad1['firstName'] == 'Franco'\\n    assert squad1['lastName'] == 'Armani'\\n\\ntest_startup_schema_players_table_readable()\"\n    },\n    {\n      \"name\": \"test_startup_schema_post_missing_required_field_returns_422\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"FastAPI app is importable\",\n        \"players table exists after startup\"\n      ],\n      \"actions\": [\n        \"Import app from main\",\n        \"Create TestClient\",\n        \"POST /players/ with body missing required lastName field\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity\",\n        \"Response body contains detail key\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-028: table exists \u2192 POST with invalid body \u2192 422 (app is live and schema-aware)\"\n      ],\n      \"executable\": \"def test_startup_schema_post_missing_required_field_returns_422():\\n    from main import app\\n    from fastapi.testclient import TestClient\\n    client = TestClient(app)\\n    payload = {\\n        'firstName': 'Test',\\n        'squadNumber': 99,\\n        'position': 'Goalkeeper'\\n    }\\n    r = client.post('/players/', json=payload)\\n    assert r.status_code == 422\\n    body = r.json()\\n    assert 'detail' in body\\n\\ntest_startup_schema_post_missing_required_field_returns_422()\"\n    },\n    {\n      \"name\": \"test_startup_schema_health_endpoint_returns_200\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is importable\",\n        \"Lifespan handler completes without error\"\n      ],\n      \"actions\": [\n        \"Import app from main\",\n        \"Create TestClient (triggers lifespan startup)\",\n        \"GET /health/ or /health\"\n      ],\n      \"expected\": [\n    "
+  }
+}

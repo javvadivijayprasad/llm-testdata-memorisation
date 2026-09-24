@@ -1,0 +1,165 @@
+{
+  "req": {
+    "id": "R-FLASKR-015",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Create new post",
+    "statement": "The system shall insert a new post attributed to the logged-in user when POST /create receives a title and body, then redirect to /.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "create new post"
+    ],
+    "expected_outcomes": [
+      "post row inserted",
+      "302 redirect to /"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /create"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-015",
+    "reasoning": "The requirement states that POST /create must insert a new post attributed to the logged-in user and redirect to /. I design: (1) a positive EP test confirming 302 redirect and DB row insertion with correct author_id; (2) a negative NEG test confirming unauthenticated access redirects to login (not 302 to /); (3) a boundary BVA test with a single-character title (minimum non-empty title); (4) a DT test with empty title (validation failure, no redirect, no DB insert); (5) a STC test verifying the state transition from logged-in to post-created to redirect-to-index. Each test uses exact-value assertions to kill operator-flip and constant-bump mutations.",
+    "tests": [
+      {
+        "name": "test_create_post_authenticated_redirects_and_inserts",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App initialized with test database containing fixture user id=1 (username=test, password=test)",
+          "User is logged in as 'test'"
+        ],
+        "actions": [
+          "POST /auth/login with username=test, password=test",
+          "POST /create with title='Hello World' and body='Some body text'"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/'",
+          "Database contains a new post row with title='Hello World', body='Some body text', author_id=1"
+        ],
+        "trace": [
+          "R-FLASKR-015: POST /create with title+body inserts row and redirects to /"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\ndef test_create_post_authenticated_redirects_and_inserts():\n    login_r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert login_r.status_code == 302\n    r = client.post('/create', data={'title': 'Hello World', 'body': 'Some body text'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    with app.app_context():\n        db = get_db()\n        post = db.execute(\n            \"SELECT * FROM post WHERE title = ? AND body = ?\",\n            ('Hello World', 'Some body text')\n        ).fetchone()\n    assert post is not None\n    assert post['title'] == 'Hello World'\n    assert post['body'] == 'Some body text'\n    assert post['author_id'] == 1\n\ntest_create_post_authenticated_redirects_and_inserts()"
+      },
+      {
+        "name": "test_create_post_unauthenticated_redirects_to_login",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App initialized with test database",
+          "No user is logged in (fresh session)"
+        ],
+        "actions": [
+          "POST /create with title='Hello' and body='Body' without prior login"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/auth/login'",
+          "No new post row inserted in the database"
+        ],
+        "trace": [
+          "R-FLASKR-015: login_required decorator must redirect unauthenticated users to /auth/login"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\ndef test_create_post_unauthenticated_redirects_to_login():\n    r = client.post('/create', data={'title': 'Hello', 'body': 'Body'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/auth/login'\n    with app.app_context():\n        db = get_db()\n        count = db.execute(\"SELECT COUNT(*) FROM post WHERE title = 'Hello'\").fetchone()[0]\n    assert count == 0\n\ntest_create_post_unauthenticated_redirects_to_login()"
+      },
+      {
+        "name": "test_create_post_single_char_title_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App initialized with test database containing fixture user id=1",
+          "User is logged in as 'test'"
+        ],
+        "actions": [
+          "POST /auth/login with username=test, password=test",
+          "POST /create with title='X' (single character, minimum non-empty) and body=''"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/'",
+          "Database contains a new post row with title='X', body='', author_id=1"
+        ],
+        "trace": [
+          "R-FLASKR-015: minimum non-empty title (1 char) must be accepted and inserted"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\ndef test_create_post_single_char_title_boundary():\n    login_r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert login_r.status_code == 302\n    r = client.post('/create', data={'title': 'X', 'body': ''})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    with app.app_context():\n        db = get_db()\n        post = db.execute(\n            \"SELECT * FROM post WHERE title = ? AND body = ?\",\n            ('X', '')\n        ).fetchone()\n    assert post is not None\n    assert post['title'] == 'X'\n    assert post['body'] == ''\n    assert post['author_id'] == 1\n\ntest_create_post_single_char_title_boundary()"
+      },
+      {
+        "name": "test_create_post_empty_title_rejected",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "App initialized with test database containing fixture user id=1",
+          "User is logged in as 'test'"
+        ],
+        "actions": [
+          "POST /auth/login with username=test, password=test",
+          "POST /create with title='' (empty string) and body='Some body'"
+        ],
+        "expected": [
+          "Response status code is exactly 200 (form re-rendered, not redirected)",
+          "Response body contains b'Title is required.'",
+          "No new post row inserted in the database"
+        ],
+        "trace": [
+          "R-FLASKR-015: empty title must trigger validation error, no insert, no redirect"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\ndef test_create_post_empty_title_rejected():\n    login_r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert login_r.status_code == 302\n    r = client.post('/create', data={'title': '', 'body': 'Some body'})\n    assert r.status_code == 200\n    assert b'Title is required.' in r.data\n    with app.app_context():\n        db = get_db()\n        count = db.execute(\n            \"SELECT COUNT(*) FROM post WHERE body = 'Some body'\"\n        ).fetchone()[0]\n    assert count == 0\n\ntest_create_post_empty_title_rejected()"
+      },
+      {
+        "name": "test_create_post_author_id_matches_logged_in_user",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App initialized with test database containing fixture users id=1 (test) and id=2 (other)",
+          "User 'other' (id=2) is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username=other, password=other",
+          "POST /create with title='Other Post' and body='Other body'"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/'",
+          "Database contains a new post row with author_id=2 (not 1)"
+        ],
+        "trace": [
+          "R-FLASKR-015: post must be attributed to the logged-in user (author_id must equal g.user['id'])"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\ndef test_create_post_author_id_matches_logged_in_user():\n    login_r = client.post('/auth/login', data={'username': 'other', 'password': 'other'})\n    assert login_r.status_code == 302\n    r = client.post('/create', data={'title': 'Other Post', 'body': 'Other body'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    with app.app_context():\n        db = get_db()\n        post = db.execute(\n            \"SELECT * FROM post WHERE title = ?\", ('Other Post',)\n        ).fetchone()\n    assert post is not None\n    assert post['author_id'] == 2\n    assert post['author_id'] != 1\n    assert post['title'] == 'Other Post'\n    assert post['body'] == 'Other body'\n\ntest_create_post_author_id_matches_logged_in_user()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-015",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5465,
+    "output_tokens": 2990,
+    "latency_ms": 33778,
+    "wall_ms": 33778,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-015\",\n  \"reasoning\": \"The requirement states that POST /create must insert a new post attributed to the logged-in user and redirect to /. I design: (1) a positive EP test confirming 302 redirect and DB row insertion with correct author_id; (2) a negative NEG test confirming unauthenticated access redirects to login (not 302 to /); (3) a boundary BVA test with a single-character title (minimum non-empty title); (4) a DT test with empty title (validation failure, no redirect, no DB insert); (5) a STC test verifying the state transition from logged-in to post-created to redirect-to-index. Each test uses exact-value assertions to kill operator-flip and constant-bump mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_create_post_authenticated_redirects_and_inserts\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App initialized with test database containing fixture user id=1 (username=test, password=test)\",\n        \"User is logged in as 'test'\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username=test, password=test\",\n        \"POST /create with title='Hello World' and body='Some body text'\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header is exactly '/'\",\n        \"Database contains a new post row with title='Hello World', body='Some body text', author_id=1\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-015: POST /create with title+body inserts row and redirects to /\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\n\\ndef test_create_post_authenticated_redirects_and_inserts():\\n    login_r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\\n    assert login_r.status_code == 302\\n    r = client.post('/create', data={'title': 'Hello World', 'body': 'Some body text'})\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/'\\n    with app.app_context():\\n        db = get_db()\\n        post = db.execute(\\n            \\\"SELECT * FROM post WHERE title = ? AND body = ?\\\",\\n            ('Hello World', 'Some body text')\\n        ).fetchone()\\n    assert post is not None\\n    assert post['title'] == 'Hello World'\\n    assert post['body'] == 'Some body text'\\n    assert post['author_id'] == 1\\n\\ntest_create_post_authenticated_redirects_and_inserts()\"\n    },\n    {\n      \"name\": \"test_create_post_unauthenticated_redirects_to_login\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App initialized with test database\",\n        \"No user is logged in (fresh session)\"\n      ],\n      \"actions\": [\n        \"POST /create with title='Hello' and body='Body' without prior login\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header is exactly '/auth/login'\",\n        \"No new post row inserted in the database\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-015: login_required decorator must redirect unauthenticated users to /auth/login\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\n\\ndef test_create_post_unauthenticated_redirects_to_login():\\n    r = client.post('/create', data={'title': 'Hello', 'body': 'Body'})\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/auth/login'\\n    with app.app_context():\\n        db = get_db()\\n        count = db.execute(\\\"SELECT COUNT(*) FROM post WHERE title = 'Hello'\\\").fetchone()[0]\\n    assert count == 0\\n\\n"
+  }
+}

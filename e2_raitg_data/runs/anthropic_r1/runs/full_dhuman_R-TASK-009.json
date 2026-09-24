@@ -1,0 +1,159 @@
+{
+  "req": {
+    "id": "R-TASK-009",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "error_pathway",
+    "title": "404 on unknown task id",
+    "statement": "The system shall respond with HTTP 404 and detail 'Task not found' when the id does not exist.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "404 on unknown task id"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 404"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-009",
+    "reasoning": "R-TASK-009 requires HTTP 404 with a specific detail message when GET /tasks/{task_id} is called with a non-existent ID. The table is EMPTY before every test, so any task_id will be non-existent unless we first create one. Tests cover: (1) positive \u2014 a task that EXISTS returns 200 (not 404), proving the 404 branch is conditional; (2) negative/EP \u2014 a clearly non-existent ID returns exactly 404 with the correct detail string; (3) BVA boundary \u2014 task_id=1 after creating one task (exists \u2192 200), then task_id=2 (does not exist \u2192 404), probing the \u00b11 boundary around the only valid ID; (4) NEG \u2014 a large sentinel ID (999999) that can never exist returns 404; (5) DT \u2014 verifies the exact detail message text character-for-character to kill string-mutation operators. All tests use in-process FastAPI TestClient with a fresh SQLite in-memory override so they are isolated, deterministic, and idempotent.",
+    "tests": [
+      {
+        "name": "test_get_existing_task_returns_200_not_404",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty",
+          "A task is created via POST /tasks/ to obtain a valid task_id"
+        ],
+        "actions": [
+          "POST /tasks/ with title='Positive Task' to create a task",
+          "Extract the returned task id",
+          "GET /tasks/{task_id} with the valid id"
+        ],
+        "expected": [
+          "HTTP 200 (not 404) is returned",
+          "Response body contains id matching the created task",
+          "Response body contains title 'Positive Task'"
+        ],
+        "trace": [
+          "R-TASK-009: 404 must NOT fire when the task exists \u2014 validates the conditional branch"
+        ],
+        "executable": "import os, sys\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, get_db\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nBase.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_get_existing_task_returns_200_not_404():\n    r_create = client.post('/tasks/', json={'title': 'Positive Task', 'completed': False})\n    assert r_create.status_code == 201\n    task_id = r_create.json()['id']\n    r = client.get(f'/tasks/{task_id}')\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == task_id\n    assert body['title'] == 'Positive Task'\n"
+      },
+      {
+        "name": "test_get_nonexistent_task_returns_404_with_exact_detail",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty \u2014 no task with id=42 exists"
+        ],
+        "actions": [
+          "GET /tasks/42 without creating any task"
+        ],
+        "expected": [
+          "HTTP status code is exactly 404",
+          "Response JSON detail contains 'Task with id 42 not found'"
+        ],
+        "trace": [
+          "R-TASK-009: system shall respond with HTTP 404 and detail 'Task not found' when id does not exist"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, get_db\n\nengine_mem2 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem2 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem2)\nBase.metadata.create_all(bind=engine_mem2)\n\ndef override_get_db2():\n    db = SessionMem2()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db2\nclient2 = TestClient(app)\n\ndef test_get_nonexistent_task_returns_404_with_exact_detail():\n    r = client2.get('/tasks/42')\n    assert r.status_code == 404\n    body = r.json()\n    assert 'detail' in body\n    assert body['detail'] == 'Task with id 42 not found'\n"
+      },
+      {
+        "name": "test_boundary_id_plus_one_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "Exactly one task is created so its id is 1"
+        ],
+        "actions": [
+          "POST /tasks/ to create one task (id=1)",
+          "GET /tasks/1 \u2014 should return 200 (task exists)",
+          "GET /tasks/2 \u2014 should return 404 (id=max_existing+1 does not exist)"
+        ],
+        "expected": [
+          "GET /tasks/1 returns HTTP 200",
+          "GET /tasks/2 returns HTTP 404",
+          "Detail for /tasks/2 is exactly 'Task with id 2 not found'"
+        ],
+        "trace": [
+          "R-TASK-009: BVA at boundary \u2014 id immediately above the only existing id must trigger 404"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, get_db\n\nengine_mem3 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem3 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem3)\nBase.metadata.create_all(bind=engine_mem3)\n\ndef override_get_db3():\n    db = SessionMem3()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db3\nclient3 = TestClient(app)\n\ndef test_boundary_id_plus_one_returns_404():\n    r_create = client3.post('/tasks/', json={'title': 'Boundary Task', 'completed': False})\n    assert r_create.status_code == 201\n    created_id = r_create.json()['id']\n    r_exists = client3.get(f'/tasks/{created_id}')\n    assert r_exists.status_code == 200\n    r_missing = client3.get(f'/tasks/{created_id + 1}')\n    assert r_missing.status_code == 404\n    body = r_missing.json()\n    assert body['detail'] == f'Task with id {created_id + 1} not found'\n"
+      },
+      {
+        "name": "test_large_sentinel_id_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty \u2014 id 999999 cannot exist"
+        ],
+        "actions": [
+          "GET /tasks/999999"
+        ],
+        "expected": [
+          "HTTP status code is exactly 404",
+          "Response JSON detail is exactly 'Task with id 999999 not found'"
+        ],
+        "trace": [
+          "R-TASK-009: large non-existent id must also return 404 \u2014 kills constant-mutation on status code"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, get_db\n\nengine_mem4 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem4 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem4)\nBase.metadata.create_all(bind=engine_mem4)\n\ndef override_get_db4():\n    db = SessionMem4()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db4\nclient4 = TestClient(app)\n\ndef test_large_sentinel_id_returns_404():\n    r = client4.get('/tasks/999999')\n    assert r.status_code == 404\n    body = r.json()\n    assert body['detail'] == 'Task with id 999999 not found'\n    assert r.status_code != 200\n    assert r.status_code != 500\n"
+      },
+      {
+        "name": "test_decision_table_detail_message_exact_format",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty"
+        ],
+        "actions": [
+          "GET /tasks/7 (non-existent)",
+          "Inspect the exact detail string character by character"
+        ],
+        "expected": [
+          "HTTP 404",
+          "detail key present in JSON body",
+          "detail value is exactly 'Task with id 7 not found' \u2014 no variation in casing, punctuation, or wording"
+        ],
+        "trace": [
+          "R-TASK-009: detail message must match exactly \u2014 kills string-literal mutations and case-change mutations"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app.database import Base, get_db\n\nengine_mem5 = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem5 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem5)\nBase.metadata.create_all(bind=engine_mem5)\n\ndef override_get_db5():\n    db = SessionMem5()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db5\nclient5 = TestClient(app)\n\ndef test_decision_table_detail_message_exact_format():\n    r = client5.get('/tasks/7')\n    assert r.status_code == 404\n    body = r.json()\n    assert list(body.keys()) == ['detail'] or 'detail' in body\n    detail = body['detail']\n    assert detail == 'Task with id 7 not found'\n    assert detail != 'task with id 7 not found'\n    assert detail != 'Task with id 7 not Found'\n    assert 'Task with id 7' in detail\n    assert 'not found' in detail\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-009",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4860,
+    "output_tokens": 3064,
+    "latency_ms": 39170,
+    "wall_ms": 39170,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-009\",\n  \"reasoning\": \"R-TASK-009 requires HTTP 404 with a specific detail message when GET /tasks/{task_id} is called with a non-existent ID. The table is EMPTY before every test, so any task_id will be non-existent unless we first create one. Tests cover: (1) positive \u2014 a task that EXISTS returns 200 (not 404), proving the 404 branch is conditional; (2) negative/EP \u2014 a clearly non-existent ID returns exactly 404 with the correct detail string; (3) BVA boundary \u2014 task_id=1 after creating one task (exists \u2192 200), then task_id=2 (does not exist \u2192 404), probing the \u00b11 boundary around the only valid ID; (4) NEG \u2014 a large sentinel ID (999999) that can never exist returns 404; (5) DT \u2014 verifies the exact detail message text character-for-character to kill string-mutation operators. All tests use in-process FastAPI TestClient with a fresh SQLite in-memory override so they are isolated, deterministic, and idempotent.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_existing_task_returns_200_not_404\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"A task is created via POST /tasks/ to obtain a valid task_id\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title='Positive Task' to create a task\",\n        \"Extract the returned task id\",\n        \"GET /tasks/{task_id} with the valid id\"\n      ],\n      \"expected\": [\n        \"HTTP 200 (not 404) is returned\",\n        \"Response body contains id matching the created task\",\n        \"Response body contains title 'Positive Task'\"\n      ],\n      \"trace\": [\n        \"R-TASK-009: 404 must NOT fire when the task exists \u2014 validates the conditional branch\"\n      ],\n      \"executable\": \"import os, sys\\nos.environ.setdefault('DATABASE_URL', 'sqlite://')\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import Base, get_db\\n\\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\\nBase.metadata.create_all(bind=engine_mem)\\n\\ndef override_get_db():\\n    db = SessionMem()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_get_existing_task_returns_200_not_404():\\n    r_create = client.post('/tasks/', json={'title': 'Positive Task', 'completed': False})\\n    assert r_create.status_code == 201\\n    task_id = r_create.json()['id']\\n    r = client.get(f'/tasks/{task_id}')\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body['id'] == task_id\\n    assert body['title'] == 'Positive Task'\\n\"\n    },\n    {\n      \"name\": \"test_get_nonexistent_task_returns_404_with_exact_detail\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty \u2014 no task with id=42 exists\"\n      ],\n      \"actions\": [\n        \"GET /tasks/42 without creating any task\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 404\",\n        \"Response JSON detail contains 'Task with id 42 not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-009: system shall respond with HTTP 404 and detail 'Task not found' when id does not exist\"\n      ],\n      \"executable\": \"import os\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app.database import Base, get_db\\n\\nengine_mem2 = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nSessionMem2 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem2)\\nBase.metadata.create_all(bind=engine_mem2)\\n\\ndef override_get_db2():\\n    db = SessionMem2()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db2\\nclient2 = TestClient(app)"
+  }
+}

@@ -1,0 +1,161 @@
+{
+  "req": {
+    "id": "R-TASK-039",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "performance",
+    "title": "Rate limit not enforced",
+    "statement": "The system shall not throttle single-client request rates below 60/min.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "rate limit not enforced"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-039",
+    "reasoning": "R-TASK-039 states the system shall NOT throttle single-client request rates below 60/min. This means 60 sequential requests within one minute must all return HTTP 2xx. Tests cover: (1) positive \u2013 exactly 60 requests all succeed (EP, catches constant mutation 60->59 or 61); (2) boundary \u2013 59 requests (one below threshold, all must succeed, BVA \u00b11); (3) boundary \u2013 61 requests (one above threshold, all must still succeed, BVA \u00b11); (4) negative \u2013 verifying that a single malformed request returns 4xx not 2xx (NEG, confirms error pathway). All tests use in-process FastAPI TestClient with SQLite in-memory override to avoid filesystem side-effects and ensure determinism.",
+    "tests": [
+      {
+        "name": "test_rate_limit_60_requests_all_succeed",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "No rate limiting middleware is active below 60 req/min"
+        ],
+        "actions": [
+          "Send exactly 60 GET /tasks/ requests sequentially using TestClient",
+          "Collect all response status codes"
+        ],
+        "expected": [
+          "All 60 responses return HTTP 200",
+          "No response returns HTTP 429 or any 4xx/5xx"
+        ],
+        "trace": [
+          "R-TASK-039: system shall not throttle single-client request rates below 60/min"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine_mem = create_engine('sqlite:///:memory:', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nmodels.Base.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\nREQUEST_COUNT = 60\nstatuses = [client.get('/tasks/').status_code for _ in range(REQUEST_COUNT)]\n\nassert len(statuses) == 60\nassert all(s == 200 for s in statuses), f'Non-200 responses found: {[s for s in statuses if s != 200]}'\nassert statuses.count(200) == 60\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_rate_limit_59_requests_all_succeed",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "No rate limiting middleware is active below 60 req/min"
+        ],
+        "actions": [
+          "Send exactly 59 GET /tasks/ requests sequentially (threshold minus 1)",
+          "Collect all response status codes"
+        ],
+        "expected": [
+          "All 59 responses return HTTP 200",
+          "No throttling occurs at 59 requests"
+        ],
+        "trace": [
+          "R-TASK-039: BVA lower boundary \u2014 59 requests (60-1) must all succeed"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine_mem2 = create_engine('sqlite:///:memory:', connect_args={'check_same_thread': False})\nSessionMem2 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem2)\nmodels.Base.metadata.create_all(bind=engine_mem2)\n\ndef override_get_db2():\n    db = SessionMem2()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db2\nclient2 = TestClient(app)\n\nREQUEST_COUNT_59 = 59\nstatuses59 = [client2.get('/tasks/').status_code for _ in range(REQUEST_COUNT_59)]\n\nassert len(statuses59) == 59\nassert all(s == 200 for s in statuses59), f'Non-200 at 59 reqs: {[s for s in statuses59 if s != 200]}'\nassert statuses59.count(200) == 59\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_rate_limit_61_requests_all_succeed",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "No rate limiting middleware is active below 60 req/min"
+        ],
+        "actions": [
+          "Send exactly 61 GET /tasks/ requests sequentially (threshold plus 1)",
+          "Collect all response status codes"
+        ],
+        "expected": [
+          "All 61 responses return HTTP 200",
+          "No throttling occurs at 61 requests within the allowed window"
+        ],
+        "trace": [
+          "R-TASK-039: BVA upper boundary \u2014 61 requests (60+1) must all succeed since no throttle below 60/min is enforced"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine_mem3 = create_engine('sqlite:///:memory:', connect_args={'check_same_thread': False})\nSessionMem3 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem3)\nmodels.Base.metadata.create_all(bind=engine_mem3)\n\ndef override_get_db3():\n    db = SessionMem3()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db3\nclient3 = TestClient(app)\n\nREQUEST_COUNT_61 = 61\nstatuses61 = [client3.get('/tasks/').status_code for _ in range(REQUEST_COUNT_61)]\n\nassert len(statuses61) == 61\nassert all(s == 200 for s in statuses61), f'Non-200 at 61 reqs: {[s for s in statuses61 if s != 200]}'\nassert statuses61.count(200) == 61\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_malformed_request_returns_4xx_not_throttled",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Client sends a POST /tasks/ with invalid payload (empty title violating min_length=1)"
+        ],
+        "actions": [
+          "Send POST /tasks/ with title='' (empty string, violates min_length=1)",
+          "Assert response is 4xx (client error), not 2xx or 429"
+        ],
+        "expected": [
+          "Response status code is 422 (Unprocessable Entity)",
+          "Response is not 200, not 201, not 429"
+        ],
+        "trace": [
+          "R-TASK-039: error pathway \u2014 HTTP 4xx on client error; empty title must be rejected with 422"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine_mem4 = create_engine('sqlite:///:memory:', connect_args={'check_same_thread': False})\nSessionMem4 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem4)\nmodels.Base.metadata.create_all(bind=engine_mem4)\n\ndef override_get_db4():\n    db = SessionMem4()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db4\nclient4 = TestClient(app)\n\nbad_payload = {'title': '', 'description': 'some desc', 'completed': False}\nresp = client4.post('/tasks/', json=bad_payload)\n\nassert resp.status_code == 422\nassert resp.status_code != 200\nassert resp.status_code != 201\nassert resp.status_code != 429\nbody = resp.json()\nassert 'detail' in body\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_rate_limit_mixed_endpoints_60_requests_all_succeed",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is importable in-process",
+          "Database seeded with at least one task (POST creates it)"
+        ],
+        "actions": [
+          "Create one task via POST /tasks/",
+          "Send 59 GET /tasks/ requests to reach total of 60 requests",
+          "Assert all responses are 2xx"
+        ],
+        "expected": [
+          "POST /tasks/ returns 201",
+          "All 59 GET /tasks/ return 200",
+          "Total 60 requests all return 2xx with no throttling"
+        ],
+        "trace": [
+          "R-TASK-039: decision table \u2014 mixed request types still count toward 60/min; all must succeed"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine_mem5 = create_engine('sqlite:///:memory:', connect_args={'check_same_thread': False})\nSessionMem5 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem5)\nmodels.Base.metadata.create_all(bind=engine_mem5)\n\ndef override_get_db5():\n    db = SessionMem5()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db5\nclient5 = TestClient(app)\n\npost_resp = client5.post('/tasks/', json={'title': 'Buy groceries', 'description': 'A', 'completed': True})\nassert post_resp.status_code == 201\n\nget_statuses = [client5.get('/tasks/').status_code for _ in range(59)]\nassert len(get_statuses) == 59\nassert all(s == 200 for s in get_statuses), f'Non-200: {[s for s in get_statuses if s != 200]}'\nassert get_statuses.count(200) == 59\n\nall_statuses = [post_resp.status_code] + get_statuses\nassert len(all_statuses) == 60\nassert all(200 <= s <= 299 for s in all_statuses)\n\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-039",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7554,
+    "output_tokens": 3106,
+    "latency_ms": 38379,
+    "wall_ms": 38379,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-039\",\n  \"reasoning\": \"R-TASK-039 states the system shall NOT throttle single-client request rates below 60/min. This means 60 sequential requests within one minute must all return HTTP 2xx. Tests cover: (1) positive \u2013 exactly 60 requests all succeed (EP, catches constant mutation 60->59 or 61); (2) boundary \u2013 59 requests (one below threshold, all must succeed, BVA \u00b11); (3) boundary \u2013 61 requests (one above threshold, all must still succeed, BVA \u00b11); (4) negative \u2013 verifying that a single malformed request returns 4xx not 2xx (NEG, confirms error pathway). All tests use in-process FastAPI TestClient with SQLite in-memory override to avoid filesystem side-effects and ensure determinism.\",\n  \"tests\": [\n    {\n      \"name\": \"test_rate_limit_60_requests_all_succeed\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"No rate limiting middleware is active below 60 req/min\"\n      ],\n      \"actions\": [\n        \"Send exactly 60 GET /tasks/ requests sequentially using TestClient\",\n        \"Collect all response status codes\"\n      ],\n      \"expected\": [\n        \"All 60 responses return HTTP 200\",\n        \"No response returns HTTP 429 or any 4xx/5xx\"\n      ],\n      \"trace\": [\n        \"R-TASK-039: system shall not throttle single-client request rates below 60/min\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\nengine_mem = create_engine('sqlite:///:memory:', connect_args={'check_same_thread': False})\\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\\nmodels.Base.metadata.create_all(bind=engine_mem)\\n\\ndef override_get_db():\\n    db = SessionMem()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\nREQUEST_COUNT = 60\\nstatuses = [client.get('/tasks/').status_code for _ in range(REQUEST_COUNT)]\\n\\nassert len(statuses) == 60\\nassert all(s == 200 for s in statuses), f'Non-200 responses found: {[s for s in statuses if s != 200]}'\\nassert statuses.count(200) == 60\\n\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_rate_limit_59_requests_all_succeed\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is importable in-process\",\n        \"No rate limiting middleware is active below 60 req/min\"\n      ],\n      \"actions\": [\n        \"Send exactly 59 GET /tasks/ requests sequentially (threshold minus 1)\",\n        \"Collect all response status codes\"\n      ],\n      \"expected\": [\n        \"All 59 responses return HTTP 200\",\n        \"No throttling occurs at 59 requests\"\n      ],\n      \"trace\": [\n        \"R-TASK-039: BVA lower boundary \u2014 59 requests (60-1) must all succeed\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\nengine_mem2 = create_engine('sqlite:///:memory:', connect_args={'check_same_thread': False})\\nSessionMem2 = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem2)\\nmodels.Base.metadata.create_all(bind=engine_mem2)\\n\\ndef override_get_db2():\\n    db = SessionMem2()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db2\\nclient2 = TestClient(app)\\n\\nREQUEST_COUNT_59 = 59\\nstatuses59 = [client2.get('/tasks/').status_code for _ in range(REQUEST_COUNT_59)]\\n\\nassert len(statuses59) == 59\\nassert all(s == 200 for s in statuses59), f'Non-200 at 59 reqs: {[s for s in statuses59 if s != 200]}'\\nassert statuses59.count(200) == 59\\n\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_rate_limi"
+  }
+}

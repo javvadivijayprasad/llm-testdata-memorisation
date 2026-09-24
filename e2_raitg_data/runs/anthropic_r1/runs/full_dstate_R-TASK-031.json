@@ -1,0 +1,164 @@
+{
+  "req": {
+    "id": "R-TASK-031",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Task title accepts unicode",
+    "statement": "The system shall accept task titles containing UTF-8 characters and return them intact.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task title accepts unicode"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-031",
+    "reasoning": "R-TASK-031 requires that POST /tasks/ accepts UTF-8 task titles and returns them intact. Three test cases are designed: (1) EP positive \u2014 a representative multi-script Unicode title (CJK + Arabic + emoji + Latin diacritics) is posted and the response title must equal the input exactly, status 201; (2) NEG negative \u2014 a title composed entirely of null bytes / control characters that violate min_length=1 after stripping is attempted, expecting 4xx; (3) BVA boundary \u2014 a title of exactly 100 Unicode code-points (the schema max_length) is posted and accepted, while a 101-code-point title is rejected with 422. Each test is self-contained, uses the in-process FastAPI TestClient, and asserts exact values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_unicode_title_roundtrip_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App database contains the 20 pre-loaded rows",
+          "POST /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ with a title containing CJK, Arabic, emoji, and Latin diacritic characters"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response JSON field 'title' equals the submitted Unicode string exactly",
+          "Response JSON contains 'id' >= 21",
+          "Response JSON 'completed' is false"
+        ],
+        "trace": [
+          "R-TASK-031: system shall accept UTF-8 titles and return them intact"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_unicode_title_roundtrip_positive():\n    client = TestClient(app)\n    unicode_title = \"\u4efb\u52a1\u6807\u9898 \u0645\u0647\u0645\u0629 \ud83d\ude80 caf\u00e9 na\u00efve r\u00e9sum\u00e9\"\n    payload = {\"title\": unicode_title, \"description\": None, \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == unicode_title\n    assert body[\"completed\"] == False\n    assert body[\"id\"] >= 21\n    assert \"created_at\" in body\n"
+      },
+      {
+        "name": "test_empty_title_rejected_negative",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App database contains the 20 pre-loaded rows",
+          "POST /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ with an empty string title (violates min_length=1)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response body contains validation error detail"
+        ],
+        "trace": [
+          "R-TASK-031: error pathway \u2014 HTTP 4xx on client error",
+          "schemas.TaskBase: title min_length=1"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_empty_title_rejected_negative():\n    client = TestClient(app)\n    payload = {\"title\": \"\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n"
+      },
+      {
+        "name": "test_unicode_title_boundary_100_chars_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App database contains the 20 pre-loaded rows",
+          "POST /tasks/ endpoint is available",
+          "Schema max_length for title is 100"
+        ],
+        "actions": [
+          "POST /tasks/ with a title of exactly 100 Unicode code-points (should succeed)",
+          "POST /tasks/ with a title of exactly 101 Unicode code-points (should fail)"
+        ],
+        "expected": [
+          "100-char Unicode title: HTTP 201, response title equals input exactly",
+          "101-char Unicode title: HTTP 422"
+        ],
+        "trace": [
+          "R-TASK-031: UTF-8 titles accepted and returned intact",
+          "schemas.TaskBase: title max_length=100 \u2014 BVA at boundary and boundary+1"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_unicode_title_boundary_100_chars_accepted():\n    client = TestClient(app)\n    # Use a non-ASCII character repeated to stress UTF-8 handling at boundary\n    title_100 = \"\u00e9\" * 100\n    assert len(title_100) == 100\n    r100 = client.post(\"/tasks/\", json={\"title\": title_100, \"completed\": False})\n    assert r100.status_code == 201\n    body100 = r100.json()\n    assert body100[\"title\"] == title_100\n    assert len(body100[\"title\"]) == 100\n    assert body100[\"id\"] >= 21\n\n    title_101 = \"\u00e9\" * 101\n    assert len(title_101) == 101\n    r101 = client.post(\"/tasks/\", json={\"title\": title_101, \"completed\": False})\n    assert r101.status_code == 422\n"
+      },
+      {
+        "name": "test_unicode_title_boundary_1_char_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App database contains the 20 pre-loaded rows",
+          "POST /tasks/ endpoint is available",
+          "Schema min_length for title is 1"
+        ],
+        "actions": [
+          "POST /tasks/ with a title of exactly 1 Unicode code-point (should succeed)",
+          "POST /tasks/ with an empty title of 0 characters (should fail)"
+        ],
+        "expected": [
+          "1-char Unicode title: HTTP 201, response title equals input exactly",
+          "0-char title: HTTP 422"
+        ],
+        "trace": [
+          "R-TASK-031: UTF-8 titles accepted and returned intact",
+          "schemas.TaskBase: title min_length=1 \u2014 BVA at boundary and boundary-1"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_unicode_title_boundary_1_char_accepted():\n    client = TestClient(app)\n    title_1 = \"\u4e2d\"\n    assert len(title_1) == 1\n    r1 = client.post(\"/tasks/\", json={\"title\": title_1, \"completed\": False})\n    assert r1.status_code == 201\n    body1 = r1.json()\n    assert body1[\"title\"] == title_1\n    assert len(body1[\"title\"]) == 1\n    assert body1[\"id\"] >= 21\n\n    r0 = client.post(\"/tasks/\", json={\"title\": \"\", \"completed\": False})\n    assert r0.status_code == 422\n"
+      },
+      {
+        "name": "test_unicode_title_mixed_scripts_intact",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App database contains the 20 pre-loaded rows",
+          "POST /tasks/ endpoint is available"
+        ],
+        "actions": [
+          "POST /tasks/ with a title containing Greek, Cyrillic, Hebrew, and emoji characters",
+          "GET /tasks/{id} to verify the stored title is returned intact"
+        ],
+        "expected": [
+          "POST returns HTTP 201 with title equal to input",
+          "GET returns HTTP 200 with the same title unchanged"
+        ],
+        "trace": [
+          "R-TASK-031: system shall accept UTF-8 characters and return them intact \u2014 verified via round-trip GET"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_unicode_title_mixed_scripts_intact():\n    client = TestClient(app)\n    title = \"\u03b1\u03b2\u03b3 \u0446\u0438\u043a\u043b \u05e9\u05dc\u05d5\u05dd \ud83c\udf0d\"\n    r_post = client.post(\"/tasks/\", json={\"title\": title, \"completed\": False})\n    assert r_post.status_code == 201\n    created = r_post.json()\n    assert created[\"title\"] == title\n    task_id = created[\"id\"]\n    assert task_id >= 21\n\n    r_get = client.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 200\n    fetched = r_get.json()\n    assert fetched[\"title\"] == title\n    assert fetched[\"id\"] == task_id\n    assert fetched[\"completed\"] == False\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-031",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5901,
+    "output_tokens": 2527,
+    "latency_ms": 33795,
+    "wall_ms": 33795,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-031\",\n  \"reasoning\": \"R-TASK-031 requires that POST /tasks/ accepts UTF-8 task titles and returns them intact. Three test cases are designed: (1) EP positive \u2014 a representative multi-script Unicode title (CJK + Arabic + emoji + Latin diacritics) is posted and the response title must equal the input exactly, status 201; (2) NEG negative \u2014 a title composed entirely of null bytes / control characters that violate min_length=1 after stripping is attempted, expecting 4xx; (3) BVA boundary \u2014 a title of exactly 100 Unicode code-points (the schema max_length) is posted and accepted, while a 101-code-point title is rejected with 422. Each test is self-contained, uses the in-process FastAPI TestClient, and asserts exact values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_unicode_title_roundtrip_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App database contains the 20 pre-loaded rows\",\n        \"POST /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with a title containing CJK, Arabic, emoji, and Latin diacritic characters\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response JSON field 'title' equals the submitted Unicode string exactly\",\n        \"Response JSON contains 'id' >= 21\",\n        \"Response JSON 'completed' is false\"\n      ],\n      \"trace\": [\n        \"R-TASK-031: system shall accept UTF-8 titles and return them intact\"\n      ],\n      \"executable\": \"import pytest\\nfrom fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_unicode_title_roundtrip_positive():\\n    client = TestClient(app)\\n    unicode_title = \\\"\\u4efb\\u52a1\\u6807\\u9898 \\u0645\\u0647\\u0645\\u0629 \\ud83d\\ude80 caf\\u00e9 na\\u00efve r\\u00e9sum\\u00e9\\\"\\n    payload = {\\\"title\\\": unicode_title, \\\"description\\\": None, \\\"completed\\\": False}\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body[\\\"title\\\"] == unicode_title\\n    assert body[\\\"completed\\\"] == False\\n    assert body[\\\"id\\\"] >= 21\\n    assert \\\"created_at\\\" in body\\n\"\n    },\n    {\n      \"name\": \"test_empty_title_rejected_negative\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App database contains the 20 pre-loaded rows\",\n        \"POST /tasks/ endpoint is available\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with an empty string title (violates min_length=1)\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity\",\n        \"Response body contains validation error detail\"\n      ],\n      \"trace\": [\n        \"R-TASK-031: error pathway \u2014 HTTP 4xx on client error\",\n        \"schemas.TaskBase: title min_length=1\"\n      ],\n      \"executable\": \"import pytest\\nfrom fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_empty_title_rejected_negative():\\n    client = TestClient(app)\\n    payload = {\\\"title\\\": \\\"\\\", \\\"completed\\\": False}\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 422\\n    body = r.json()\\n    assert \\\"detail\\\" in body\\n\"\n    },\n    {\n      \"name\": \"test_unicode_title_boundary_100_chars_accepted\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"App database contains the 20 pre-loaded rows\",\n        \"POST /tasks/ endpoint is available\",\n        \"Schema max_length for title is 100\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with a title of exactly 100 Unicode code-points (should succeed)\",\n        \"POST /tasks/ with a title of exactly 101 Unicode code-points (should fail)\"\n      ],\n      \"expected\": [\n        \"100-char Unicode title: HTTP 201, response title equals input exactly\",\n        \"101-char Unicode title: HTTP 422\"\n      ],\n      \"trace\": [\n        \"R-TASK-031: UTF-8 titles accepted and returned intact\",\n        \"schemas.TaskBase: title max_length=100 \u2014 BVA at boundary and boundary+1\"\n      ],\n   "
+  }
+}

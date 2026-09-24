@@ -1,0 +1,176 @@
+{
+  "req": {
+    "id": "R-FLASKR-031",
+    "domain": "blogging",
+    "layer": "Integration",
+    "category": "config",
+    "title": "Config testing flag switches DB path",
+    "statement": "The system shall use the TESTING configuration's DATABASE path when TESTING is set in create_app.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "config testing flag switches db path"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-031",
+    "reasoning": "R-FLASKR-031 requires that when create_app is called with TESTING=True and a custom DATABASE path, the app uses that custom path rather than the default instance/flaskr.sqlite. Tests must verify: (1) positive \u2014 the config DATABASE key equals the supplied tmp path; (2) negative \u2014 without TESTING flag the DATABASE defaults to the instance path, not the tmp path; (3) boundary \u2014 the DATABASE path is used at the exact moment get_db() is called inside a request context, confirming the switch is operative end-to-end. Mutation resilience is achieved by asserting exact string equality of paths, asserting the default path contains 'flaskr.sqlite', and verifying the config value is not None and not the default.",
+    "tests": [
+      {
+        "name": "test_testing_flag_sets_database_to_tmp_path",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "A temporary file path is created via tempfile.mkstemp",
+          "create_app is called with TESTING=True and DATABASE set to the tmp path"
+        ],
+        "actions": [
+          "Call create_app({'TESTING': True, 'DATABASE': tmp_path})",
+          "Read app.config['DATABASE']",
+          "Read app.config['TESTING']"
+        ],
+        "expected": [
+          "app.config['DATABASE'] == tmp_path (exact equality)",
+          "app.config['TESTING'] == True",
+          "app.config['DATABASE'] != default instance path"
+        ],
+        "trace": [
+          "R-FLASKR-031: TESTING config DATABASE path is used when TESTING is set"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_testing_flag_sets_database_to_tmp_path():\n    fd, tmp_path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': tmp_path})\n        assert app.config['DATABASE'] == tmp_path\n        assert app.config['TESTING'] == True\n        default_path = os.path.join(app.instance_path, 'flaskr.sqlite')\n        assert app.config['DATABASE'] != default_path\n    finally:\n        os.unlink(tmp_path)\n\ntest_testing_flag_sets_database_to_tmp_path()"
+      },
+      {
+        "name": "test_no_testing_flag_uses_default_database_path",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "A temporary file path is created but NOT passed to create_app",
+          "create_app is called with no test_config (test_config=None)"
+        ],
+        "actions": [
+          "Call create_app() with no arguments",
+          "Read app.config['DATABASE']",
+          "Confirm it ends with 'flaskr.sqlite' and is NOT the tmp path"
+        ],
+        "expected": [
+          "app.config['DATABASE'] ends with 'flaskr.sqlite'",
+          "app.config['DATABASE'] does not equal any arbitrary tmp path",
+          "app.config.get('TESTING') is falsy or absent"
+        ],
+        "trace": [
+          "R-FLASKR-031: Without TESTING flag the default DATABASE path is used, not the custom one"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_no_testing_flag_uses_default_database_path():\n    fd, tmp_path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app()\n        db_path = app.config['DATABASE']\n        assert db_path.endswith('flaskr.sqlite')\n        assert db_path != tmp_path\n        assert not app.config.get('TESTING')\n    finally:\n        os.unlink(tmp_path)\n\ntest_no_testing_flag_uses_default_database_path()"
+      },
+      {
+        "name": "test_testing_db_path_used_in_actual_request_context",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "A temporary file path is created via tempfile.mkstemp",
+          "create_app is called with TESTING=True and DATABASE=tmp_path",
+          "The database is initialised with init_db() so get_db() can connect"
+        ],
+        "actions": [
+          "Call create_app({'TESTING': True, 'DATABASE': tmp_path})",
+          "Push an application context",
+          "Call init_db() to create schema in the tmp database",
+          "Call get_db() and verify the connection database path equals tmp_path",
+          "Make a GET /hello request via test_client and assert 200 + body"
+        ],
+        "expected": [
+          "get_db() connects to exactly tmp_path (not the default instance path)",
+          "GET /hello returns status 200 and body b'Hello, World!'",
+          "The tmp file is non-empty after init_db (schema was written there)"
+        ],
+        "trace": [
+          "R-FLASKR-031: DATABASE path switch is operative at the boundary where get_db() is first called inside a request context"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\ndef test_testing_db_path_used_in_actual_request_context():\n    fd, tmp_path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': tmp_path})\n        assert app.config['DATABASE'] == tmp_path\n        with app.app_context():\n            init_db()\n            conn = get_db()\n            assert conn is not None\n            cursor = conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")\n            tables = {row[0] for row in cursor.fetchall()}\n            assert 'user' in tables\n            assert 'post' in tables\n        assert os.path.getsize(tmp_path) > 0\n        client = app.test_client()\n        r = client.get('/hello')\n        assert r.status_code == 200\n        assert r.data == b'Hello, World!'\n        default_path = os.path.join(app.instance_path, 'flaskr.sqlite')\n        assert app.config['DATABASE'] != default_path\n    finally:\n        os.unlink(tmp_path)\n\ntest_testing_db_path_used_in_actual_request_context()"
+      },
+      {
+        "name": "test_two_apps_different_db_paths_are_independent",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Two separate temporary file paths are created",
+          "Two app instances are created with different DATABASE paths"
+        ],
+        "actions": [
+          "Create app1 with DATABASE=tmp_path1 and TESTING=True",
+          "Create app2 with DATABASE=tmp_path2 and TESTING=True",
+          "Assert app1.config['DATABASE'] == tmp_path1",
+          "Assert app2.config['DATABASE'] == tmp_path2",
+          "Assert the two DATABASE values are not equal to each other"
+        ],
+        "expected": [
+          "app1.config['DATABASE'] == tmp_path1 exactly",
+          "app2.config['DATABASE'] == tmp_path2 exactly",
+          "tmp_path1 != tmp_path2 (independent isolation)"
+        ],
+        "trace": [
+          "R-FLASKR-031: Each create_app call with a distinct DATABASE path produces an independent configuration \u2014 boundary between two TESTING instances"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_two_apps_different_db_paths_are_independent():\n    fd1, tmp_path1 = tempfile.mkstemp(suffix='_a.sqlite')\n    os.close(fd1)\n    fd2, tmp_path2 = tempfile.mkstemp(suffix='_b.sqlite')\n    os.close(fd2)\n    try:\n        app1 = create_app({'TESTING': True, 'DATABASE': tmp_path1})\n        app2 = create_app({'TESTING': True, 'DATABASE': tmp_path2})\n        assert app1.config['DATABASE'] == tmp_path1\n        assert app2.config['DATABASE'] == tmp_path2\n        assert tmp_path1 != tmp_path2\n        assert app1.config['DATABASE'] != app2.config['DATABASE']\n        assert app1.config['TESTING'] == True\n        assert app2.config['TESTING'] == True\n    finally:\n        os.unlink(tmp_path1)\n        os.unlink(tmp_path2)\n\ntest_two_apps_different_db_paths_are_independent()"
+      },
+      {
+        "name": "test_testing_config_does_not_load_instance_config_file",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "A temporary file path is created for the database",
+          "create_app is called with TESTING=True and DATABASE=tmp_path"
+        ],
+        "actions": [
+          "Call create_app({'TESTING': True, 'DATABASE': tmp_path})",
+          "Verify app.config['DATABASE'] is exactly tmp_path",
+          "Verify app.config['DATABASE'] does not contain 'instance' directory segment from default mapping",
+          "Verify SECRET_KEY is still 'dev' (default, not overridden by instance config.py)"
+        ],
+        "expected": [
+          "app.config['DATABASE'] == tmp_path",
+          "app.config['SECRET_KEY'] == 'dev' (instance config.py was skipped)",
+          "The path does not end with os.path.join('instance', 'flaskr.sqlite')"
+        ],
+        "trace": [
+          "R-FLASKR-031: When TESTING is set, app.config.from_pyfile is skipped and only test_config values are applied"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\ndef test_testing_config_does_not_load_instance_config_file():\n    fd, tmp_path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    try:\n        app = create_app({'TESTING': True, 'DATABASE': tmp_path})\n        assert app.config['DATABASE'] == tmp_path\n        assert app.config['SECRET_KEY'] == 'dev'\n        bad_suffix = os.path.join('instance', 'flaskr.sqlite')\n        assert not app.config['DATABASE'].endswith(bad_suffix)\n        assert app.config['TESTING'] == True\n    finally:\n        os.unlink(tmp_path)\n\ntest_testing_config_does_not_load_instance_config_file()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-031",
+  "domain": "blogging",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6583,
+    "output_tokens": 2902,
+    "latency_ms": 38274,
+    "wall_ms": 38274,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-031\",\n  \"reasoning\": \"R-FLASKR-031 requires that when create_app is called with TESTING=True and a custom DATABASE path, the app uses that custom path rather than the default instance/flaskr.sqlite. Tests must verify: (1) positive \u2014 the config DATABASE key equals the supplied tmp path; (2) negative \u2014 without TESTING flag the DATABASE defaults to the instance path, not the tmp path; (3) boundary \u2014 the DATABASE path is used at the exact moment get_db() is called inside a request context, confirming the switch is operative end-to-end. Mutation resilience is achieved by asserting exact string equality of paths, asserting the default path contains 'flaskr.sqlite', and verifying the config value is not None and not the default.\",\n  \"tests\": [\n    {\n      \"name\": \"test_testing_flag_sets_database_to_tmp_path\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"A temporary file path is created via tempfile.mkstemp\",\n        \"create_app is called with TESTING=True and DATABASE set to the tmp path\"\n      ],\n      \"actions\": [\n        \"Call create_app({'TESTING': True, 'DATABASE': tmp_path})\",\n        \"Read app.config['DATABASE']\",\n        \"Read app.config['TESTING']\"\n      ],\n      \"expected\": [\n        \"app.config['DATABASE'] == tmp_path (exact equality)\",\n        \"app.config['TESTING'] == True\",\n        \"app.config['DATABASE'] != default instance path\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-031: TESTING config DATABASE path is used when TESTING is set\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_testing_flag_sets_database_to_tmp_path():\\n    fd, tmp_path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    try:\\n        app = create_app({'TESTING': True, 'DATABASE': tmp_path})\\n        assert app.config['DATABASE'] == tmp_path\\n        assert app.config['TESTING'] == True\\n        default_path = os.path.join(app.instance_path, 'flaskr.sqlite')\\n        assert app.config['DATABASE'] != default_path\\n    finally:\\n        os.unlink(tmp_path)\\n\\ntest_testing_flag_sets_database_to_tmp_path()\"\n    },\n    {\n      \"name\": \"test_no_testing_flag_uses_default_database_path\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"A temporary file path is created but NOT passed to create_app\",\n        \"create_app is called with no test_config (test_config=None)\"\n      ],\n      \"actions\": [\n        \"Call create_app() with no arguments\",\n        \"Read app.config['DATABASE']\",\n        \"Confirm it ends with 'flaskr.sqlite' and is NOT the tmp path\"\n      ],\n      \"expected\": [\n        \"app.config['DATABASE'] ends with 'flaskr.sqlite'\",\n        \"app.config['DATABASE'] does not equal any arbitrary tmp path\",\n        \"app.config.get('TESTING') is falsy or absent\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-031: Without TESTING flag the default DATABASE path is used, not the custom one\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\ndef test_no_testing_flag_uses_default_database_path():\\n    fd, tmp_path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    try:\\n        app = create_app()\\n        db_path = app.config['DATABASE']\\n        assert db_path.endswith('flaskr.sqlite')\\n        assert db_path != tmp_path\\n        assert not app.config.get('TESTING')\\n    finally:\\n        os.unlink(tmp_path)\\n\\ntest_no_testing_flag_uses_default_database_path()\"\n    },\n    {\n      \"name\": \"test_testing_db_path_used_in_actual_request_context\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"A temporary file path is created via tempfile.mkstemp\",\n        \"create_app is called with TESTING=True and DATABASE=tmp_path\",\n        \"The database is initialised with init_db() so get_db() can connect\"\n      ],\n      \"actions\": [\n        \"Call create_app({'TESTING': True, 'DATABASE': tmp_path})\",\n        \"Push an application context"
+  }
+}

@@ -1,0 +1,246 @@
+{
+  "req": {
+    "id": "R-FLASKR-023",
+    "domain": "blogging",
+    "layer": "Integration",
+    "category": "db_bootstrap",
+    "title": "Init-db CLI creates schema",
+    "statement": "The system shall create the users and post tables when the flask init-db CLI command is invoked.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "init-db cli creates schema"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "CLI init-db"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-023",
+    "reasoning": "The requirement states that invoking 'flask init-db' CLI creates the 'user' and 'post' tables. We test: (1) positive \u2014 init_db() creates both tables and they are queryable; (2) negative \u2014 without calling init_db(), tables do not exist (OperationalError); (3) boundary \u2014 calling init_db() twice is idempotent (CREATE TABLE IF NOT EXISTS semantics in schema.sql, no error on second call). We also verify exact table names and that INSERT/SELECT round-trips work post-init, catching constant-mutation and boolean-negation operators.",
+    "tests": [
+      {
+        "name": "test_init_db_creates_user_and_post_tables",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "A fresh temporary SQLite database file exists",
+          "Flask app is created with TESTING=True pointing to that file",
+          "init_db() has NOT been called yet"
+        ],
+        "actions": [
+          "Create app with temp database path",
+          "Push application context",
+          "Call flaskr.db.init_db() inside the app context",
+          "Query sqlite_master for table names",
+          "Assert both 'user' and 'post' tables exist"
+        ],
+        "expected": [
+          "Table 'user' is present in sqlite_master",
+          "Table 'post' is present in sqlite_master",
+          "Exactly 2 tables are created (user and post)"
+        ],
+        "trace": [
+          "R-FLASKR-023: init-db CLI creates schema",
+          "EP: valid invocation path \u2014 both tables must be created"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\nfd, path = tempfile.mkstemp(suffix='.sqlite')\nos.close(fd)\n\napp = create_app({'TESTING': True, 'DATABASE': path})\n\nwith app.app_context():\n    init_db()\n    db = get_db()\n    rows = db.execute(\n        \"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\"\n    ).fetchall()\n    table_names = sorted([r[0] for r in rows])\n    assert 'user' in table_names, f\"'user' table missing; found: {table_names}\"\n    assert 'post' in table_names, f\"'post' table missing; found: {table_names}\"\n    assert len(table_names) == 2, f\"Expected exactly 2 tables, got: {table_names}\"\n\nos.unlink(path)\n\ndef test_init_db_creates_user_and_post_tables():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        db = get_db()\n        rows = db.execute(\n            \"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\"\n        ).fetchall()\n        table_names = sorted([r[0] for r in rows])\n        assert 'user' in table_names\n        assert 'post' in table_names\n        assert len(table_names) == 2\n    os.unlink(path)\n"
+      },
+      {
+        "name": "test_tables_absent_before_init_db",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "A fresh temporary SQLite database file exists",
+          "Flask app is created with TESTING=True pointing to that file",
+          "init_db() has NOT been called"
+        ],
+        "actions": [
+          "Create app with temp database path",
+          "Push application context",
+          "Do NOT call init_db()",
+          "Attempt to SELECT from 'user' table",
+          "Expect sqlite3.OperationalError to be raised"
+        ],
+        "expected": [
+          "sqlite3.OperationalError is raised because 'user' table does not exist",
+          "No tables are present in sqlite_master"
+        ],
+        "trace": [
+          "R-FLASKR-023: init-db CLI creates schema",
+          "NEG: without init_db invocation, schema must not exist \u2014 catches mutations that skip schema creation"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\ndef test_tables_absent_before_init_db():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        db = get_db()\n        rows = db.execute(\n            \"SELECT name FROM sqlite_master WHERE type='table'\"\n        ).fetchall()\n        table_names = [r[0] for r in rows]\n        assert 'user' not in table_names, \"'user' table should not exist before init_db\"\n        assert 'post' not in table_names, \"'post' table should not exist before init_db\"\n        assert len(table_names) == 0, f\"Expected 0 tables before init_db, got: {table_names}\"\n        raised = False\n        try:\n            db.execute(\"SELECT * FROM user\")\n        except sqlite3.OperationalError as e:\n            raised = True\n            assert 'no such table' in str(e).lower()\n        assert raised is True, \"Expected OperationalError when querying non-existent 'user' table\"\n    os.unlink(path)\n"
+      },
+      {
+        "name": "test_init_db_idempotent_called_twice",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "A fresh temporary SQLite database file exists",
+          "Flask app is created with TESTING=True pointing to that file"
+        ],
+        "actions": [
+          "Create app with temp database path",
+          "Push application context",
+          "Call init_db() a first time",
+          "Insert a row into 'user' table",
+          "Call init_db() a second time (schema.sql uses DROP/CREATE, so tables are recreated)",
+          "Query sqlite_master to confirm tables still exist",
+          "Assert no exception was raised on second call"
+        ],
+        "expected": [
+          "Second call to init_db() completes without raising an exception",
+          "Both 'user' and 'post' tables still exist after second call",
+          "Exactly 2 tables remain"
+        ],
+        "trace": [
+          "R-FLASKR-023: init-db CLI creates schema",
+          "BVA: boundary of invocation count \u2014 exactly 2 calls; catches mutations that make init_db non-reentrant or skip table creation on repeat"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\ndef test_init_db_idempotent_called_twice():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        db = get_db()\n        rows_after_first = db.execute(\n            \"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\"\n        ).fetchall()\n        tables_after_first = sorted([r[0] for r in rows_after_first])\n        assert 'user' in tables_after_first\n        assert 'post' in tables_after_first\n        assert len(tables_after_first) == 2\n        second_call_raised = False\n        try:\n            init_db()\n        except Exception:\n            second_call_raised = True\n        assert second_call_raised is False, \"Second init_db() call must not raise\"\n        rows_after_second = db.execute(\n            \"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\"\n        ).fetchall()\n        tables_after_second = sorted([r[0] for r in rows_after_second])\n        assert 'user' in tables_after_second\n        assert 'post' in tables_after_second\n        assert len(tables_after_second) == 2\n    os.unlink(path)\n"
+      },
+      {
+        "name": "test_init_db_user_table_columns_correct",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "A fresh temporary SQLite database file exists",
+          "Flask app is created with TESTING=True pointing to that file"
+        ],
+        "actions": [
+          "Create app with temp database path",
+          "Push application context",
+          "Call init_db()",
+          "Use PRAGMA table_info to inspect 'user' table columns",
+          "Assert columns id, username, password exist with correct types"
+        ],
+        "expected": [
+          "'user' table has column 'id' of type INTEGER",
+          "'user' table has column 'username' of type TEXT",
+          "'user' table has column 'password' of type TEXT",
+          "Exactly 3 columns in 'user' table"
+        ],
+        "trace": [
+          "R-FLASKR-023: init-db CLI creates schema",
+          "DT: decision table covering exact schema structure \u2014 catches mutations that alter column names or types"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\ndef test_init_db_user_table_columns_correct():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        db = get_db()\n        cols = db.execute(\"PRAGMA table_info(user)\").fetchall()\n        col_map = {c[1]: c[2].upper() for c in cols}\n        assert len(col_map) == 3, f\"Expected 3 columns in 'user', got: {list(col_map.keys())}\"\n        assert 'id' in col_map, \"'id' column missing from 'user'\"\n        assert 'username' in col_map, \"'username' column missing from 'user'\"\n        assert 'password' in col_map, \"'password' column missing from 'user'\"\n        assert col_map['id'] == 'INTEGER', f\"'id' type wrong: {col_map['id']}\"\n        assert col_map['username'] == 'TEXT', f\"'username' type wrong: {col_map['username']}\"\n        assert col_map['password'] == 'TEXT', f\"'password' type wrong: {col_map['password']}\"\n    os.unlink(path)\n"
+      },
+      {
+        "name": "test_init_db_post_table_columns_correct",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "A fresh temporary SQLite database file exists",
+          "Flask app is created with TESTING=True pointing to that file"
+        ],
+        "actions": [
+          "Create app with temp database path",
+          "Push application context",
+          "Call init_db()",
+          "Use PRAGMA table_info to inspect 'post' table columns",
+          "Assert columns id, author_id, created, title, body exist"
+        ],
+        "expected": [
+          "'post' table has column 'id' of type INTEGER",
+          "'post' table has column 'author_id' of type INTEGER",
+          "'post' table has column 'created' of type TIMESTAMP",
+          "'post' table has column 'title' of type TEXT",
+          "'post' table has column 'body' of type TEXT",
+          "Exactly 5 columns in 'post' table"
+        ],
+        "trace": [
+          "R-FLASKR-023: init-db CLI creates schema",
+          "DT: decision table covering exact post schema \u2014 catches mutations that drop or rename columns"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\ndef test_init_db_post_table_columns_correct():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        db = get_db()\n        cols = db.execute(\"PRAGMA table_info(post)\").fetchall()\n        col_map = {c[1]: c[2].upper() for c in cols}\n        assert len(col_map) == 5, f\"Expected 5 columns in 'post', got: {list(col_map.keys())}\"\n        assert 'id' in col_map, \"'id' column missing from 'post'\"\n        assert 'author_id' in col_map, \"'author_id' column missing from 'post'\"\n        assert 'created' in col_map, \"'created' column missing from 'post'\"\n        assert 'title' in col_map, \"'title' column missing from 'post'\"\n        assert 'body' in col_map, \"'body' column missing from 'post'\"\n        assert col_map['id'] == 'INTEGER'\n        assert col_map['author_id'] == 'INTEGER'\n        assert col_map['title'] == 'TEXT'\n        assert col_map['body'] == 'TEXT'\n    os.unlink(path)\n"
+      },
+      {
+        "name": "test_init_db_allows_insert_and_select_on_user",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "A fresh temporary SQLite database file exists",
+          "Flask app is created with TESTING=True pointing to that file",
+          "init_db() has been called"
+        ],
+        "actions": [
+          "Create app with temp database path",
+          "Push application context",
+          "Call init_db()",
+          "INSERT a user row into 'user' table",
+          "SELECT the row back and assert exact values"
+        ],
+        "expected": [
+          "INSERT succeeds without exception",
+          "SELECT returns exactly 1 row",
+          "Row username equals 'testuser'",
+          "Row password equals 'testhash'"
+        ],
+        "trace": [
+          "R-FLASKR-023: init-db CLI creates schema",
+          "STC: state transition \u2014 schema created state enables DML operations; catches mutations that create tables without correct constraints"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db, get_db\n\ndef test_init_db_allows_insert_and_select_on_user():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        db = get_db()\n        db.execute(\n            \"INSERT INTO user (username, password) VALUES (?, ?)\",\n            ('testuser', 'testhash')\n        )\n        db.commit()\n        row = db.execute(\n            \"SELECT username, password FROM user WHERE username = ?\",\n            ('testuser',)\n        ).fetchone()\n        assert row is not None, \"Inserted user row not found\"\n        assert row['username'] == 'testuser'\n        assert row['password'] == 'testhash'\n        count = db.execute(\"SELECT COUNT(*) FROM user WHERE username='testuser'\").fetchone()[0]\n        assert count == 1\n    os.unlink(path)\n"
+      },
+      {
+        "name": "test_init_db_cli_command_registered_and_outputs_message",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "A fresh temporary SQLite database file exists",
+          "Flask app is created with TESTING=True pointing to that file",
+          "The CLI runner is available via Flask's test CLI runner"
+        ],
+        "actions": [
+          "Create app with temp database path",
+          "Invoke 'init-db' via app.test_cli_runner()",
+          "Assert exit code is exactly 0",
+          "Assert output contains exact string 'Initialized the database.'"
+        ],
+        "expected": [
+          "CLI exit code is exactly 0 (not 1, not -1)",
+          "CLI output contains 'Initialized the database.'",
+          "Both 'user' and 'post' tables exist after CLI invocation"
+        ],
+        "trace": [
+          "R-FLASKR-023: init-db CLI creates schema",
+          "BVA: boundary of exit code (0 vs non-zero) and exact output string \u2014 catches mutations that alter click.echo message or suppress init_db call"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\ndef test_init_db_cli_command_registered_and_outputs_message():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    runner = app.test_cli_runner()\n    result = runner.invoke(args=['init-db'])\n    assert result.exit_code == 0, f\"Expected exit code 0, got {result.exit_code}; output: {result.output}\"\n    assert 'Initialized the database.' in result.output, (\n        f\"Expected 'Initialized the database.' in output, got: {result.output!r}\"\n    )\n    with app.app_context():\n        db = get_db()\n        rows = db.execute(\n            \"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\"\n        ).fetchall()\n        table_names = sorted([r[0] for r in rows])\n        assert 'user' in table_names\n        assert 'post' in table_names\n        assert len(table_names) == 2\n    os.unlink(path)\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-023",
+  "domain": "blogging",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6333,
+    "output_tokens": 4846,
+    "latency_ms": 56728,
+    "wall_ms": 56728,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-023\",\n  \"reasoning\": \"The requirement states that invoking 'flask init-db' CLI creates the 'user' and 'post' tables. We test: (1) positive \u2014 init_db() creates both tables and they are queryable; (2) negative \u2014 without calling init_db(), tables do not exist (OperationalError); (3) boundary \u2014 calling init_db() twice is idempotent (CREATE TABLE IF NOT EXISTS semantics in schema.sql, no error on second call). We also verify exact table names and that INSERT/SELECT round-trips work post-init, catching constant-mutation and boolean-negation operators.\",\n  \"tests\": [\n    {\n      \"name\": \"test_init_db_creates_user_and_post_tables\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"A fresh temporary SQLite database file exists\",\n        \"Flask app is created with TESTING=True pointing to that file\",\n        \"init_db() has NOT been called yet\"\n      ],\n      \"actions\": [\n        \"Create app with temp database path\",\n        \"Push application context\",\n        \"Call flaskr.db.init_db() inside the app context\",\n        \"Query sqlite_master for table names\",\n        \"Assert both 'user' and 'post' tables exist\"\n      ],\n      \"expected\": [\n        \"Table 'user' is present in sqlite_master\",\n        \"Table 'post' is present in sqlite_master\",\n        \"Exactly 2 tables are created (user and post)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-023: init-db CLI creates schema\",\n        \"EP: valid invocation path \u2014 both tables must be created\"\n      ],\n      \"executable\": \"import tempfile, os, sqlite3\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db, get_db\\n\\nfd, path = tempfile.mkstemp(suffix='.sqlite')\\nos.close(fd)\\n\\napp = create_app({'TESTING': True, 'DATABASE': path})\\n\\nwith app.app_context():\\n    init_db()\\n    db = get_db()\\n    rows = db.execute(\\n        \\\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\\\"\\n    ).fetchall()\\n    table_names = sorted([r[0] for r in rows])\\n    assert 'user' in table_names, f\\\"'user' table missing; found: {table_names}\\\"\\n    assert 'post' in table_names, f\\\"'post' table missing; found: {table_names}\\\"\\n    assert len(table_names) == 2, f\\\"Expected exactly 2 tables, got: {table_names}\\\"\\n\\nos.unlink(path)\\n\\ndef test_init_db_creates_user_and_post_tables():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        init_db()\\n        db = get_db()\\n        rows = db.execute(\\n            \\\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\\\"\\n        ).fetchall()\\n        table_names = sorted([r[0] for r in rows])\\n        assert 'user' in table_names\\n        assert 'post' in table_names\\n        assert len(table_names) == 2\\n    os.unlink(path)\\n\"\n    },\n    {\n      \"name\": \"test_tables_absent_before_init_db\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"A fresh temporary SQLite database file exists\",\n        \"Flask app is created with TESTING=True pointing to that file\",\n        \"init_db() has NOT been called\"\n      ],\n      \"actions\": [\n        \"Create app with temp database path\",\n        \"Push application context\",\n        \"Do NOT call init_db()\",\n        \"Attempt to SELECT from 'user' table\",\n        \"Expect sqlite3.OperationalError to be raised\"\n      ],\n      \"expected\": [\n        \"sqlite3.OperationalError is raised because 'user' table does not exist\",\n        \"No tables are present in sqlite_master\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-023: init-db CLI creates schema\",\n        \"NEG: without init_db invocation, schema must not exist \u2014 catches mutations that skip schema creation\"\n      ],\n      \"executable\": \"import tempfile, os, sqlite3\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db\\n\\ndef test_tables_absent_before_init_db():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    app = create_app"
+  }
+}

@@ -1,0 +1,169 @@
+{
+  "req": {
+    "id": "R-FLASKR-034",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "security",
+    "title": "Sessions use secret key",
+    "statement": "The system shall sign session cookies with the SECRET_KEY loaded from application config.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "sessions use secret key"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-034",
+    "reasoning": "R-FLASKR-034 requires that session cookies are signed with the SECRET_KEY from application config. Tests must verify: (1) a valid session cookie is issued and accepted when SECRET_KEY is set (positive/EP), (2) a cookie signed with a different SECRET_KEY is rejected (negative/NEG), and (3) the boundary where the SECRET_KEY is exactly the default 'dev' value still signs cookies correctly vs a custom key (boundary/BVA). We also verify the exact cookie name 'session' is present, that the session data is readable only with the correct key, and that tampering with the cookie causes the session to be treated as empty/invalid.",
+    "tests": [
+      {
+        "name": "test_session_cookie_signed_with_secret_key_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App created with TESTING=True and a custom SECRET_KEY",
+          "Database initialised with pre-loaded users"
+        ],
+        "actions": [
+          "POST /auth/login with valid credentials (Rahul/stone)",
+          "Inspect response cookies for 'session' cookie",
+          "GET / with the session cookie to confirm 200 and authenticated access"
+        ],
+        "expected": [
+          "POST /auth/login returns HTTP 302",
+          "A 'session' cookie is present in the response",
+          "GET / with the cookie returns HTTP 200"
+        ],
+        "trace": [
+          "R-FLASKR-034: session cookie must be issued and accepted when SECRET_KEY is configured"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'supersecret-test-key'})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\ndef test_session_cookie_signed_with_secret_key_positive():\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    cookies = r.headers.getlist('Set-Cookie')\n    cookie_names = [c.split('=')[0].strip() for c in cookies]\n    assert 'session' in cookie_names, f'Expected session cookie, got: {cookies}'\n    r2 = client.get('/')\n    assert r2.status_code == 200\n\ntest_session_cookie_signed_with_secret_key_positive()"
+      },
+      {
+        "name": "test_session_cookie_rejected_when_signed_with_wrong_key_negative",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Two app instances created with different SECRET_KEYs",
+          "Database initialised with pre-loaded users in both"
+        ],
+        "actions": [
+          "Login via app-A (SECRET_KEY='key-A') to obtain a signed session cookie",
+          "Extract the raw session cookie value",
+          "Send the cookie to app-B (SECRET_KEY='key-B') on GET /",
+          "Observe that app-B does not recognise the session (user not logged in)"
+        ],
+        "expected": [
+          "App-A login returns HTTP 302 and issues a session cookie",
+          "App-B GET / returns HTTP 200 but does NOT show authenticated user content (session is empty/invalid)"
+        ],
+        "trace": [
+          "R-FLASKR-034: cookie signed with wrong SECRET_KEY must not be accepted by the application"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd1, path1 = tempfile.mkstemp(); os.close(fd1)\nfd2, path2 = tempfile.mkstemp(); os.close(fd2)\n\napp_a = create_app({'TESTING': True, 'DATABASE': path1, 'SECRET_KEY': 'key-AAAA'})\nwith app_a.app_context():\n    from flaskr.db import init_db\n    init_db()\n\napp_b = create_app({'TESTING': True, 'DATABASE': path2, 'SECRET_KEY': 'key-BBBB'})\nwith app_b.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient_a = app_a.test_client()\nclient_b = app_b.test_client()\n\ndef test_session_cookie_rejected_when_signed_with_wrong_key_negative():\n    r = client_a.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    raw_cookie = None\n    for c in r.headers.getlist('Set-Cookie'):\n        if c.strip().startswith('session='):\n            raw_cookie = c.split(';')[0].split('=', 1)[1]\n            break\n    assert raw_cookie is not None, 'No session cookie from app_a'\n    client_b.set_cookie('session', raw_cookie)\n    r2 = client_b.get('/')\n    assert r2.status_code == 200\n    assert b'Log Out' not in r2.data, 'App-B should not accept app-A session cookie'\n\ntest_session_cookie_rejected_when_signed_with_wrong_key_negative()"
+      },
+      {
+        "name": "test_session_cookie_with_default_dev_key_boundary",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App created with SECRET_KEY exactly equal to the default 'dev' value",
+          "Database initialised with pre-loaded users"
+        ],
+        "actions": [
+          "POST /auth/login with valid credentials",
+          "Confirm session cookie is issued",
+          "GET / to confirm session is accepted with the 'dev' key",
+          "Verify that a second app with SECRET_KEY='dev2' (one char different) rejects the cookie"
+        ],
+        "expected": [
+          "Login returns 302 and issues a session cookie",
+          "GET / with same client returns 200 and shows authenticated state",
+          "Second app with 'dev2' key does NOT accept the 'dev'-signed cookie"
+        ],
+        "trace": [
+          "R-FLASKR-034: boundary \u2014 default 'dev' key must still sign cookies; one-character key difference must invalidate the cookie"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd1, path1 = tempfile.mkstemp(); os.close(fd1)\nfd2, path2 = tempfile.mkstemp(); os.close(fd2)\n\napp_dev = create_app({'TESTING': True, 'DATABASE': path1, 'SECRET_KEY': 'dev'})\nwith app_dev.app_context():\n    from flaskr.db import init_db\n    init_db()\n\napp_dev2 = create_app({'TESTING': True, 'DATABASE': path2, 'SECRET_KEY': 'dev2'})\nwith app_dev2.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient_dev = app_dev.test_client()\nclient_dev2 = app_dev2.test_client()\n\ndef test_session_cookie_with_default_dev_key_boundary():\n    r = client_dev.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\n    assert r.status_code == 302\n    raw_cookie = None\n    for c in r.headers.getlist('Set-Cookie'):\n        if c.strip().startswith('session='):\n            raw_cookie = c.split(';')[0].split('=', 1)[1]\n            break\n    assert raw_cookie is not None\n    r2 = client_dev.get('/')\n    assert r2.status_code == 200\n    assert b'Log Out' in r2.data, 'dev-key app should accept its own session cookie'\n    client_dev2.set_cookie('session', raw_cookie)\n    r3 = client_dev2.get('/')\n    assert r3.status_code == 200\n    assert b'Log Out' not in r3.data, 'dev2-key app must reject dev-key signed cookie'\n\ntest_session_cookie_with_default_dev_key_boundary()"
+      },
+      {
+        "name": "test_session_cookie_tampered_value_rejected",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "App created with a known SECRET_KEY",
+          "Database initialised with pre-loaded users"
+        ],
+        "actions": [
+          "Login to obtain a valid session cookie",
+          "Manually corrupt the cookie value by appending extra characters",
+          "Send the tampered cookie to GET /",
+          "Assert the session is not accepted (user not logged in)"
+        ],
+        "expected": [
+          "GET / with tampered cookie returns HTTP 200 (no crash)",
+          "Response does NOT contain 'Log Out' (session is invalid/empty)"
+        ],
+        "trace": [
+          "R-FLASKR-034: tampered session cookie must not be accepted; HMAC signature verification must fail"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'tamper-test-key'})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\ndef test_session_cookie_tampered_value_rejected():\n    r = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\n    assert r.status_code == 302\n    raw_cookie = None\n    for c in r.headers.getlist('Set-Cookie'):\n        if c.strip().startswith('session='):\n            raw_cookie = c.split(';')[0].split('=', 1)[1]\n            break\n    assert raw_cookie is not None, 'No session cookie issued'\n    tampered = raw_cookie + 'XXXXXX'\n    with app.test_client() as fresh_client:\n        fresh_client.set_cookie('session', tampered)\n        r2 = fresh_client.get('/')\n    assert r2.status_code == 200\n    assert b'Log Out' not in r2.data, 'Tampered cookie must not authenticate user'\n\ntest_session_cookie_tampered_value_rejected()"
+      },
+      {
+        "name": "test_session_config_secret_key_is_loaded_from_config",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App created with a specific SECRET_KEY value in test_config"
+        ],
+        "actions": [
+          "Inspect app.config['SECRET_KEY'] directly",
+          "Verify it matches the value passed to create_app",
+          "Login and confirm session cookie is issued (state transition: anonymous -> authenticated)"
+        ],
+        "expected": [
+          "app.config['SECRET_KEY'] == 'my-unique-secret-42'",
+          "Login returns 302",
+          "Session cookie present after login"
+        ],
+        "trace": [
+          "R-FLASKR-034: SECRET_KEY must be loaded from application config and used to sign session cookies"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\nSECRET = 'my-unique-secret-42'\napp = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': SECRET})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\ndef test_session_config_secret_key_is_loaded_from_config():\n    assert app.config['SECRET_KEY'] == SECRET, (\n        f\"Expected SECRET_KEY='{SECRET}', got '{app.config['SECRET_KEY']}'\"\n    )\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'Ishaan', 'password': 'stone'})\n    assert r.status_code == 302\n    cookie_names = [c.split('=')[0].strip() for c in r.headers.getlist('Set-Cookie')]\n    assert 'session' in cookie_names\n    r2 = client.get('/')\n    assert r2.status_code == 200\n    assert b'Log Out' in r2.data\n\ntest_session_config_secret_key_is_loaded_from_config()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-034",
+  "domain": "blogging",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6563,
+    "output_tokens": 3448,
+    "latency_ms": 44779,
+    "wall_ms": 44779,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-034\",\n  \"reasoning\": \"R-FLASKR-034 requires that session cookies are signed with the SECRET_KEY from application config. Tests must verify: (1) a valid session cookie is issued and accepted when SECRET_KEY is set (positive/EP), (2) a cookie signed with a different SECRET_KEY is rejected (negative/NEG), and (3) the boundary where the SECRET_KEY is exactly the default 'dev' value still signs cookies correctly vs a custom key (boundary/BVA). We also verify the exact cookie name 'session' is present, that the session data is readable only with the correct key, and that tampering with the cookie causes the session to be treated as empty/invalid.\",\n  \"tests\": [\n    {\n      \"name\": \"test_session_cookie_signed_with_secret_key_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App created with TESTING=True and a custom SECRET_KEY\",\n        \"Database initialised with pre-loaded users\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with valid credentials (Rahul/stone)\",\n        \"Inspect response cookies for 'session' cookie\",\n        \"GET / with the session cookie to confirm 200 and authenticated access\"\n      ],\n      \"expected\": [\n        \"POST /auth/login returns HTTP 302\",\n        \"A 'session' cookie is present in the response\",\n        \"GET / with the cookie returns HTTP 200\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-034: session cookie must be issued and accepted when SECRET_KEY is configured\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path, 'SECRET_KEY': 'supersecret-test-key'})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\n\\ndef test_session_cookie_signed_with_secret_key_positive():\\n    r = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    assert r.status_code == 302\\n    cookies = r.headers.getlist('Set-Cookie')\\n    cookie_names = [c.split('=')[0].strip() for c in cookies]\\n    assert 'session' in cookie_names, f'Expected session cookie, got: {cookies}'\\n    r2 = client.get('/')\\n    assert r2.status_code == 200\\n\\ntest_session_cookie_signed_with_secret_key_positive()\"\n    },\n    {\n      \"name\": \"test_session_cookie_rejected_when_signed_with_wrong_key_negative\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Two app instances created with different SECRET_KEYs\",\n        \"Database initialised with pre-loaded users in both\"\n      ],\n      \"actions\": [\n        \"Login via app-A (SECRET_KEY='key-A') to obtain a signed session cookie\",\n        \"Extract the raw session cookie value\",\n        \"Send the cookie to app-B (SECRET_KEY='key-B') on GET /\",\n        \"Observe that app-B does not recognise the session (user not logged in)\"\n      ],\n      \"expected\": [\n        \"App-A login returns HTTP 302 and issues a session cookie\",\n        \"App-B GET / returns HTTP 200 but does NOT show authenticated user content (session is empty/invalid)\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-034: cookie signed with wrong SECRET_KEY must not be accepted by the application\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\nfd1, path1 = tempfile.mkstemp(); os.close(fd1)\\nfd2, path2 = tempfile.mkstemp(); os.close(fd2)\\n\\napp_a = create_app({'TESTING': True, 'DATABASE': path1, 'SECRET_KEY': 'key-AAAA'})\\nwith app_a.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\napp_b = create_app({'TESTING': True, 'DATABASE': path2, 'SECRET_KEY': 'key-BBBB'})\\nwith app_b.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient_a = app_a.test_client()\\nclient_b = app_b.test_client()\\n\\ndef test_session_cookie_rejected_when_signed_with_wrong_key_negative():\\n    r = client_a.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\n    asse"
+  }
+}

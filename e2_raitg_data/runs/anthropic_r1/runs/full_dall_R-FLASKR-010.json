@@ -1,0 +1,140 @@
+{
+  "req": {
+    "id": "R-FLASKR-010",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "authn",
+    "title": "Login rejects wrong password",
+    "statement": "The system shall render an 'Incorrect password.' error when the password hash comparison fails.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "login rejects wrong password"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "Incorrect password."
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /auth/login"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-010",
+    "reasoning": "Two violations were reported: test[0] has kind=negative but heuristic=EP (EP is for equivalence partitioning which applies to both positive and negative, but the rule requires negative tests to use NEG heuristic); test[3] has kind=negative but heuristic=STC (STC is a state-transition heuristic, not a negative heuristic). Fix: change test[0] heuristic from EP to NEG, and change test[3] heuristic from STC to NEG. All other tests (test[1] positive/DT, test[2] boundary/BVA) are already passing and are preserved unchanged.",
+    "tests": [
+      {
+        "name": "test_login_wrong_password_shows_error",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is initialised with pre-loaded rows (user Rahul with password 'stone' exists)",
+          "Client is not authenticated"
+        ],
+        "actions": [
+          "POST /auth/login with username='Rahul' and password='wrongpassword'"
+        ],
+        "expected": [
+          "HTTP 200 (form re-rendered, not a redirect)",
+          "Response body contains exactly 'Incorrect password.'",
+          "Response body does NOT contain 'Incorrect username.'"
+        ],
+        "trace": [
+          "R-FLASKR-010: system shall render 'Incorrect password.' when hash comparison fails"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    from werkzeug.security import generate_password_hash\n    db = get_db()\n    db.execute(\"INSERT INTO user (username, password) VALUES (?, ?)\",\n               ('Rahul', generate_password_hash('stone')))\n    db.commit()\n\nclient = app.test_client()\n\ndef test_login_wrong_password_shows_error():\n    r = client.post('/auth/login',\n                    data={'username': 'Rahul', 'password': 'wrongpassword'})\n    assert r.status_code == 200\n    assert b'Incorrect password.' in r.data\n    assert b'Incorrect username.' not in r.data\n\ntest_login_wrong_password_shows_error()\n"
+      },
+      {
+        "name": "test_login_correct_password_no_error",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is initialised with pre-loaded rows (user Anjali with password 'cloud' exists)",
+          "Client is not authenticated"
+        ],
+        "actions": [
+          "POST /auth/login with username='Anjali' and password='cloud'"
+        ],
+        "expected": [
+          "HTTP 302 redirect (not 200)",
+          "Location header is '/'",
+          "Response body does NOT contain 'Incorrect password.'",
+          "Response body does NOT contain 'Incorrect username.'"
+        ],
+        "trace": [
+          "R-FLASKR-010: correct password must NOT trigger the error \u2014 validates the true branch of check_password_hash"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    from werkzeug.security import generate_password_hash\n    db = get_db()\n    db.execute(\"INSERT INTO user (username, password) VALUES (?, ?)\",\n               ('Anjali', generate_password_hash('cloud')))\n    db.commit()\n\nclient = app.test_client()\n\ndef test_login_correct_password_no_error():\n    r = client.post('/auth/login',\n                    data={'username': 'Anjali', 'password': 'cloud'})\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n    assert b'Incorrect password.' not in r.data\n    assert b'Incorrect username.' not in r.data\n\ntest_login_correct_password_no_error()\n"
+      },
+      {
+        "name": "test_login_password_off_by_one_char_shows_error",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is initialised with user Ishaan whose password is 'stone'",
+          "Client is not authenticated"
+        ],
+        "actions": [
+          "POST /auth/login with username='Ishaan' and password='ston' (one character shorter than correct password)"
+        ],
+        "expected": [
+          "HTTP 200 (form re-rendered)",
+          "Response body contains exactly 'Incorrect password.'",
+          "Response body does NOT contain 'Incorrect username.'",
+          "No redirect occurs"
+        ],
+        "trace": [
+          "R-FLASKR-010: even a password differing by one character must fail hash comparison and render 'Incorrect password.'"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    from werkzeug.security import generate_password_hash\n    db = get_db()\n    db.execute(\"INSERT INTO user (username, password) VALUES (?, ?)\",\n               ('Ishaan', generate_password_hash('stone')))\n    db.commit()\n\nclient = app.test_client()\n\ndef test_login_password_off_by_one_char_shows_error():\n    # 'ston' is 'stone' minus the last character \u2014 boundary BVA\n    r = client.post('/auth/login',\n                    data={'username': 'Ishaan', 'password': 'ston'})\n    assert r.status_code == 200\n    assert b'Incorrect password.' in r.data\n    assert b'Incorrect username.' not in r.data\n    # also verify case-variant is rejected (catches case-insensitive mutation)\n    r2 = client.post('/auth/login',\n                     data={'username': 'Ishaan', 'password': 'Stone'})\n    assert r2.status_code == 200\n    assert b'Incorrect password.' in r2.data\n\ntest_login_password_off_by_one_char_shows_error()\n"
+      },
+      {
+        "name": "test_login_wrong_password_does_not_redirect",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is initialised with user James whose password is 'river'",
+          "Client is not authenticated"
+        ],
+        "actions": [
+          "POST /auth/login with username='James' and password='RIVER' (wrong case)"
+        ],
+        "expected": [
+          "HTTP 200 (stays on login page, no redirect to index)",
+          "Response body contains 'Incorrect password.'",
+          "Session does not contain user_id (user is not logged in)"
+        ],
+        "trace": [
+          "R-FLASKR-010: failed password check must not advance session state to logged-in"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    init_db()\n    from werkzeug.security import generate_password_hash\n    db = get_db()\n    db.execute(\"INSERT INTO user (username, password) VALUES (?, ?)\",\n               ('James', generate_password_hash('river')))\n    db.commit()\n\nclient = app.test_client()\n\ndef test_login_wrong_password_does_not_redirect():\n    with client.session_transaction() as sess:\n        sess.clear()\n    r = client.post('/auth/login',\n                    data={'username': 'James', 'password': 'RIVER'})\n    assert r.status_code == 200\n    assert b'Incorrect password.' in r.data\n    # confirm session has no user_id \u2014 state did not advance\n    with client.session_transaction() as sess:\n        assert 'user_id' not in sess\n\ntest_login_wrong_password_does_not_redirect()\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-010",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8441,
+    "output_tokens": 2443,
+    "latency_ms": 32693,
+    "wall_ms": 32693,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-010\",\n  \"reasoning\": \"R-FLASKR-010 requires that POST /auth/login renders 'Incorrect password.' when a valid username is supplied but the password hash comparison fails. Three test cases are designed: (1) positive \u2014 a valid username with a wrong password triggers the exact error message and returns HTTP 200 (re-rendered form, not a redirect); (2) negative \u2014 a valid username with the correct password succeeds (no error, redirects to index), confirming the error path is not triggered spuriously; (3) boundary \u2014 a username that exists but whose password differs by exactly one character (off-by-one boundary on the credential string) still triggers 'Incorrect password.', catching mutations that weaken the hash comparison. All tests use pre-loaded credentials from the test data (Rahul/stone is valid; wrong passwords are 'ston', 'STONE', 'wrong'). Assertions are exact-value to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_login_wrong_password_shows_error\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is initialised with pre-loaded rows (user Rahul with password 'stone' exists)\",\n        \"Client is not authenticated\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='Rahul' and password='wrongpassword'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 (form re-rendered, not a redirect)\",\n        \"Response body contains exactly 'Incorrect password.'\",\n        \"Response body does NOT contain 'Incorrect username.'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-010: system shall render 'Incorrect password.' when hash comparison fails\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n    from werkzeug.security import generate_password_hash\\n    db = get_db()\\n    db.execute(\\\"INSERT INTO user (username, password) VALUES (?, ?)\\\",\\n               ('Rahul', generate_password_hash('stone')))\\n    db.commit()\\n\\nclient = app.test_client()\\n\\ndef test_login_wrong_password_shows_error():\\n    r = client.post('/auth/login',\\n                    data={'username': 'Rahul', 'password': 'wrongpassword'})\\n    assert r.status_code == 200\\n    assert b'Incorrect password.' in r.data\\n    assert b'Incorrect username.' not in r.data\\n\\ntest_login_wrong_password_shows_error()\\n\"\n    },\n    {\n      \"name\": \"test_login_correct_password_no_error\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"DT\",\n      \"preconditions\": [\n        \"Database is initialised with pre-loaded rows (user Anjali with password 'cloud' exists)\",\n        \"Client is not authenticated\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='Anjali' and password='cloud'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect (not 200)\",\n        \"Location header is '/'\",\n        \"Response body does NOT contain 'Incorrect password.'\",\n        \"Response body does NOT contain 'Incorrect username.'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-010: correct password must NOT trigger the error \u2014 validates the true branch of check_password_hash\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, init_db\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    init_db()\\n    from werkzeug.security import generate_password_hash\\n    db = get_db()\\n    db.execute(\\\"INSERT INTO user (username, password) VALUES (?, ?)\\\",\\n               ('Anjali', generate_password_hash('cloud')))\\n    db.commit()\\n\\nclient = app.test_client()\\n\\ndef test_login_correct_password_no_error():\\n    r = client.post('/auth/login',\\n                    data={'username': 'Anjali', 'password': 'cloud'})\\n    assert r.status_code == 302\\n    assert"
+  }
+}

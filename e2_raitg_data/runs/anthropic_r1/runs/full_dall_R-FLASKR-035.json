@@ -1,0 +1,197 @@
+{
+  "req": {
+    "id": "R-FLASKR-035",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "security",
+    "title": "Password hashing uses generate_password_hash",
+    "statement": "The system shall store passwords via werkzeug generate_password_hash rather than plaintext.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "password hashing uses generate_password_hash"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-035",
+    "reasoning": "R-FLASKR-035 requires that passwords are stored via werkzeug's generate_password_hash rather than plaintext. Tests must verify: (1) positive - registration succeeds and the stored password is a hash (not plaintext), (2) negative - plaintext password is NOT stored in the database, (3) boundary - the hash can be verified with check_password_hash (round-trip), and (4) additional coverage for state transition (register then login succeeds, proving hash is valid). We directly inspect the database row after registration to assert the stored value is a werkzeug hash string, not the original plaintext. We also verify login works (check_password_hash succeeds), and that the stored value differs from the plaintext input.",
+    "tests": [
+      {
+        "name": "test_password_stored_as_hash_not_plaintext",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Fresh database initialised",
+          "No existing user named 'TestHashUser'"
+        ],
+        "actions": [
+          "POST /auth/register with username='TestHashUser' and password='myplainpass'",
+          "Query the database for the stored password of 'TestHashUser'"
+        ],
+        "expected": [
+          "HTTP 302 redirect to /auth/login",
+          "Stored password is NOT equal to 'myplainpass'",
+          "Stored password starts with 'scrypt:' or 'pbkdf2:' (werkzeug hash prefix)",
+          "Stored password length is greater than len('myplainpass')"
+        ],
+        "trace": [
+          "R-FLASKR-035: password hashing uses generate_password_hash"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nplain = 'myplainpass'\nr = client.post('/auth/register', data={'username': 'TestHashUser', 'password': plain})\nassert r.status_code == 302, f'Expected 302, got {r.status_code}'\nassert r.headers['Location'] == '/auth/login'\n\nwith app.app_context():\n    db = get_db()\n    row = db.execute(\"SELECT password FROM user WHERE username = ?\", ('TestHashUser',)).fetchone()\n    stored = row['password']\n\nassert stored != plain, 'Password must not be stored as plaintext'\nassert len(stored) > len(plain), 'Hash must be longer than plaintext'\nassert (stored.startswith('scrypt:') or stored.startswith('pbkdf2:')), f'Expected werkzeug hash prefix, got: {stored[:20]}'\nos.unlink(path)\n"
+      },
+      {
+        "name": "test_plaintext_password_not_in_database",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Fresh database initialised",
+          "No existing user named 'NegUser'"
+        ],
+        "actions": [
+          "POST /auth/register with username='NegUser' and password='river'",
+          "Query the database for the stored password of 'NegUser'",
+          "Assert stored value is not the plaintext 'river'"
+        ],
+        "expected": [
+          "HTTP 302 on registration",
+          "Stored password != 'river'",
+          "Stored password does not contain 'river' as a substring at position 0"
+        ],
+        "trace": [
+          "R-FLASKR-035: plaintext must never appear in the password column"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nplain = 'river'\nr = client.post('/auth/register', data={'username': 'NegUser', 'password': plain})\nassert r.status_code == 302\n\nwith app.app_context():\n    db = get_db()\n    row = db.execute(\"SELECT password FROM user WHERE username = ?\", ('NegUser',)).fetchone()\n    stored = row['password']\n\nassert stored != plain, 'Plaintext password must not be stored'\nassert stored[:5] != plain[:5] or len(stored) != len(plain), 'Stored value looks like plaintext'\nassert plain not in stored or len(stored) > 20, 'Plaintext must not appear verbatim as the full stored value'\nassert stored != '', 'Stored password must not be empty'\nos.unlink(path)\n"
+      },
+      {
+        "name": "test_hash_round_trip_check_password_hash",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Fresh database initialised",
+          "No existing user named 'BVAUser'"
+        ],
+        "actions": [
+          "POST /auth/register with username='BVAUser' and password='stone'",
+          "Retrieve stored hash from database",
+          "Call werkzeug check_password_hash(stored, 'stone') -> must be True",
+          "Call werkzeug check_password_hash(stored, 'STONE') -> must be False (case-sensitive)",
+          "Call werkzeug check_password_hash(stored, '') -> must be False"
+        ],
+        "expected": [
+          "check_password_hash(stored, 'stone') == True",
+          "check_password_hash(stored, 'STONE') == False",
+          "check_password_hash(stored, '') == False"
+        ],
+        "trace": [
+          "R-FLASKR-035: hash produced by generate_password_hash must be verifiable by check_password_hash"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\nfrom werkzeug.security import check_password_hash\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nplain = 'stone'\nr = client.post('/auth/register', data={'username': 'BVAUser', 'password': plain})\nassert r.status_code == 302\n\nwith app.app_context():\n    db = get_db()\n    row = db.execute(\"SELECT password FROM user WHERE username = ?\", ('BVAUser',)).fetchone()\n    stored = row['password']\n\nassert check_password_hash(stored, plain) == True, 'Correct password must verify'\nassert check_password_hash(stored, 'STONE') == False, 'Wrong case must not verify'\nassert check_password_hash(stored, '') == False, 'Empty password must not verify'\nassert check_password_hash(stored, plain + ' ') == False, 'Padded password must not verify'\nos.unlink(path)\n"
+      },
+      {
+        "name": "test_login_succeeds_after_hashed_registration",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Fresh database initialised",
+          "User 'STCUser' registered with password 'cloud'"
+        ],
+        "actions": [
+          "POST /auth/register with username='STCUser' and password='cloud'",
+          "POST /auth/login with username='STCUser' and password='cloud'",
+          "Assert login redirects to index (hash was stored correctly and is verifiable)"
+        ],
+        "expected": [
+          "Registration returns HTTP 302",
+          "Login returns HTTP 302 to '/' (index)",
+          "State transitions: anonymous -> registered -> logged-in"
+        ],
+        "trace": [
+          "R-FLASKR-035: hash stored by generate_password_hash must allow successful login via check_password_hash"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nr_reg = client.post('/auth/register', data={'username': 'STCUser', 'password': 'cloud'})\nassert r_reg.status_code == 302\nassert r_reg.headers['Location'] == '/auth/login'\n\nr_login = client.post('/auth/login', data={'username': 'STCUser', 'password': 'cloud'})\nassert r_login.status_code == 302\nassert r_login.headers['Location'] == '/'\n\nr_wrong = client.post('/auth/login', data={'username': 'STCUser', 'password': 'wrongpass'})\nassert r_wrong.status_code == 200\nassert b'Incorrect password.' in r_wrong.data\nos.unlink(path)\n"
+      },
+      {
+        "name": "test_different_passwords_produce_different_hashes",
+        "kind": "boundary",
+        "heuristic": "DT",
+        "preconditions": [
+          "Fresh database initialised",
+          "Two users registered with different passwords"
+        ],
+        "actions": [
+          "Register 'UserA' with password 'stone'",
+          "Register 'UserB' with password 'cloud'",
+          "Retrieve both stored hashes",
+          "Assert the two hashes are different from each other and from their plaintexts"
+        ],
+        "expected": [
+          "hash_A != 'stone'",
+          "hash_B != 'cloud'",
+          "hash_A != hash_B",
+          "hash_A != hash_B (different inputs produce different outputs)"
+        ],
+        "trace": [
+          "R-FLASKR-035: generate_password_hash must produce distinct hashes for distinct passwords"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nclient.post('/auth/register', data={'username': 'UserA', 'password': 'stone'})\nclient.post('/auth/register', data={'username': 'UserB', 'password': 'cloud'})\n\nwith app.app_context():\n    db = get_db()\n    row_a = db.execute(\"SELECT password FROM user WHERE username = ?\", ('UserA',)).fetchone()\n    row_b = db.execute(\"SELECT password FROM user WHERE username = ?\", ('UserB',)).fetchone()\n    hash_a = row_a['password']\n    hash_b = row_b['password']\n\nassert hash_a != 'stone', 'UserA password must not be plaintext'\nassert hash_b != 'cloud', 'UserB password must not be plaintext'\nassert hash_a != hash_b, 'Different passwords must produce different hashes'\nassert len(hash_a) > 10, 'Hash must be non-trivially long'\nassert len(hash_b) > 10, 'Hash must be non-trivially long'\nos.unlink(path)\n"
+      },
+      {
+        "name": "test_same_password_produces_salted_different_hashes",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Fresh database initialised",
+          "Two users registered with the SAME password"
+        ],
+        "actions": [
+          "Register 'SaltUser1' with password 'stone'",
+          "Register 'SaltUser2' with password 'stone'",
+          "Retrieve both stored hashes",
+          "Assert the two hashes differ (salting ensures uniqueness)"
+        ],
+        "expected": [
+          "hash_1 != 'stone'",
+          "hash_2 != 'stone'",
+          "hash_1 != hash_2 (salted hashes differ even for same plaintext)"
+        ],
+        "trace": [
+          "R-FLASKR-035: generate_password_hash uses salt so identical passwords yield distinct stored values"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\nfrom werkzeug.security import check_password_hash\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\nclient.post('/auth/register', data={'username': 'SaltUser1', 'password': 'stone'})\nclient.post('/auth/register', data={'username': 'SaltUser2', 'password': 'stone'})\n\nwith app.app_context():\n    db = get_db()\n    h1 = db.execute(\"SELECT password FROM user WHERE username = ?\", ('SaltUser1',)).fetchone()['password']\n    h2 = db.execute(\"SELECT password FROM user WHERE username = ?\", ('SaltUser2',)).fetchone()['password']\n\nassert h1 != 'stone'\nassert h2 != 'stone'\nassert h1 != h2, 'Salted hashes for same password must differ'\nassert check_password_hash(h1, 'stone') == True\nassert check_password_hash(h2, 'stone') == True\nos.unlink(path)\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-035",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8444,
+    "output_tokens": 3775,
+    "latency_ms": 45555,
+    "wall_ms": 45555,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-035\",\n  \"reasoning\": \"R-FLASKR-035 requires that passwords are stored via werkzeug's generate_password_hash rather than plaintext. Tests must verify: (1) positive - registration succeeds and the stored password is a hash (not plaintext), (2) negative - plaintext password is NOT stored in the database, (3) boundary - the hash can be verified with check_password_hash (round-trip), and (4) additional coverage for state transition (register then login succeeds, proving hash is valid). We directly inspect the database row after registration to assert the stored value is a werkzeug hash string, not the original plaintext. We also verify login works (check_password_hash succeeds), and that the stored value differs from the plaintext input.\",\n  \"tests\": [\n    {\n      \"name\": \"test_password_stored_as_hash_not_plaintext\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Fresh database initialised\",\n        \"No existing user named 'TestHashUser'\"\n      ],\n      \"actions\": [\n        \"POST /auth/register with username='TestHashUser' and password='myplainpass'\",\n        \"Query the database for the stored password of 'TestHashUser'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect to /auth/login\",\n        \"Stored password is NOT equal to 'myplainpass'\",\n        \"Stored password starts with 'scrypt:' or 'pbkdf2:' (werkzeug hash prefix)\",\n        \"Stored password length is greater than len('myplainpass')\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-035: password hashing uses generate_password_hash\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\nplain = 'myplainpass'\\nr = client.post('/auth/register', data={'username': 'TestHashUser', 'password': plain})\\nassert r.status_code == 302, f'Expected 302, got {r.status_code}'\\nassert r.headers['Location'] == '/auth/login'\\n\\nwith app.app_context():\\n    db = get_db()\\n    row = db.execute(\\\"SELECT password FROM user WHERE username = ?\\\", ('TestHashUser',)).fetchone()\\n    stored = row['password']\\n\\nassert stored != plain, 'Password must not be stored as plaintext'\\nassert len(stored) > len(plain), 'Hash must be longer than plaintext'\\nassert (stored.startswith('scrypt:') or stored.startswith('pbkdf2:')), f'Expected werkzeug hash prefix, got: {stored[:20]}'\\nos.unlink(path)\\n\"\n    },\n    {\n      \"name\": \"test_plaintext_password_not_in_database\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Fresh database initialised\",\n        \"No existing user named 'NegUser'\"\n      ],\n      \"actions\": [\n        \"POST /auth/register with username='NegUser' and password='river'\",\n        \"Query the database for the stored password of 'NegUser'\",\n        \"Assert stored value is not the plaintext 'river'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 on registration\",\n        \"Stored password != 'river'\",\n        \"Stored password does not contain 'river' as a substring at position 0\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-035: plaintext must never appear in the password column\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\nplain = 'river'\\nr = client.post('/auth/register', data={'username': 'NegUser', 'password': plain})\\nassert r.status_code == 302\\n\\nwith app.app_context():\\n    db = get_db()\\n    row = db.execute(\\\"SELECT password FROM user WHERE username = ?\\\", ('NegUser',)).fetchone()\\n    stored = row['password']\\n\\nassert stored != plain, 'Plaintext p"
+  }
+}

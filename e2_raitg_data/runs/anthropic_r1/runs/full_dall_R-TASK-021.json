@@ -1,0 +1,223 @@
+{
+  "req": {
+    "id": "R-TASK-021",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Task creation persists",
+    "statement": "The system shall commit new task rows so subsequent GET calls return them across requests.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task creation persists"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-021",
+    "reasoning": "R-TASK-021 requires that POST /tasks/ commits new task rows so subsequent GET calls return them. Tests must cover: (1) positive EP \u2014 a valid task is created and retrievable via GET /tasks/{id}; (2) negative NEG \u2014 invalid payloads (null title, over-length title, over-length description, null completed) are rejected with 422; (3) boundary BVA \u2014 title at exactly 1 char (min) and 100 chars (max) are accepted, title at 0 chars and 101 chars are rejected; (4) STC \u2014 state transition from non-existent to persisted, confirmed by GET; (5) DT \u2014 completed=true vs completed=false both persist correctly. All tests use in-process TestClient with a fresh in-memory SQLite DB to ensure isolation and determinism.",
+    "tests": [
+      {
+        "name": "test_create_task_positive_persists_via_get",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite DB",
+          "No tasks exist with the title 'Read chapter 5 test'"
+        ],
+        "actions": [
+          "POST /tasks/ with valid title, description, completed=false",
+          "Assert 201 response with correct payload fields",
+          "GET /tasks/{id} with the returned id",
+          "Assert 200 response and payload matches created task"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "Response JSON contains id, title, description, completed=false, created_at",
+          "GET /tasks/{id} returns HTTP 200",
+          "GET payload matches POST payload exactly on title, description, completed"
+        ],
+        "trace": [
+          "R-TASK-021: new task rows committed so subsequent GET returns them"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_create_task_positive_persists_via_get():\n    payload = {\"title\": \"Read chapter 5 test\", \"description\": \"Some description\", \"completed\": False}\n    r_post = client.post(\"/tasks/\", json=payload)\n    assert r_post.status_code == 201\n    data = r_post.json()\n    assert data[\"title\"] == \"Read chapter 5 test\"\n    assert data[\"description\"] == \"Some description\"\n    assert data[\"completed\"] == False\n    assert \"id\" in data\n    assert \"created_at\" in data\n    task_id = data[\"id\"]\n    r_get = client.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 200\n    get_data = r_get.json()\n    assert get_data[\"id\"] == task_id\n    assert get_data[\"title\"] == \"Read chapter 5 test\"\n    assert get_data[\"description\"] == \"Some description\"\n    assert get_data[\"completed\"] == False\n\ntest_create_task_positive_persists_via_get()"
+      },
+      {
+        "name": "test_create_task_null_title_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite DB"
+        ],
+        "actions": [
+          "POST /tasks/ with title=null (missing required field)",
+          "Assert response is 422 Unprocessable Entity"
+        ],
+        "expected": [
+          "POST returns HTTP 422",
+          "Response body contains validation error detail"
+        ],
+        "trace": [
+          "R-TASK-021 error pathway: HTTP 4xx on client error",
+          "Invalid row profile: title NULL in NOT NULL column"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine2 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal2 = sessionmaker(autocommit=False, autoflush=False, bind=engine2)\nmodels.Base.metadata.create_all(bind=engine2)\n\ndef override_get_db2():\n    db = TestingSessionLocal2()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db2\nclient2 = TestClient(app)\n\ndef test_create_task_null_title_rejected():\n    r = client2.post(\"/tasks/\", json={\"description\": \"Some desc\", \"completed\": False})\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ndef test_create_task_null_completed_rejected():\n    r = client2.post(\"/tasks/\", json={\"title\": \"Prepare meeting agenda\", \"description\": \"Harbor matrix\", \"completed\": None})\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ndef test_create_task_description_over_500_rejected():\n    long_desc = \"X\" * 501\n    r = client2.post(\"/tasks/\", json={\"title\": \"Submit expense report\", \"description\": long_desc, \"completed\": True})\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_create_task_null_title_rejected()\ntest_create_task_null_completed_rejected()\ntest_create_task_description_over_500_rejected()"
+      },
+      {
+        "name": "test_create_task_title_boundary_values",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite DB",
+          "title field has min_length=1, max_length=100"
+        ],
+        "actions": [
+          "POST /tasks/ with title of length 1 (min boundary) \u2014 expect 201",
+          "POST /tasks/ with title of length 100 (max boundary) \u2014 expect 201",
+          "POST /tasks/ with title of length 0 (below min) \u2014 expect 422",
+          "POST /tasks/ with title of length 101 (above max) \u2014 expect 422"
+        ],
+        "expected": [
+          "title length 1 => HTTP 201, title in response equals single char",
+          "title length 100 => HTTP 201, title in response has length 100",
+          "title length 0 (empty string) => HTTP 422",
+          "title length 101 => HTTP 422"
+        ],
+        "trace": [
+          "R-TASK-021: boundary valid rows accepted; boundary invalid rows rejected",
+          "BVA on title min_length=1, max_length=100"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine3 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal3 = sessionmaker(autocommit=False, autoflush=False, bind=engine3)\nmodels.Base.metadata.create_all(bind=engine3)\n\ndef override_get_db3():\n    db = TestingSessionLocal3()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db3\nclient3 = TestClient(app)\n\ndef test_title_boundary_values():\n    r1 = client3.post(\"/tasks/\", json={\"title\": \"A\", \"completed\": False})\n    assert r1.status_code == 201\n    assert r1.json()[\"title\"] == \"A\"\n    title_100 = \"B\" * 100\n    r2 = client3.post(\"/tasks/\", json={\"title\": title_100, \"completed\": False})\n    assert r2.status_code == 201\n    assert len(r2.json()[\"title\"]) == 100\n    r3 = client3.post(\"/tasks/\", json={\"title\": \"\", \"completed\": False})\n    assert r3.status_code == 422\n    title_101 = \"C\" * 101\n    r4 = client3.post(\"/tasks/\", json={\"title\": title_101, \"completed\": False})\n    assert r4.status_code == 422\n\ntest_title_boundary_values()"
+      },
+      {
+        "name": "test_create_task_completed_true_persists",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite DB"
+        ],
+        "actions": [
+          "POST /tasks/ with completed=true",
+          "Assert 201 and completed=true in response",
+          "GET /tasks/{id} and assert completed=true persisted",
+          "POST /tasks/ with completed=false",
+          "Assert 201 and completed=false in response",
+          "GET /tasks/{id} and assert completed=false persisted"
+        ],
+        "expected": [
+          "completed=true task: POST 201, GET 200, completed==True",
+          "completed=false task: POST 201, GET 200, completed==False"
+        ],
+        "trace": [
+          "R-TASK-021: both boolean values of completed persist correctly",
+          "DT: completed=true branch and completed=false branch"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine4 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal4 = sessionmaker(autocommit=False, autoflush=False, bind=engine4)\nmodels.Base.metadata.create_all(bind=engine4)\n\ndef override_get_db4():\n    db = TestingSessionLocal4()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db4\nclient4 = TestClient(app)\n\ndef test_create_task_completed_true_persists():\n    r = client4.post(\"/tasks/\", json={\"title\": \"Book flight tickets\", \"completed\": True})\n    assert r.status_code == 201\n    d = r.json()\n    assert d[\"completed\"] == True\n    task_id = d[\"id\"]\n    rg = client4.get(f\"/tasks/{task_id}\")\n    assert rg.status_code == 200\n    assert rg.json()[\"completed\"] == True\n    r2 = client4.post(\"/tasks/\", json={\"title\": \"Fix login bug\", \"completed\": False})\n    assert r2.status_code == 201\n    d2 = r2.json()\n    assert d2[\"completed\"] == False\n    task_id2 = d2[\"id\"]\n    rg2 = client4.get(f\"/tasks/{task_id2}\")\n    assert rg2.status_code == 200\n    assert rg2.json()[\"completed\"] == False\n\ntest_create_task_completed_true_persists()"
+      },
+      {
+        "name": "test_create_task_state_transition_not_found_to_persisted",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite DB",
+          "No task with the target id exists yet"
+        ],
+        "actions": [
+          "GET /tasks/999 \u2014 expect 404 (task does not exist)",
+          "POST /tasks/ with valid payload",
+          "GET /tasks/{returned_id} \u2014 expect 200 (task now exists)"
+        ],
+        "expected": [
+          "Initial GET returns 404",
+          "POST returns 201 with new id",
+          "Subsequent GET with new id returns 200 and matching payload"
+        ],
+        "trace": [
+          "R-TASK-021: state transition from non-existent to persisted confirmed by GET"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine5 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal5 = sessionmaker(autocommit=False, autoflush=False, bind=engine5)\nmodels.Base.metadata.create_all(bind=engine5)\n\ndef override_get_db5():\n    db = TestingSessionLocal5()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db5\nclient5 = TestClient(app)\n\ndef test_state_transition_not_found_to_persisted():\n    r_pre = client5.get(\"/tasks/999\")\n    assert r_pre.status_code == 404\n    payload = {\"title\": \"Organize desk\", \"description\": None, \"completed\": False}\n    r_post = client5.post(\"/tasks/\", json=payload)\n    assert r_post.status_code == 201\n    d = r_post.json()\n    new_id = d[\"id\"]\n    assert d[\"title\"] == \"Organize desk\"\n    assert d[\"completed\"] == False\n    r_get = client5.get(f\"/tasks/{new_id}\")\n    assert r_get.status_code == 200\n    gd = r_get.json()\n    assert gd[\"id\"] == new_id\n    assert gd[\"title\"] == \"Organize desk\"\n    assert gd[\"completed\"] == False\n\ntest_state_transition_not_found_to_persisted()"
+      },
+      {
+        "name": "test_create_task_description_boundary_500_chars",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite DB",
+          "description field has max_length=500"
+        ],
+        "actions": [
+          "POST /tasks/ with description of exactly 500 chars \u2014 expect 201",
+          "POST /tasks/ with description of exactly 501 chars \u2014 expect 422",
+          "POST /tasks/ with description of exactly 1 char \u2014 expect 201",
+          "POST /tasks/ with description=null \u2014 expect 201 (nullable)"
+        ],
+        "expected": [
+          "description length 500 => HTTP 201, description preserved",
+          "description length 501 => HTTP 422",
+          "description length 1 => HTTP 201",
+          "description null => HTTP 201, description is null in response"
+        ],
+        "trace": [
+          "R-TASK-021: boundary valid rows accepted; boundary invalid rows rejected",
+          "BVA on description max_length=500 and nullable"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine6 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal6 = sessionmaker(autocommit=False, autoflush=False, bind=engine6)\nmodels.Base.metadata.create_all(bind=engine6)\n\ndef override_get_db6():\n    db = TestingSessionLocal6()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db6\nclient6 = TestClient(app)\n\ndef test_description_boundary_500_chars():\n    desc_500 = \"X\" * 500\n    r1 = client6.post(\"/tasks/\", json={\"title\": \"Reply to emails\", \"description\": desc_500, \"completed\": False})\n    assert r1.status_code == 201\n    assert len(r1.json()[\"description\"]) == 500\n    desc_501 = \"X\" * 501\n    r2 = client6.post(\"/tasks/\", json={\"title\": \"Reply to emails\", \"description\": desc_501, \"completed\": False})\n    assert r2.status_code == 422\n    r3 = client6.post(\"/tasks/\", json={\"title\": \"Water the plants\", \"description\": \"A\", \"completed\": True})\n    assert r3.status_code == 201\n    assert r3.json()[\"description\"] == \"A\"\n    r4 = client6.post(\"/tasks/\", json={\"title\": \"Pay electricity bill\", \"description\": None, \"completed\": True})\n    assert r4.status_code == 201\n    assert r4.json()[\"description\"] is None\n\ntest_description_boundary_500_chars()"
+      },
+      {
+        "name": "test_create_task_title_over_max_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is running in-process with a clean in-memory SQLite DB",
+          "title field has max_length=100"
+        ],
+        "actions": [
+          "POST /tasks/ with title of 130 chars (from invalid profile) \u2014 expect 422",
+          "Verify no task was persisted by checking GET /tasks/ list length is unchanged"
+        ],
+        "expected": [
+          "POST returns HTTP 422",
+          "GET /tasks/ returns empty list (no task was committed)"
+        ],
+        "trace": [
+          "R-TASK-021 error pathway: HTTP 4xx on client error",
+          "Invalid row profile: title exceeds max length 120 (schema max is 100)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db\nfrom app import models\n\nengine7 = create_engine(\"sqlite:///:memory:\", connect_args={\"check_same_thread\": False})\nTestingSessionLocal7 = sessionmaker(autocommit=False, autoflush=False, bind=engine7)\nmodels.Base.metadata.create_all(bind=engine7)\n\ndef override_get_db7():\n    db = TestingSessionLocal7()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db7\nclient7 = TestClient(app)\n\ndef test_create_task_title_over_max_rejected():\n    long_title = \"X\" * 130\n    r = client7.post(\"/tasks/\", json={\"title\": long_title, \"description\": \"Delta willow vertex flux alpha orbit.\", \"completed\": True})\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n    r_list = client7.get(\"/tasks/\")\n    assert r_list.status_code == 200\n    assert r_list.json() == []\n\ntest_create_task_title_over_max_rejected()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-021",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7565,
+    "output_tokens": 5500,
+    "latency_ms": 63638,
+    "wall_ms": 63638,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-021\",\n  \"reasoning\": \"R-TASK-021 requires that POST /tasks/ commits new task rows so subsequent GET calls return them. Tests must cover: (1) positive EP \u2014 a valid task is created and retrievable via GET /tasks/{id}; (2) negative NEG \u2014 invalid payloads (null title, over-length title, over-length description, null completed) are rejected with 422; (3) boundary BVA \u2014 title at exactly 1 char (min) and 100 chars (max) are accepted, title at 0 chars and 101 chars are rejected; (4) STC \u2014 state transition from non-existent to persisted, confirmed by GET; (5) DT \u2014 completed=true vs completed=false both persist correctly. All tests use in-process TestClient with a fresh in-memory SQLite DB to ensure isolation and determinism.\",\n  \"tests\": [\n    {\n      \"name\": \"test_create_task_positive_persists_via_get\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App is running in-process with a clean in-memory SQLite DB\",\n        \"No tasks exist with the title 'Read chapter 5 test'\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with valid title, description, completed=false\",\n        \"Assert 201 response with correct payload fields\",\n        \"GET /tasks/{id} with the returned id\",\n        \"Assert 200 response and payload matches created task\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 201\",\n        \"Response JSON contains id, title, description, completed=false, created_at\",\n        \"GET /tasks/{id} returns HTTP 200\",\n        \"GET payload matches POST payload exactly on title, description, completed\"\n      ],\n      \"trace\": [\n        \"R-TASK-021: new task rows committed so subsequent GET returns them\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db\\nfrom app import models\\n\\nengine = create_engine(\\\"sqlite:///:memory:\\\", connect_args={\\\"check_same_thread\\\": False})\\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_create_task_positive_persists_via_get():\\n    payload = {\\\"title\\\": \\\"Read chapter 5 test\\\", \\\"description\\\": \\\"Some description\\\", \\\"completed\\\": False}\\n    r_post = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r_post.status_code == 201\\n    data = r_post.json()\\n    assert data[\\\"title\\\"] == \\\"Read chapter 5 test\\\"\\n    assert data[\\\"description\\\"] == \\\"Some description\\\"\\n    assert data[\\\"completed\\\"] == False\\n    assert \\\"id\\\" in data\\n    assert \\\"created_at\\\" in data\\n    task_id = data[\\\"id\\\"]\\n    r_get = client.get(f\\\"/tasks/{task_id}\\\")\\n    assert r_get.status_code == 200\\n    get_data = r_get.json()\\n    assert get_data[\\\"id\\\"] == task_id\\n    assert get_data[\\\"title\\\"] == \\\"Read chapter 5 test\\\"\\n    assert get_data[\\\"description\\\"] == \\\"Some description\\\"\\n    assert get_data[\\\"completed\\\"] == False\\n\\ntest_create_task_positive_persists_via_get()\"\n    },\n    {\n      \"name\": \"test_create_task_null_title_rejected\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is running in-process with a clean in-memory SQLite DB\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title=null (missing required field)\",\n        \"Assert response is 422 Unprocessable Entity\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 422\",\n        \"Response body contains validation error detail\"\n      ],\n      \"trace\": [\n        \"R-TASK-021 error pathway: HTTP 4xx on client error\",\n        \"Invalid row profile: title NULL in NOT NULL column\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom s"
+  }
+}

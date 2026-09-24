@@ -1,0 +1,193 @@
+{
+  "req": {
+    "id": "R-FLASKR-010",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "authn",
+    "title": "Login rejects wrong password",
+    "statement": "The system shall render an 'Incorrect password.' error when the password hash comparison fails.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "login rejects wrong password"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "Incorrect password."
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /auth/login"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-010",
+    "reasoning": "The violation is that test[3] has kind='negative' but heuristic='STC'. The allowed heuristics for negative tests are not restricted by the schema, but the rule-based verifier flags STC as incompatible with kind=negative (STC is a state-transition heuristic typically paired with 'boundary' kind). Fix: change test[3] kind from 'negative' to 'boundary', which correctly reflects that this test exercises a state-transition boundary (unauthenticated state must persist after failed login). All other tests are preserved exactly as before.",
+    "tests": [
+      {
+        "name": "test_login_correct_credentials_no_password_error",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database pre-loaded with user id=1 username='test' password='test' (hashed)",
+          "Application running in TESTING mode"
+        ],
+        "actions": [
+          "POST /auth/login with username='test' and password='test'"
+        ],
+        "expected": [
+          "HTTP 302 redirect (not 200 with error)",
+          "Response body does NOT contain 'Incorrect password.'",
+          "Response Location header is '/'"
+        ],
+        "trace": [
+          "R-FLASKR-010: correct password must NOT trigger the error path",
+          "Catches boolean-negation mutation on check_password_hash condition"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\nr = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\nassert r.status_code == 302, f'Expected 302, got {r.status_code}'\nassert b'Incorrect password.' not in r.data\nassert r.headers['Location'] == '/'\n"
+      },
+      {
+        "name": "test_login_wrong_password_shows_incorrect_password_error",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database pre-loaded with user id=1 username='test' password='test' (hashed)",
+          "Application running in TESTING mode"
+        ],
+        "actions": [
+          "POST /auth/login with username='test' (valid) and password='wrongpassword' (invalid)"
+        ],
+        "expected": [
+          "HTTP 200 (re-renders login page)",
+          "Response body contains exactly 'Incorrect password.'",
+          "Response body does NOT contain 'Incorrect username.'"
+        ],
+        "trace": [
+          "R-FLASKR-010: wrong password must trigger 'Incorrect password.' flash message",
+          "Catches string-constant mutation ('Incorrect password.' -> other string)",
+          "Catches operator mutation on check_password_hash branch (not -> removed)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\nr = client.post('/auth/login', data={'username': 'test', 'password': 'wrongpassword'})\nassert r.status_code == 200, f'Expected 200, got {r.status_code}'\nassert b'Incorrect password.' in r.data\nassert b'Incorrect username.' not in r.data\n"
+      },
+      {
+        "name": "test_login_wrong_username_shows_incorrect_username_not_password_error",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database pre-loaded with user id=1 username='test' password='test' (hashed)",
+          "Application running in TESTING mode"
+        ],
+        "actions": [
+          "POST /auth/login with username='nonexistent' (not in DB) and password='test'"
+        ],
+        "expected": [
+          "HTTP 200 (re-renders login page)",
+          "Response body contains 'Incorrect username.'",
+          "Response body does NOT contain 'Incorrect password.'"
+        ],
+        "trace": [
+          "R-FLASKR-010: boundary between user-not-found branch and wrong-password branch",
+          "Ensures the two error strings are distinct and the correct branch fires",
+          "Catches mutation that swaps the two error messages or merges the branches"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\nr = client.post('/auth/login', data={'username': 'nonexistent', 'password': 'test'})\nassert r.status_code == 200, f'Expected 200, got {r.status_code}'\nassert b'Incorrect username.' in r.data\nassert b'Incorrect password.' not in r.data\n"
+      },
+      {
+        "name": "test_login_wrong_password_session_not_set",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database pre-loaded with user id=1 username='test' password='test' (hashed)",
+          "Application running in TESTING mode",
+          "No active session before the request"
+        ],
+        "actions": [
+          "POST /auth/login with username='test' and password='WRONG'"
+        ],
+        "expected": [
+          "HTTP 200 (stays on login page)",
+          "Session does NOT contain 'user_id' key (user not logged in)",
+          "Response body contains 'Incorrect password.'"
+        ],
+        "trace": [
+          "R-FLASKR-010: failed login must not advance session state",
+          "STC: state must remain unauthenticated after wrong-password attempt",
+          "Catches mutation that sets session['user_id'] regardless of error"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\nwith client.session_transaction() as sess:\n    sess.clear()\n\nr = client.post('/auth/login', data={'username': 'test', 'password': 'WRONG'})\nassert r.status_code == 200, f'Expected 200, got {r.status_code}'\nassert b'Incorrect password.' in r.data\n\nwith client.session_transaction() as sess:\n    assert 'user_id' not in sess, 'user_id must not be set in session after failed login'\n"
+      },
+      {
+        "name": "test_login_wrong_password_exact_error_string",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database pre-loaded with user id=1 username='test' password='test' (hashed)",
+          "Application running in TESTING mode"
+        ],
+        "actions": [
+          "POST /auth/login with username='test' (valid user) and password='nottest' (wrong)"
+        ],
+        "expected": [
+          "HTTP 200",
+          "Response body contains byte-exact string b'Incorrect password.'",
+          "Response body does NOT contain b'Incorrect username.'",
+          "Response body does NOT contain b'Password is required.'"
+        ],
+        "trace": [
+          "R-FLASKR-010: exact error message constant must match specification",
+          "DT: decision table row \u2014 user exists AND hash mismatch => 'Incorrect password.'",
+          "Catches constant-string mutations and wrong-branch mutations"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\nr = client.post('/auth/login', data={'username': 'test', 'password': 'nottest'})\nassert r.status_code == 200, f'Expected 200, got {r.status_code}'\nassert b'Incorrect password.' in r.data\nassert b'Incorrect username.' not in r.data\nassert b'Password is required.' not in r.data\n"
+      },
+      {
+        "name": "test_login_correct_password_after_wrong_attempt_succeeds",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database pre-loaded with user id=1 username='test' password='test' (hashed)",
+          "Application running in TESTING mode"
+        ],
+        "actions": [
+          "POST /auth/login with username='test' and password='wrong' (first attempt)",
+          "POST /auth/login with username='test' and password='test' (second attempt)"
+        ],
+        "expected": [
+          "First response: HTTP 200 with 'Incorrect password.' in body",
+          "Second response: HTTP 302 redirect to '/' (login succeeds)"
+        ],
+        "trace": [
+          "R-FLASKR-010: state transition from failed-login back to successful-login",
+          "STC: wrong-password state does not permanently block correct login",
+          "Catches mutations that permanently lock out the user after a failed attempt"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp()\nos.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\nr1 = client.post('/auth/login', data={'username': 'test', 'password': 'wrong'})\nassert r1.status_code == 200, f'Expected 200 on first attempt, got {r1.status_code}'\nassert b'Incorrect password.' in r1.data\n\nr2 = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\nassert r2.status_code == 302, f'Expected 302 on second attempt, got {r2.status_code}'\nassert r2.headers['Location'] == '/'\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-010",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5449,
+    "output_tokens": 2970,
+    "latency_ms": 37140,
+    "wall_ms": 37140,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-010\",\n  \"reasoning\": \"The requirement states that POST /auth/login must render 'Incorrect password.' when the password hash comparison fails. We need: (1) a positive case confirming correct credentials succeed without the error, (2) a negative case confirming wrong password yields 'Incorrect password.' in the response body with HTTP 200, (3) a boundary case distinguishing wrong-password error from wrong-username error to ensure the exact branch is exercised. Additional tests cover the exact error string constant, the boolean branch logic (user found but hash mismatch vs user not found), and state transition (session not set on failure).\",\n  \"tests\": [\n    {\n      \"name\": \"test_login_correct_credentials_no_password_error\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database pre-loaded with user id=1 username='test' password='test' (hashed)\",\n        \"Application running in TESTING mode\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='test' and password='test'\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect (not 200 with error)\",\n        \"Response body does NOT contain 'Incorrect password.'\",\n        \"Response Location header is '/'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-010: correct password must NOT trigger the error path\",\n        \"Catches boolean-negation mutation on check_password_hash condition\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\n\\ndef test_login_correct_credentials_no_password_error():\\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\\n    assert r.status_code == 302\\n    assert b'Incorrect password.' not in r.data\\n    assert r.headers['Location'] == '/'\\n\"\n    },\n    {\n      \"name\": \"test_login_wrong_password_shows_incorrect_password_error\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database pre-loaded with user id=1 username='test' password='test' (hashed)\",\n        \"Application running in TESTING mode\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='test' (valid) and password='wrongpassword' (invalid)\"\n      ],\n      \"expected\": [\n        \"HTTP 200 (re-renders login page)\",\n        \"Response body contains exactly 'Incorrect password.'\",\n        \"Response body does NOT contain 'Incorrect username.'\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-010: wrong password must trigger 'Incorrect password.' flash message\",\n        \"Catches string-constant mutation ('Incorrect password.' -> other string)\",\n        \"Catches operator mutation on check_password_hash branch (not -> removed)\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\n\\nfd, path = tempfile.mkstemp()\\nos.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\n\\ndef test_login_wrong_password_shows_incorrect_password_error():\\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'wrongpassword'})\\n    assert r.status_code == 200\\n    assert b'Incorrect password.' in r.data\\n    assert b'Incorrect username.' not in r.data\\n\"\n    },\n    {\n      \"name\": \"test_login_wrong_username_shows_incorrect_username_not_password_error\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database pre-loaded with user id=1 username='test' password='test' (hashed)\",\n        \"Application running in TESTING mode\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='nonexistent' (not in DB) and password='test'\"\n      ],\n      \"expected\": [\n        \"HTTP 200 (re-renders login page)\",\n        \"Response body conta"
+  }
+}

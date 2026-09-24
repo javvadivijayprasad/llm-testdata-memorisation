@@ -1,0 +1,172 @@
+{
+  "req": {
+    "id": "R-PLAYER-003",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "error_pathway",
+    "title": "Return 404 for unknown player ID",
+    "statement": "The system shall return HTTP 404 when no player exists for the given ID on GET /players/{playerId}.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "return 404 for unknown player id"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 404"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "GET /players/{playerId}"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-003",
+    "reasoning": "R-PLAYER-003 requires GET /players/{playerId} to return HTTP 404 when no player exists for the given UUID. The test suite covers: (1) a positive case confirming a known UUID returns 200 with correct payload, (2) a negative case confirming a well-formed but non-existent UUID returns exactly 404, (3) a boundary case using a UUID that is one UUID-namespace step away from a known seeded ID to confirm the 404 path is not accidentally triggered by valid IDs, and (4) an additional negative case using a syntactically invalid UUID to confirm 422 (FastAPI path validation) rather than 404, distinguishing the two error paths. All assertions use exact values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_get_player_by_known_id_returns_200",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is pre-loaded with 26 seeded rows",
+          "Player with id '97da2849-d73e-4b43-8a90-7d090402c802' exists (squad 1)"
+        ],
+        "actions": [
+          "Send GET /players/97da2849-d73e-4b43-8a90-7d090402c802 via TestClient"
+        ],
+        "expected": [
+          "HTTP 200 OK",
+          "Response body contains id '97da2849-d73e-4b43-8a90-7d090402c802'",
+          "Response body contains firstName 'Anjali' and lastName 'Banerjee'",
+          "squadNumber equals 1"
+        ],
+        "trace": [
+          "R-PLAYER-003: known player ID must return 200 with correct payload",
+          "Catches mutations that flip the 404 branch to always fire (status_code mutation)",
+          "Catches mutations that negate the `if not player` guard"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_get_player_by_known_id_returns_200():\n    player_id = '97da2849-d73e-4b43-8a90-7d090402c802'\n    r = client.get(f'/players/{player_id}')\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == player_id\n    assert body['firstName'] == 'Anjali'\n    assert body['lastName'] == 'Banerjee'\n    assert body['squadNumber'] == 1\n    assert body['position'] == 'Defensive Midfield'\n    assert body['starting11'] == False\n"
+      },
+      {
+        "name": "test_get_player_by_nonexistent_uuid_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is pre-loaded with 26 seeded rows",
+          "UUID '00000000-0000-0000-0000-000000000000' does not exist in the database"
+        ],
+        "actions": [
+          "Send GET /players/00000000-0000-0000-0000-000000000000 via TestClient"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response status code is exactly 404, not 200, 400, or 422"
+        ],
+        "trace": [
+          "R-PLAYER-003: unknown player ID must return exactly HTTP 404",
+          "Catches mutations that change HTTP_404_NOT_FOUND constant to another code",
+          "Catches mutations that remove or negate the `if not player` guard",
+          "Catches operator-flip mutations on the truthiness check"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_get_player_by_nonexistent_uuid_returns_404():\n    nonexistent_id = '00000000-0000-0000-0000-000000000000'\n    r = client.get(f'/players/{nonexistent_id}')\n    assert r.status_code == 404\n    assert r.status_code != 200\n    assert r.status_code != 400\n    assert r.status_code != 422\n"
+      },
+      {
+        "name": "test_get_player_adjacent_uuid_not_in_db_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with 26 seeded rows",
+          "UUID '97da2849-d73e-4b43-8a90-7d090402c803' (last octet +1 from seeded row 1) does not exist"
+        ],
+        "actions": [
+          "Send GET /players/97da2849-d73e-4b43-8a90-7d090402c803 via TestClient"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response status code is exactly 404"
+        ],
+        "trace": [
+          "R-PLAYER-003: UUID adjacent to a known seeded ID must still return 404",
+          "BVA: tests the boundary between a known UUID and a UUID differing by one nibble",
+          "Catches off-by-one or prefix-match mutations in the lookup logic",
+          "Catches mutations that widen the match condition"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_get_player_adjacent_uuid_not_in_db_returns_404():\n    # One nibble away from seeded id 97da2849-d73e-4b43-8a90-7d090402c802\n    adjacent_id = '97da2849-d73e-4b43-8a90-7d090402c803'\n    r = client.get(f'/players/{adjacent_id}')\n    assert r.status_code == 404\n    # Also confirm the real seeded ID still returns 200 (both sides of boundary)\n    real_id = '97da2849-d73e-4b43-8a90-7d090402c802'\n    r2 = client.get(f'/players/{real_id}')\n    assert r2.status_code == 200\n    assert r2.json()['id'] == real_id\n"
+      },
+      {
+        "name": "test_get_player_invalid_uuid_format_returns_422_not_404",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is pre-loaded with 26 seeded rows",
+          "Path parameter 'not-a-uuid' is not a valid UUID"
+        ],
+        "actions": [
+          "Send GET /players/not-a-uuid via TestClient"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response status code is exactly 422, not 404",
+          "Error is a path-parameter validation failure, not a DB lookup failure"
+        ],
+        "trace": [
+          "R-PLAYER-003: distinguishes 404 (valid UUID, no record) from 422 (invalid UUID format)",
+          "DT: decision table row where UUID format is invalid \u2014 different error path than missing record",
+          "Catches mutations that conflate 404 and 422 status codes",
+          "Catches mutations that remove UUID type coercion on the path parameter"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_get_player_invalid_uuid_format_returns_422_not_404():\n    r = client.get('/players/not-a-uuid')\n    assert r.status_code == 422\n    assert r.status_code != 404\n    assert r.status_code != 200\n    body = r.json()\n    assert 'detail' in body\n"
+      },
+      {
+        "name": "test_get_player_last_seeded_id_returns_200_and_first_missing_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is pre-loaded with 26 seeded rows",
+          "UUID '77a3ac92-52d1-48c4-871c-73988df20dc8' is the last seeded row (squad 26)",
+          "UUID 'ffffffff-ffff-4fff-bfff-ffffffffffff' does not exist"
+        ],
+        "actions": [
+          "Send GET /players/77a3ac92-52d1-48c4-871c-73988df20dc8 \u2014 expect 200",
+          "Send GET /players/ffffffff-ffff-4fff-bfff-ffffffffffff \u2014 expect 404"
+        ],
+        "expected": [
+          "First request returns HTTP 200 with correct payload for squad 26",
+          "Second request returns HTTP 404"
+        ],
+        "trace": [
+          "R-PLAYER-003: last seeded record returns 200; a UUID beyond the seeded set returns 404",
+          "BVA: tests the upper boundary of the seeded dataset",
+          "Catches mutations that invert the not-found condition or change the status constant"
+        ],
+        "executable": "from main import app\nfrom fastapi.testclient import TestClient\n\nclient = TestClient(app)\n\ndef test_get_player_last_seeded_id_returns_200_and_first_missing_returns_404():\n    last_seeded_id = '77a3ac92-52d1-48c4-871c-73988df20dc8'\n    r = client.get(f'/players/{last_seeded_id}')\n    assert r.status_code == 200\n    body = r.json()\n    assert body['id'] == last_seeded_id\n    assert body['squadNumber'] == 26\n    assert body['firstName'] == 'Aditya'\n    assert body['lastName'] == 'Mehta'\n\n    missing_id = 'ffffffff-ffff-4fff-bfff-ffffffffffff'\n    r2 = client.get(f'/players/{missing_id}')\n    assert r2.status_code == 404\n    assert r2.status_code != 200\n"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-003",
+  "domain": "sports_players",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11197,
+    "output_tokens": 2716,
+    "latency_ms": 38070,
+    "wall_ms": 38070,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-003\",\n  \"reasoning\": \"R-PLAYER-003 requires GET /players/{playerId} to return HTTP 404 when no player exists for the given UUID. The test suite covers: (1) a positive case confirming a known UUID returns 200 with correct payload, (2) a negative case confirming a well-formed but non-existent UUID returns exactly 404, (3) a boundary case using a UUID that is one UUID-namespace step away from a known seeded ID to confirm the 404 path is not accidentally triggered by valid IDs, and (4) an additional negative case using a syntactically invalid UUID to confirm 422 (FastAPI path validation) rather than 404, distinguishing the two error paths. All assertions use exact values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_player_by_known_id_returns_200\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 26 seeded rows\",\n        \"Player with id '97da2849-d73e-4b43-8a90-7d090402c802' exists (squad 1)\"\n      ],\n      \"actions\": [\n        \"Send GET /players/97da2849-d73e-4b43-8a90-7d090402c802 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 200 OK\",\n        \"Response body contains id '97da2849-d73e-4b43-8a90-7d090402c802'\",\n        \"Response body contains firstName 'Anjali' and lastName 'Banerjee'\",\n        \"squadNumber equals 1\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-003: known player ID must return 200 with correct payload\",\n        \"Catches mutations that flip the 404 branch to always fire (status_code mutation)\",\n        \"Catches mutations that negate the `if not player` guard\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\nclient = TestClient(app)\\n\\ndef test_get_player_by_known_id_returns_200():\\n    player_id = '97da2849-d73e-4b43-8a90-7d090402c802'\\n    r = client.get(f'/players/{player_id}')\\n    assert r.status_code == 200\\n    body = r.json()\\n    assert body['id'] == player_id\\n    assert body['firstName'] == 'Anjali'\\n    assert body['lastName'] == 'Banerjee'\\n    assert body['squadNumber'] == 1\\n    assert body['position'] == 'Defensive Midfield'\\n    assert body['starting11'] == False\\n\"\n    },\n    {\n      \"name\": \"test_get_player_by_nonexistent_uuid_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 26 seeded rows\",\n        \"UUID '00000000-0000-0000-0000-000000000000' does not exist in the database\"\n      ],\n      \"actions\": [\n        \"Send GET /players/00000000-0000-0000-0000-000000000000 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 404 Not Found\",\n        \"Response status code is exactly 404, not 200, 400, or 422\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-003: unknown player ID must return exactly HTTP 404\",\n        \"Catches mutations that change HTTP_404_NOT_FOUND constant to another code\",\n        \"Catches mutations that remove or negate the `if not player` guard\",\n        \"Catches operator-flip mutations on the truthiness check\"\n      ],\n      \"executable\": \"from main import app\\nfrom fastapi.testclient import TestClient\\n\\nclient = TestClient(app)\\n\\ndef test_get_player_by_nonexistent_uuid_returns_404():\\n    nonexistent_id = '00000000-0000-0000-0000-000000000000'\\n    r = client.get(f'/players/{nonexistent_id}')\\n    assert r.status_code == 404\\n    assert r.status_code != 200\\n    assert r.status_code != 400\\n    assert r.status_code != 422\\n\"\n    },\n    {\n      \"name\": \"test_get_player_adjacent_uuid_not_in_db_returns_404\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is pre-loaded with 26 seeded rows\",\n        \"UUID '97da2849-d73e-4b43-8a90-7d090402c803' (last octet +1 from seeded row 1) does not exist\"\n      ],\n      \"actions\": [\n        \"Send GET /players/97da2849-d73e-4b43-8a90-7d090402c803 via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 404 Not Found\",\n        \"Res"
+  }
+}

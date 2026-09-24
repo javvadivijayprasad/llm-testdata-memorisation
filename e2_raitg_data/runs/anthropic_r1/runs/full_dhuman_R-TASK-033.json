@@ -1,0 +1,123 @@
+{
+  "req": {
+    "id": "R-TASK-033",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "List returns empty array when db empty",
+    "statement": "The system shall return an empty JSON array on GET /tasks/ when no tasks exist.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "list returns empty array when db empty"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "GET /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-033",
+    "reasoning": "R-TASK-033 requires GET /tasks/ to return an empty JSON array with HTTP 200 when no tasks exist. Three tests are designed: (1) positive EP test confirming exact 200 status and [] body on a clean DB; (2) negative NEG test confirming a client error (invalid query param) yields 4xx, not 2xx; (3) boundary BVA test confirming skip=0&limit=1 (minimum valid limit) still returns [] and exact 200 on empty DB, catching off-by-one mutations on the limit/skip guards. All tests use in-process FastAPI TestClient with a fresh SQLite in-memory DB injected via dependency override to guarantee isolation.",
+    "tests": [
+      {
+        "name": "test_list_tasks_empty_db_returns_200_and_empty_array",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains zero task rows",
+          "GET /tasks/ endpoint is reachable in-process"
+        ],
+        "actions": [
+          "Override get_db dependency with a fresh in-memory SQLite session",
+          "Send GET /tasks/ with no query parameters"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body is exactly the JSON array []",
+          "Content-Type header contains application/json"
+        ],
+        "trace": [
+          "R-TASK-033: system shall return empty JSON array on GET /tasks/ when no tasks exist",
+          "R-TASK-033: HTTP 2xx response expected"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\nfrom app import models\n\nTEST_DB_URL = \"sqlite:///./test_r033_pos.db\"\nengine = create_engine(TEST_DB_URL, connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_list_tasks_empty_db_returns_200_and_empty_array():\n    response = client.get(\"/tasks/\")\n    assert response.status_code == 200\n    assert response.json() == []\n    assert \"application/json\" in response.headers[\"content-type\"]\n\ntest_list_tasks_empty_db_returns_200_and_empty_array()\napp.dependency_overrides.clear()\nBase.metadata.drop_all(bind=engine)\nimport os; os.remove(\"./test_r033_pos.db\") if os.path.exists(\"./test_r033_pos.db\") else None"
+      },
+      {
+        "name": "test_list_tasks_invalid_limit_returns_4xx",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains zero task rows",
+          "GET /tasks/ endpoint validates query parameters"
+        ],
+        "actions": [
+          "Override get_db dependency with a fresh in-memory SQLite session",
+          "Send GET /tasks/?limit=0 (limit must be ge=1 per schema)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 422 (Unprocessable Entity)",
+          "Response body contains validation error detail",
+          "Status code is NOT 200"
+        ],
+        "trace": [
+          "R-TASK-033: HTTP 4xx on client error pathway",
+          "limit Query param has ge=1 constraint; limit=0 violates it"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nTEST_DB_URL = \"sqlite:///./test_r033_neg.db\"\nengine = create_engine(TEST_DB_URL, connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_list_tasks_invalid_limit_returns_4xx():\n    response = client.get(\"/tasks/?limit=0\")\n    assert response.status_code == 422\n    assert response.status_code != 200\n    body = response.json()\n    assert \"detail\" in body\n\ntest_list_tasks_invalid_limit_returns_4xx()\napp.dependency_overrides.clear()\nBase.metadata.drop_all(bind=engine)\nimport os; os.remove(\"./test_r033_neg.db\") if os.path.exists(\"./test_r033_neg.db\") else None"
+      },
+      {
+        "name": "test_list_tasks_empty_db_with_min_valid_limit_returns_200_and_empty_array",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains zero task rows",
+          "limit query param has ge=1 (minimum valid value is 1)"
+        ],
+        "actions": [
+          "Override get_db dependency with a fresh in-memory SQLite session",
+          "Send GET /tasks/?skip=0&limit=1 (boundary minimum for limit)"
+        ],
+        "expected": [
+          "HTTP status code is exactly 200",
+          "Response body is exactly the JSON array []",
+          "skip=0 and limit=1 are both accepted without error"
+        ],
+        "trace": [
+          "R-TASK-033: empty array returned regardless of pagination params when DB is empty",
+          "BVA: limit=1 is the minimum valid boundary (ge=1); limit=0 is invalid (tested in NEG)"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nTEST_DB_URL = \"sqlite:///./test_r033_bva.db\"\nengine = create_engine(TEST_DB_URL, connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_list_tasks_empty_db_with_min_valid_limit_returns_200_and_empty_array():\n    response_min = client.get(\"/tasks/?skip=0&limit=1\")\n    assert response_min.status_code == 200\n    assert response_min.json() == []\n    response_skip_zero = client.get(\"/tasks/?skip=0&limit=100\")\n    assert response_skip_zero.status_code == 200\n    assert response_skip_zero.json() == []\n    response_invalid = client.get(\"/tasks/?limit=0\")\n    assert response_invalid.status_code == 422\n\ntest_list_tasks_empty_db_with_min_valid_limit_returns_200_and_empty_array()\napp.dependency_overrides.clear()\nBase.metadata.drop_all(bind=engine)\nimport os; os.remove(\"./test_r033_bva.db\") if os.path.exists(\"./test_r033_bva.db\") else None"
+      }
+    ]
+  },
+  "req_id": "R-TASK-033",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4849,
+    "output_tokens": 2183,
+    "latency_ms": 27580,
+    "wall_ms": 27580,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-033\",\n  \"reasoning\": \"R-TASK-033 requires GET /tasks/ to return an empty JSON array with HTTP 200 when no tasks exist. Three tests are designed: (1) positive EP test confirming exact 200 status and [] body on a clean DB; (2) negative NEG test confirming a client error (invalid query param) yields 4xx, not 2xx; (3) boundary BVA test confirming skip=0&limit=1 (minimum valid limit) still returns [] and exact 200 on empty DB, catching off-by-one mutations on the limit/skip guards. All tests use in-process FastAPI TestClient with a fresh SQLite in-memory DB injected via dependency override to guarantee isolation.\",\n  \"tests\": [\n    {\n      \"name\": \"test_list_tasks_empty_db_returns_200_and_empty_array\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains zero task rows\",\n        \"GET /tasks/ endpoint is reachable in-process\"\n      ],\n      \"actions\": [\n        \"Override get_db dependency with a fresh in-memory SQLite session\",\n        \"Send GET /tasks/ with no query parameters\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 200\",\n        \"Response body is exactly the JSON array []\",\n        \"Content-Type header contains application/json\"\n      ],\n      \"trace\": [\n        \"R-TASK-033: system shall return empty JSON array on GET /tasks/ when no tasks exist\",\n        \"R-TASK-033: HTTP 2xx response expected\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\nfrom app import models\\n\\nTEST_DB_URL = \\\"sqlite:///./test_r033_pos.db\\\"\\nengine = create_engine(TEST_DB_URL, connect_args={\\\"check_same_thread\\\": False})\\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_list_tasks_empty_db_returns_200_and_empty_array():\\n    response = client.get(\\\"/tasks/\\\")\\n    assert response.status_code == 200\\n    assert response.json() == []\\n    assert \\\"application/json\\\" in response.headers[\\\"content-type\\\"]\\n\\ntest_list_tasks_empty_db_returns_200_and_empty_array()\\napp.dependency_overrides.clear()\\nBase.metadata.drop_all(bind=engine)\\nimport os; os.remove(\\\"./test_r033_pos.db\\\") if os.path.exists(\\\"./test_r033_pos.db\\\") else None\"\n    },\n    {\n      \"name\": \"test_list_tasks_invalid_limit_returns_4xx\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database contains zero task rows\",\n        \"GET /tasks/ endpoint validates query parameters\"\n      ],\n      \"actions\": [\n        \"Override get_db dependency with a fresh in-memory SQLite session\",\n        \"Send GET /tasks/?limit=0 (limit must be ge=1 per schema)\"\n      ],\n      \"expected\": [\n        \"HTTP status code is exactly 422 (Unprocessable Entity)\",\n        \"Response body contains validation error detail\",\n        \"Status code is NOT 200\"\n      ],\n      \"trace\": [\n        \"R-TASK-033: HTTP 4xx on client error pathway\",\n        \"limit Query param has ge=1 constraint; limit=0 violates it\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\n\\nTEST_DB_URL = \\\"sqlite:///./test_r033_neg.db\\\"\\nengine = create_engine(TEST_DB_URL, connect_args={\\\"check_same_thread\\\": False})\\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_"
+  }
+}

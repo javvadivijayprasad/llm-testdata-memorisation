@@ -1,0 +1,218 @@
+{
+  "req": {
+    "id": "R-FLASKR-021",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "functional",
+    "title": "Delete post",
+    "statement": "The system shall remove the post row and redirect to / when POST /<id>/delete is issued by the post's author.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete post"
+    ],
+    "expected_outcomes": [
+      "row deleted",
+      "302 redirect"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /<id>/delete"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-021",
+    "reasoning": "The delete post requirement has three key behaviours to verify: (1) a logged-in author can delete their own post and is redirected to / with the row removed from the DB; (2) a non-author (or unauthenticated) user cannot delete another user's post; (3) deleting a non-existent post returns 404. I also test the exact redirect Location header, the exact HTTP status codes (302, 403, 404), and verify the DB row is truly gone after deletion. Tests use only pre-loaded data: post 2 belongs to user Rahul (id=1, password='stone'), post 7 belongs to user Anjali (id=2, password='cloud').",
+    "tests": [
+      {
+        "name": "test_delete_own_post_redirects_and_removes_row",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=2 exists with author_id=1 (Rahul)",
+          "User Rahul (id=1, password='stone') is logged in"
+        ],
+        "actions": [
+          "Login as Rahul via POST /auth/login",
+          "POST /2/delete"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/'",
+          "Subsequent GET / does not contain post title 'Pillow delta willow'",
+          "Direct DB query confirms post id=2 no longer exists"
+        ],
+        "trace": [
+          "R-FLASKR-021"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\n# Login as Rahul (author of post 2)\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302\n\n# Delete post 2 (owned by Rahul)\nr = client.post('/2/delete')\nassert r.status_code == 302\nassert r.headers['Location'] == '/'\n\n# Verify redirect target renders without the deleted post\nr = client.get('/')\nassert r.status_code == 200\nassert b'Pillow delta willow' not in r.data\n\n# Verify row is gone from DB\nwith app.app_context():\n    db = get_db()\n    row = db.execute('SELECT id FROM post WHERE id = 2').fetchone()\n    assert row is None\n"
+      },
+      {
+        "name": "test_delete_post_by_non_author_returns_403",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=2 exists with author_id=1 (Rahul)",
+          "User Anjali (id=2, password='cloud') is logged in \u2014 she is NOT the author"
+        ],
+        "actions": [
+          "Login as Anjali via POST /auth/login",
+          "POST /2/delete"
+        ],
+        "expected": [
+          "Response status code is exactly 403",
+          "Post id=2 still exists in the database"
+        ],
+        "trace": [
+          "R-FLASKR-021"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\n# Login as Anjali (NOT the author of post 2)\nr = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\nassert r.status_code == 302\n\n# Attempt to delete post 2 (owned by Rahul, not Anjali)\nr = client.post('/2/delete')\nassert r.status_code == 403\n\n# Verify post 2 still exists\nwith app.app_context():\n    db = get_db()\n    row = db.execute('SELECT id FROM post WHERE id = 2').fetchone()\n    assert row is not None\n    assert row['id'] == 2\n"
+      },
+      {
+        "name": "test_delete_nonexistent_post_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=9999 does not exist",
+          "User Rahul is logged in"
+        ],
+        "actions": [
+          "Login as Rahul via POST /auth/login",
+          "POST /9999/delete"
+        ],
+        "expected": [
+          "Response status code is exactly 404"
+        ],
+        "trace": [
+          "R-FLASKR-021"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\n# Login as Rahul\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302\n\n# Attempt to delete a post that does not exist\nr = client.post('/9999/delete')\nassert r.status_code == 404\n"
+      },
+      {
+        "name": "test_delete_unauthenticated_redirects_to_login",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=2 exists",
+          "No user is logged in (anonymous session)"
+        ],
+        "actions": [
+          "POST /2/delete without any prior login"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/auth/login'",
+          "Post id=2 still exists in the database"
+        ],
+        "trace": [
+          "R-FLASKR-021"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\n# No login \u2014 anonymous request\nr = client.post('/2/delete')\nassert r.status_code == 302\nassert r.headers['Location'] == '/auth/login'\n\n# Verify post 2 was NOT deleted\nwith app.app_context():\n    db = get_db()\n    row = db.execute('SELECT id FROM post WHERE id = 2').fetchone()\n    assert row is not None\n    assert row['id'] == 2\n"
+      },
+      {
+        "name": "test_delete_last_post_of_author_row_gone_index_empty_of_it",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=17 exists with author_id=3 (Ishaan)",
+          "Ishaan (id=3, password='stone') has exactly one post in the DB"
+        ],
+        "actions": [
+          "Login as Ishaan via POST /auth/login",
+          "POST /17/delete"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/'",
+          "Post id=17 no longer exists in the database",
+          "No posts by Ishaan remain in the database"
+        ],
+        "trace": [
+          "R-FLASKR-021"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\n# Confirm Ishaan has exactly 1 post before deletion\nwith app.app_context():\n    db = get_db()\n    count_before = db.execute('SELECT COUNT(*) FROM post WHERE author_id = 3').fetchone()[0]\n    assert count_before == 1\n\n# Login as Ishaan (author of post 17)\nr = client.post('/auth/login', data={'username': 'Ishaan', 'password': 'stone'})\nassert r.status_code == 302\n\n# Delete post 17\nr = client.post('/17/delete')\nassert r.status_code == 302\nassert r.headers['Location'] == '/'\n\n# Verify post 17 is gone and Ishaan has zero posts\nwith app.app_context():\n    db = get_db()\n    row = db.execute('SELECT id FROM post WHERE id = 17').fetchone()\n    assert row is None\n    count_after = db.execute('SELECT COUNT(*) FROM post WHERE author_id = 3').fetchone()[0]\n    assert count_after == 0\n"
+      },
+      {
+        "name": "test_delete_post_id_boundary_lowest_existing",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=1 exists with author_id=5 (James)",
+          "James (id=5, password='river') is logged in"
+        ],
+        "actions": [
+          "Login as James via POST /auth/login",
+          "POST /1/delete (lowest post id in the dataset)"
+        ],
+        "expected": [
+          "Response status code is exactly 302",
+          "Location header is exactly '/'",
+          "Post id=1 no longer exists in the database"
+        ],
+        "trace": [
+          "R-FLASKR-021"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\n# Login as James (author of post 1)\nr = client.post('/auth/login', data={'username': 'James', 'password': 'river'})\nassert r.status_code == 302\n\n# Delete post 1 (lowest id \u2014 boundary)\nr = client.post('/1/delete')\nassert r.status_code == 302\nassert r.headers['Location'] == '/'\n\n# Verify post 1 is gone\nwith app.app_context():\n    db = get_db()\n    row = db.execute('SELECT id FROM post WHERE id = 1').fetchone()\n    assert row is None\n"
+      },
+      {
+        "name": "test_delete_post_state_transition_post_exists_then_absent",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database pre-loaded with standard fixture rows",
+          "Post id=20 exists with author_id=1 (Rahul)",
+          "Rahul (id=1, password='stone') is logged in"
+        ],
+        "actions": [
+          "Login as Rahul",
+          "Confirm post 20 exists via GET /",
+          "POST /20/delete",
+          "Confirm post 20 is absent via GET /"
+        ],
+        "expected": [
+          "Before delete: GET / returns 200 and contains 'Heacon signal pulse'",
+          "DELETE returns 302 with Location '/'",
+          "After delete: GET / returns 200 and does NOT contain 'Heacon signal pulse'",
+          "DB row for id=20 is absent"
+        ],
+        "trace": [
+          "R-FLASKR-021"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db\n\nfd, path = tempfile.mkstemp(); os.close(fd)\napp = create_app({'TESTING': True, 'DATABASE': path})\nwith app.app_context():\n    from flaskr.db import init_db\n    init_db()\n\nclient = app.test_client()\n\n# State 1: post exists\nr = client.get('/')\nassert r.status_code == 200\nassert b'Heacon signal pulse' in r.data\n\n# Login as Rahul\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\nassert r.status_code == 302\n\n# Transition: delete post 20\nr = client.post('/20/delete')\nassert r.status_code == 302\nassert r.headers['Location'] == '/'\n\n# State 2: post absent\nr = client.get('/')\nassert r.status_code == 200\nassert b'Heacon signal pulse' not in r.data\n\nwith app.app_context():\n    db = get_db()\n    row = db.execute('SELECT id FROM post WHERE id = 20').fetchone()\n    assert row is None\n"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-021",
+  "domain": "blogging",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 8452,
+    "output_tokens": 3762,
+    "latency_ms": 47295,
+    "wall_ms": 47295,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-021\",\n  \"reasoning\": \"The delete post requirement has three key behaviours to verify: (1) a logged-in author can delete their own post and is redirected to / with the row removed from the DB; (2) a non-author (or unauthenticated) user cannot delete another user's post; (3) deleting a non-existent post returns 404. I also test the exact redirect Location header, the exact HTTP status codes (302, 403, 404), and verify the DB row is truly gone after deletion. Tests use only pre-loaded data: post 2 belongs to user Rahul (id=1, password='stone'), post 7 belongs to user Anjali (id=2, password='cloud').\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_own_post_redirects_and_removes_row\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database pre-loaded with standard fixture rows\",\n        \"Post id=2 exists with author_id=1 (Rahul)\",\n        \"User Rahul (id=1, password='stone') is logged in\"\n      ],\n      \"actions\": [\n        \"Login as Rahul via POST /auth/login\",\n        \"POST /2/delete\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 302\",\n        \"Location header is exactly '/'\",\n        \"Subsequent GET / does not contain post title 'Pillow delta willow'\",\n        \"Direct DB query confirms post id=2 no longer exists\"\n      ],\n      \"trace\": [\"R-FLASKR-021\"],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\n\\n# Login as Rahul (author of post 2)\\nr = client.post('/auth/login', data={'username': 'Rahul', 'password': 'stone'})\\nassert r.status_code == 302\\n\\n# Delete post 2 (owned by Rahul)\\nr = client.post('/2/delete')\\nassert r.status_code == 302\\nassert r.headers['Location'] == '/'\\n\\n# Verify redirect target renders without the deleted post\\nr = client.get('/')\\nassert r.status_code == 200\\nassert b'Pillow delta willow' not in r.data\\n\\n# Verify row is gone from DB\\nwith app.app_context():\\n    db = get_db()\\n    row = db.execute('SELECT id FROM post WHERE id = 2').fetchone()\\n    assert row is None\\n\"\n    },\n    {\n      \"name\": \"test_delete_post_by_non_author_returns_403\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database pre-loaded with standard fixture rows\",\n        \"Post id=2 exists with author_id=1 (Rahul)\",\n        \"User Anjali (id=2, password='cloud') is logged in \u2014 she is NOT the author\"\n      ],\n      \"actions\": [\n        \"Login as Anjali via POST /auth/login\",\n        \"POST /2/delete\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 403\",\n        \"Post id=2 still exists in the database\"\n      ],\n      \"trace\": [\"R-FLASKR-021\"],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db\\n\\nfd, path = tempfile.mkstemp(); os.close(fd)\\napp = create_app({'TESTING': True, 'DATABASE': path})\\nwith app.app_context():\\n    from flaskr.db import init_db\\n    init_db()\\n\\nclient = app.test_client()\\n\\n# Login as Anjali (NOT the author of post 2)\\nr = client.post('/auth/login', data={'username': 'Anjali', 'password': 'cloud'})\\nassert r.status_code == 302\\n\\n# Attempt to delete post 2 (owned by Rahul, not Anjali)\\nr = client.post('/2/delete')\\nassert r.status_code == 403\\n\\n# Verify post 2 still exists\\nwith app.app_context():\\n    db = get_db()\\n    row = db.execute('SELECT id FROM post WHERE id = 2').fetchone()\\n    assert row is not None\\n    assert row['id'] == 2\\n\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_post_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database pre-loaded with standard fixture rows\",\n        \"Post id=9999 does not exist\",\n        \"User Rahul is logged in\"\n      ],\n      \"actions\": "
+  }
+}

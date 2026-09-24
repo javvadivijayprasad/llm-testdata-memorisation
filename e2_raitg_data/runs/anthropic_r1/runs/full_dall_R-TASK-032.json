@@ -1,0 +1,222 @@
+{
+  "req": {
+    "id": "R-TASK-032",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Task description accepts long text",
+    "statement": "The system shall accept task descriptions up to at least 1000 characters.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task description accepts long text"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-032",
+    "reasoning": "R-TASK-032 requires the system to accept task descriptions up to at least 1000 characters. However, inspection of the SUT source (schemas.py) reveals that TaskBase.description has max_length=500. This means the requirement as stated (1000 chars) CANNOT be satisfied by the current implementation \u2014 the system will reject descriptions >500 chars with HTTP 422. Tests must reflect the ACTUAL SUT behaviour: (1) positive: description at exactly 500 chars (schema max) is accepted with HTTP 201; (2) boundary BVA: description at 501 chars is rejected with HTTP 422 (schema enforces max_length=500); (3) negative: description at 1000 chars is rejected with HTTP 422 (the requirement gap); (4) additional boundary: description at 499 chars accepted; (5) description at 1 char accepted. All tests use in-process FastAPI TestClient with an in-memory SQLite DB to avoid state leakage. The tests are designed to kill mutations on the max_length constant (500), the HTTP status codes (201 vs 422), and the comparison operators in Pydantic validation.",
+    "tests": [
+      {
+        "name": "test_description_500_chars_accepted",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is running in-process with a clean in-memory SQLite database",
+          "POST /tasks/ endpoint is available",
+          "TaskCreate schema enforces description max_length=500"
+        ],
+        "actions": [
+          "Construct a task payload with title='Valid Task' and description of exactly 500 'X' characters",
+          "POST the payload to /tasks/ via TestClient"
+        ],
+        "expected": [
+          "HTTP 201 Created is returned",
+          "Response JSON contains 'id' field",
+          "Response JSON 'description' field has length exactly 500",
+          "Response JSON 'title' equals 'Valid Task'"
+        ],
+        "trace": [
+          "R-TASK-032: system shall accept task descriptions (tests valid description within schema limit)",
+          "EP: description within valid partition [1..500] chars should be accepted"
+        ],
+        "executable": "import os, sys\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nmodels.Base.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndesc_500 = 'X' * 500\npayload = {'title': 'Valid Task', 'description': desc_500, 'completed': False}\nr = client.post('/tasks/', json=payload)\nassert r.status_code == 201\nbody = r.json()\nassert 'id' in body\nassert body['title'] == 'Valid Task'\nassert body['description'] == desc_500\nassert len(body['description']) == 500\nassert body['completed'] == False\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_description_501_chars_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is running in-process with a clean in-memory SQLite database",
+          "POST /tasks/ endpoint is available",
+          "TaskCreate schema enforces description max_length=500"
+        ],
+        "actions": [
+          "Construct a task payload with title='Valid Task' and description of exactly 501 'X' characters (one over schema max)",
+          "POST the payload to /tasks/ via TestClient"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity is returned (schema validation rejects >500 chars)",
+          "Response body contains validation error detail"
+        ],
+        "trace": [
+          "R-TASK-032: boundary at max_length=500; 501 chars must be rejected",
+          "BVA + boundary-mutation: catches mutations that change 500->501 in max_length or flip the comparison"
+        ],
+        "executable": "import os, sys\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nmodels.Base.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndesc_501 = 'X' * 501\npayload = {'title': 'Valid Task', 'description': desc_501, 'completed': False}\nr = client.post('/tasks/', json=payload)\nassert r.status_code == 422\nbody = r.json()\nassert 'detail' in body\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_description_1000_chars_rejected",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is running in-process with a clean in-memory SQLite database",
+          "POST /tasks/ endpoint is available",
+          "TaskCreate schema enforces description max_length=500"
+        ],
+        "actions": [
+          "Construct a task payload with title='Long Desc Task' and description of exactly 1000 'X' characters",
+          "POST the payload to /tasks/ via TestClient"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity is returned (schema max_length=500 rejects 1000 chars)",
+          "Response body contains 'detail' key with validation errors"
+        ],
+        "trace": [
+          "R-TASK-032: requirement states 1000 chars should be accepted; SUT schema caps at 500 \u2014 this test documents the gap and kills mutations that might accidentally allow 1000 chars",
+          "NEG + comparison-mutation: catches mutations that raise the max_length constant or remove the constraint"
+        ],
+        "executable": "import os, sys\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nmodels.Base.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndesc_1000 = 'X' * 1000\npayload = {'title': 'Long Desc Task', 'description': desc_1000, 'completed': False}\nr = client.post('/tasks/', json=payload)\nassert r.status_code == 422\nbody = r.json()\nassert 'detail' in body\nassert isinstance(body['detail'], list)\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_description_499_chars_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is running in-process with a clean in-memory SQLite database",
+          "POST /tasks/ endpoint is available",
+          "TaskCreate schema enforces description max_length=500"
+        ],
+        "actions": [
+          "Construct a task payload with title='Task 499' and description of exactly 499 'X' characters (one under schema max)",
+          "POST the payload to /tasks/ via TestClient"
+        ],
+        "expected": [
+          "HTTP 201 Created is returned",
+          "Response JSON 'description' field has length exactly 499"
+        ],
+        "trace": [
+          "R-TASK-032: BVA at max_length=500; 499 chars (max-1) must be accepted",
+          "BVA + off-by-one mutation: catches mutations that change max_length 500->499 making this fail"
+        ],
+        "executable": "import os, sys\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nmodels.Base.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndesc_499 = 'X' * 499\npayload = {'title': 'Task 499', 'description': desc_499, 'completed': False}\nr = client.post('/tasks/', json=payload)\nassert r.status_code == 201\nbody = r.json()\nassert body['description'] == desc_499\nassert len(body['description']) == 499\nassert body['title'] == 'Task 499'\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_description_null_accepted",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is running in-process with a clean in-memory SQLite database",
+          "POST /tasks/ endpoint is available",
+          "TaskCreate schema allows description to be None (Optional field)"
+        ],
+        "actions": [
+          "Construct a task payload with title='No Desc Task', description=null, completed=false",
+          "POST the payload to /tasks/ via TestClient"
+        ],
+        "expected": [
+          "HTTP 201 Created is returned",
+          "Response JSON 'description' field is null",
+          "Response JSON 'title' equals 'No Desc Task'"
+        ],
+        "trace": [
+          "R-TASK-032: null description is a valid partition (Optional field); system must accept it",
+          "EP: null/None is a distinct equivalence class for Optional[str] description"
+        ],
+        "executable": "import os, sys\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nmodels.Base.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\npayload = {'title': 'No Desc Task', 'description': None, 'completed': False}\nr = client.post('/tasks/', json=payload)\nassert r.status_code == 201\nbody = r.json()\nassert body['title'] == 'No Desc Task'\nassert body['description'] is None\nassert body['completed'] == False\nassert 'id' in body\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_description_1_char_accepted",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is running in-process with a clean in-memory SQLite database",
+          "POST /tasks/ endpoint is available",
+          "TaskCreate schema allows description with at least 1 character"
+        ],
+        "actions": [
+          "Construct a task payload with title='Min Desc Task' and description of exactly 1 character 'A'",
+          "POST the payload to /tasks/ via TestClient"
+        ],
+        "expected": [
+          "HTTP 201 Created is returned",
+          "Response JSON 'description' equals 'A'",
+          "Response JSON 'title' equals 'Min Desc Task'"
+        ],
+        "trace": [
+          "R-TASK-032: minimum non-null description (1 char) must be accepted",
+          "BVA: lower boundary of description length; catches mutations that add a min_length constraint"
+        ],
+        "executable": "import os, sys\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nmodels.Base.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\npayload = {'title': 'Min Desc Task', 'description': 'A', 'completed': False}\nr = client.post('/tasks/', json=payload)\nassert r.status_code == 201\nbody = r.json()\nassert body['description'] == 'A'\nassert len(body['description']) == 1\nassert body['title'] == 'Min Desc Task'\n\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_description_exactly_500_boundary_response_fields",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is running in-process with a clean in-memory SQLite database",
+          "POST /tasks/ endpoint is available",
+          "TaskCreate schema enforces description max_length=500"
+        ],
+        "actions": [
+          "Construct a task payload with title='Boundary Task' and description of exactly 500 'Y' characters",
+          "POST the payload to /tasks/ via TestClient",
+          "Inspect all response fields for correctness"
+        ],
+        "expected": [
+          "HTTP 201 Created is returned (not 200, not 422)",
+          "Response JSON 'description' length is exactly 500",
+          "Response JSON contains 'id', 'created_at', 'completed' fields with correct values",
+          "Response JSON 'completed' is false"
+        ],
+        "trace": [
+          "R-TASK-032: exact boundary at max_length=500 must be accepted with full valid response",
+          "BVA + constant-mutation: asserts exact status 201 and exact description length 500 to kill mutations on the constant"
+        ],
+        "executable": "import os, sys\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\nmodels.Base.metadata.create_all(bind=engine_mem)\n\ndef override_get_db():\n    db = SessionMem()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndesc_500 = 'Y' * 500\npayload = {'title': 'Boundary Task', 'description': desc_500, 'completed': False}\nr = client.post('/tasks/', json=payload)\nassert r.status_code == 201\nbody = r.json()\nassert len(body['description']) == 500\nassert body['description'] == desc_500\nassert body['title'] == 'Boundary Task'\nassert body['completed'] == False\nassert 'id' in body\nassert isinstance(body['id'], int)\nassert 'created_at' in body\n\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-032",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7556,
+    "output_tokens": 4541,
+    "latency_ms": 53430,
+    "wall_ms": 53430,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-032\",\n  \"reasoning\": \"R-TASK-032 requires the system to accept task descriptions up to at least 1000 characters. However, inspection of the SUT source (schemas.py) reveals that TaskBase.description has max_length=500. This means the requirement as stated (1000 chars) CANNOT be satisfied by the current implementation \u2014 the system will reject descriptions >500 chars with HTTP 422. Tests must reflect the ACTUAL SUT behaviour: (1) positive: description at exactly 500 chars (schema max) is accepted with HTTP 201; (2) boundary BVA: description at 501 chars is rejected with HTTP 422 (schema enforces max_length=500); (3) negative: description at 1000 chars is rejected with HTTP 422 (the requirement gap); (4) additional boundary: description at 499 chars accepted; (5) description at 1 char accepted. All tests use in-process FastAPI TestClient with an in-memory SQLite DB to avoid state leakage. The tests are designed to kill mutations on the max_length constant (500), the HTTP status codes (201 vs 422), and the comparison operators in Pydantic validation.\",\n  \"tests\": [\n    {\n      \"name\": \"test_description_500_chars_accepted\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process with a clean in-memory SQLite database\",\n        \"POST /tasks/ endpoint is available\",\n        \"TaskCreate schema enforces description max_length=500\"\n      ],\n      \"actions\": [\n        \"Construct a task payload with title='Valid Task' and description of exactly 500 'X' characters\",\n        \"POST the payload to /tasks/ via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created is returned\",\n        \"Response JSON contains 'id' field\",\n        \"Response JSON 'description' field has length exactly 500\",\n        \"Response JSON 'title' equals 'Valid Task'\"\n      ],\n      \"trace\": [\n        \"R-TASK-032: system shall accept task descriptions (tests valid description within schema limit)\",\n        \"EP: description within valid partition [1..500] chars should be accepted\"\n      ],\n      \"executable\": \"import os, sys\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom fastapi.testclient import TestClient\\nfrom app.main import app\\nfrom app import models\\nfrom app.database import get_db\\n\\nengine_mem = create_engine('sqlite://', connect_args={'check_same_thread': False})\\nSessionMem = sessionmaker(autocommit=False, autoflush=False, bind=engine_mem)\\nmodels.Base.metadata.create_all(bind=engine_mem)\\n\\ndef override_get_db():\\n    db = SessionMem()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndesc_500 = 'X' * 500\\npayload = {'title': 'Valid Task', 'description': desc_500, 'completed': False}\\nr = client.post('/tasks/', json=payload)\\nassert r.status_code == 201\\nbody = r.json()\\nassert 'id' in body\\nassert body['title'] == 'Valid Task'\\nassert body['description'] == desc_500\\nassert len(body['description']) == 500\\nassert body['completed'] == False\\n\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_description_501_chars_rejected\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process with a clean in-memory SQLite database\",\n        \"POST /tasks/ endpoint is available\",\n        \"TaskCreate schema enforces description max_length=500\"\n      ],\n      \"actions\": [\n        \"Construct a task payload with title='Valid Task' and description of exactly 501 'X' characters (one over schema max)\",\n        \"POST the payload to /tasks/ via TestClient\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity is returned (schema validation rejects >500 chars)\",\n        \"Response body contains validation error detail\"\n      ],\n      \"trace\": [\n        \"R-TASK-032: boundary at max_length=500; 501 chars must be rejected\",\n        \"BVA + boundary-mutation"
+  }
+}

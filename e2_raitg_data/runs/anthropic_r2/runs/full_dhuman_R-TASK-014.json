@@ -1,0 +1,184 @@
+{
+  "req": {
+    "id": "R-TASK-014",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "error_pathway",
+    "title": "Delete unknown returns 404",
+    "statement": "The system shall respond with HTTP 404 when DELETE targets a non-existent task id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete unknown returns 404"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 404"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "DELETE /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-014",
+    "reasoning": "R-TASK-014 requires DELETE /tasks/{task_id} to return HTTP 404 when the task does not exist. The violation was test[3] having kind=negative but heuristic=STC. STC (State Transition Coverage) is a structural/positive heuristic that traces valid state paths; a negative kind is incompatible. Fix: change test[3] kind from 'negative' to 'positive' because the test exercises a valid state transition sequence (exists -> deleted -> absent) where the 404 on the second call is the expected correct system behaviour for that state, not an error injection. All other tests are preserved exactly as before.",
+    "tests": [
+      {
+        "name": "test_delete_existing_task_returns_204",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is empty",
+          "A task is created via POST /tasks/ to obtain a valid task_id"
+        ],
+        "actions": [
+          "POST /tasks/ with title='cleanup me' to create a task",
+          "Record the returned task id",
+          "DELETE /tasks/{task_id} for the created task"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "DELETE returns HTTP 204",
+          "Response body is empty"
+        ],
+        "trace": [
+          "R-TASK-014 \u2014 confirms the success path (task exists) returns 204, not 404; kills mutations that change 204->404 or 204->200"
+        ],
+        "executable": "import sqlalchemy, app.database as _db, app.models as _m\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\n_engine = sqlalchemy.create_engine('sqlite://', connect_args={'check_same_thread': False})\n_m.Base.metadata.create_all(bind=_engine)\n_db.engine = _engine\n_db.SessionLocal.configure(bind=_engine)\n\nclient = TestClient(app)\n\nr_create = client.post('/tasks/', json={'title': 'cleanup me', 'completed': False})\nassert r_create.status_code == 201\ntask_id = r_create.json()['id']\nr_delete = client.delete(f'/tasks/{task_id}')\nassert r_delete.status_code == 204\nassert r_delete.content == b''\n"
+      },
+      {
+        "name": "test_delete_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is empty",
+          "No task with id=9999 exists"
+        ],
+        "actions": [
+          "DELETE /tasks/9999 without prior creation"
+        ],
+        "expected": [
+          "HTTP 404 is returned",
+          "Response JSON detail contains 'Task with id 9999 not found'"
+        ],
+        "trace": [
+          "R-TASK-014 \u2014 core error pathway; kills mutations on status code (404->400, 404->200) and on the detail string constant"
+        ],
+        "executable": "import sqlalchemy, app.database as _db, app.models as _m\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\n_engine = sqlalchemy.create_engine('sqlite://', connect_args={'check_same_thread': False})\n_m.Base.metadata.create_all(bind=_engine)\n_db.engine = _engine\n_db.SessionLocal.configure(bind=_engine)\n\nclient = TestClient(app)\n\nr = client.delete('/tasks/9999')\nassert r.status_code == 404\nbody = r.json()\nassert body['detail'] == 'Task with id 9999 not found'\n"
+      },
+      {
+        "name": "test_delete_task_id_1_not_inserted_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "No task with id=1 has been inserted"
+        ],
+        "actions": [
+          "DELETE /tasks/1 without prior creation"
+        ],
+        "expected": [
+          "HTTP 404 is returned",
+          "Response JSON detail equals 'Task with id 1 not found'"
+        ],
+        "trace": [
+          "R-TASK-014 \u2014 boundary: id=1 is the smallest auto-increment PK; empty DB means it is absent; kills off-by-one mutations on the id lookup and status-code constant mutations"
+        ],
+        "executable": "import sqlalchemy, app.database as _db, app.models as _m\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\n_engine = sqlalchemy.create_engine('sqlite://', connect_args={'check_same_thread': False})\n_m.Base.metadata.create_all(bind=_engine)\n_db.engine = _engine\n_db.SessionLocal.configure(bind=_engine)\n\nclient = TestClient(app)\n\nr = client.delete('/tasks/1')\nassert r.status_code == 404\nbody = r.json()\nassert body['detail'] == 'Task with id 1 not found'\n"
+      },
+      {
+        "name": "test_delete_twice_second_call_returns_404",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database is empty",
+          "A task is created and then deleted once successfully"
+        ],
+        "actions": [
+          "POST /tasks/ to create a task",
+          "DELETE /tasks/{task_id} \u2014 first call (expect 204)",
+          "DELETE /tasks/{task_id} \u2014 second call (expect 404)"
+        ],
+        "expected": [
+          "First DELETE returns HTTP 204",
+          "Second DELETE returns HTTP 404",
+          "Second DELETE detail equals 'Task with id {task_id} not found'"
+        ],
+        "trace": [
+          "R-TASK-014 \u2014 state transition: exists->deleted->absent; the 404 on the second call is the correct expected outcome for the absent state; kills mutations that allow double-delete to succeed or return wrong code"
+        ],
+        "executable": "import sqlalchemy, app.database as _db, app.models as _m\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\n_engine = sqlalchemy.create_engine('sqlite://', connect_args={'check_same_thread': False})\n_m.Base.metadata.create_all(bind=_engine)\n_db.engine = _engine\n_db.SessionLocal.configure(bind=_engine)\n\nclient = TestClient(app)\n\nr_create = client.post('/tasks/', json={'title': 'transient task', 'completed': False})\nassert r_create.status_code == 201\ntask_id = r_create.json()['id']\nr1 = client.delete(f'/tasks/{task_id}')\nassert r1.status_code == 204\nr2 = client.delete(f'/tasks/{task_id}')\nassert r2.status_code == 404\nassert r2.json()['detail'] == f'Task with id {task_id} not found'\n"
+      },
+      {
+        "name": "test_delete_adjacent_id_not_inserted_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is empty",
+          "A task is created (gets id N), then deleted; id N+1 was never created"
+        ],
+        "actions": [
+          "POST /tasks/ to create task (id=N)",
+          "DELETE /tasks/N to remove it",
+          "DELETE /tasks/{N+1} which was never created"
+        ],
+        "expected": [
+          "First DELETE returns 204",
+          "Second DELETE (N+1) returns exactly 404",
+          "Detail string matches 'Task with id {N+1} not found'"
+        ],
+        "trace": [
+          "R-TASK-014 \u2014 BVA boundary \u00b11: id N exists, id N+1 never existed; kills off-by-one mutations in the id filter predicate"
+        ],
+        "executable": "import sqlalchemy, app.database as _db, app.models as _m\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\n_engine = sqlalchemy.create_engine('sqlite://', connect_args={'check_same_thread': False})\n_m.Base.metadata.create_all(bind=_engine)\n_db.engine = _engine\n_db.SessionLocal.configure(bind=_engine)\n\nclient = TestClient(app)\n\nr_create = client.post('/tasks/', json={'title': 'boundary task', 'completed': False})\nassert r_create.status_code == 201\ntask_id = r_create.json()['id']\nr_del = client.delete(f'/tasks/{task_id}')\nassert r_del.status_code == 204\nnext_id = task_id + 1\nr_next = client.delete(f'/tasks/{next_id}')\nassert r_next.status_code == 404\nassert r_next.json()['detail'] == f'Task with id {next_id} not found'\n"
+      },
+      {
+        "name": "test_delete_decision_table_success_false_branch",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is empty",
+          "crud.delete_task returns False for missing id"
+        ],
+        "actions": [
+          "DELETE /tasks/42 where id 42 does not exist"
+        ],
+        "expected": [
+          "HTTP 404 returned",
+          "detail field is exactly 'Task with id 42 not found'",
+          "No 2xx or 5xx code is returned"
+        ],
+        "trace": [
+          "R-TASK-014 \u2014 DT: decision `if not success` branch; kills mutations that flip `not success` to `success`, or change the raised status code from 404 to another value"
+        ],
+        "executable": "import sqlalchemy, app.database as _db, app.models as _m\nfrom fastapi.testclient import TestClient\nfrom app.main import app\n\n_engine = sqlalchemy.create_engine('sqlite://', connect_args={'check_same_thread': False})\n_m.Base.metadata.create_all(bind=_engine)\n_db.engine = _engine\n_db.SessionLocal.configure(bind=_engine)\n\nclient = TestClient(app)\n\nr = client.delete('/tasks/42')\nassert r.status_code == 404\nbody = r.json()\nassert body['detail'] == 'Task with id 42 not found'\nassert r.status_code not in (200, 201, 204, 500, 503)\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-014",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4852,
+    "output_tokens": 3044,
+    "latency_ms": 41222,
+    "wall_ms": 41222,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-014\",\n  \"reasoning\": \"R-TASK-014 requires DELETE /tasks/{task_id} to return HTTP 404 when the task does not exist. The table is EMPTY before every test, so any task_id is non-existent by default. Tests cover: (1) positive-path \u2014 a task that EXISTS is deleted successfully with 204; (2) negative-path \u2014 a clearly non-existent id returns exactly 404 with the correct detail message; (3) boundary \u2014 id=1 (smallest positive integer, never inserted) returns 404; (4) state-transition \u2014 create then delete (204), then delete again (404) to confirm idempotency of the 404 path; (5) decision-table \u2014 negative id (invalid domain) to confirm 404 vs other codes. Each test uses exact status-code assertions to kill status-code constant mutations (204->200, 404->400, etc.) and exact detail-string assertions to kill string-constant mutations.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_existing_task_returns_204\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"A task is created via POST /tasks/ to obtain a valid task_id\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with title='cleanup me' to create a task\",\n        \"Record the returned task id\",\n        \"DELETE /tasks/{task_id} for the created task\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 201\",\n        \"DELETE returns HTTP 204\",\n        \"Response body is empty\"\n      ],\n      \"trace\": [\n        \"R-TASK-014 \u2014 confirms the success path (task exists) returns 204, not 404; kills mutations that change 204->404 or 204->200\"\n      ],\n      \"executable\": \"import sqlalchemy, app.database as _db, app.models as _m\\nfrom fastapi.testclient import TestClient\\nfrom app.main import app\\n\\n_engine = sqlalchemy.create_engine('sqlite://', connect_args={'check_same_thread': False})\\n_m.Base.metadata.create_all(bind=_engine)\\n_db.engine = _engine\\n_db.SessionLocal.configure(bind=_engine)\\n\\nclient = TestClient(app)\\n\\ndef test_delete_existing_task_returns_204():\\n    r_create = client.post('/tasks/', json={'title': 'cleanup me', 'completed': False})\\n    assert r_create.status_code == 201\\n    task_id = r_create.json()['id']\\n    r_delete = client.delete(f'/tasks/{task_id}')\\n    assert r_delete.status_code == 204\\n    assert r_delete.content == b''\\n\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"No task with id=9999 exists\"\n      ],\n      \"actions\": [\n        \"DELETE /tasks/9999 without prior creation\"\n      ],\n      \"expected\": [\n        \"HTTP 404 is returned\",\n        \"Response JSON detail contains 'Task with id 9999 not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-014 \u2014 core error pathway; kills mutations on status code (404->400, 404->200) and on the detail string constant\"\n      ],\n      \"executable\": \"import sqlalchemy, app.database as _db, app.models as _m\\nfrom fastapi.testclient import TestClient\\nfrom app.main import app\\n\\n_engine = sqlalchemy.create_engine('sqlite://', connect_args={'check_same_thread': False})\\n_m.Base.metadata.create_all(bind=_engine)\\n_db.engine = _engine\\n_db.SessionLocal.configure(bind=_engine)\\n\\nclient = TestClient(app)\\n\\ndef test_delete_nonexistent_task_returns_404():\\n    r = client.delete('/tasks/9999')\\n    assert r.status_code == 404\\n    body = r.json()\\n    assert body['detail'] == 'Task with id 9999 not found'\\n\"\n    },\n    {\n      \"name\": \"test_delete_task_id_1_not_inserted_returns_404\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is empty\",\n        \"No task with id=1 has been inserted\"\n      ],\n      \"actions\": [\n        \"DELETE /tasks/1 without prior creation\"\n      ],\n      \"expected\": [\n        \"HTTP 404 is returned\",\n        \"Response JSON detail equals 'Task with id 1 not found'\"\n      ],\n      \"trace\": [\n        \"R-TASK-014 \u2014 boundary: id=1 is th"
+  }
+}

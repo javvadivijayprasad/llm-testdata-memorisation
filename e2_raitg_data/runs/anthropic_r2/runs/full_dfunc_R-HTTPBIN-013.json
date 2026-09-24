@@ -1,0 +1,254 @@
+{
+  "req": {
+    "id": "R-HTTPBIN-013",
+    "domain": "http_utilities",
+    "layer": "API",
+    "category": "functional",
+    "title": "Hide environment headers by default",
+    "statement": "The system shall omit environment-controlled internal headers (X-*-Env prefix) from /headers unless show_env=1 is set.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "hide environment headers by default"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "httpbin",
+    "target_endpoint_or_screen": "GET /headers?show_env=1"
+  },
+  "doc": {
+    "requirement_id": "R-HTTPBIN-013",
+    "reasoning": "The requirement states that environment-controlled internal headers (X-*-Env prefix, specifically the ENV_HEADERS tuple in helpers.py) must be omitted from /headers unless show_env=1 is set. The get_headers() function in helpers.py implements this via hide_env=True default and checking 'show_env' in request.args. Tests must cover: (1) positive case - show_env=1 allows env headers through, (2) negative case - without show_env, env headers are stripped, (3) boundary case - show_env=0 still hides headers (only '1' or presence matters per the code logic). We also test the exact ENV_HEADERS constants to catch constant-mutation operators, and verify the boolean logic of hide_env AND show_env absence.",
+    "tests": [
+      {
+        "name": "test_headers_default_hides_env_headers",
+        "kind": "negative",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "No show_env query parameter is sent"
+        ],
+        "actions": [
+          "Create Flask test client",
+          "Send GET /headers with X-Varnish and X-Request-Start headers injected",
+          "Parse JSON response body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "X-Varnish header is absent from response headers dict",
+          "X-Request-Start header is absent from response headers dict",
+          "X-Forwarded-For header is absent from response headers dict",
+          "Non-env headers like Host are still present"
+        ],
+        "trace": [
+          "R-HTTPBIN-013: system shall omit ENV_HEADERS from /headers unless show_env=1",
+          "get_headers(hide_env=True) deletes keys in ENV_HEADERS when show_env not in request.args"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_headers_default_hides_env_headers():\n    client = app.test_client()\n    r = client.get(\n        '/headers',\n        headers={\n            'X-Varnish': 'abc123',\n            'X-Request-Start': '1234567890',\n            'X-Forwarded-For': '1.2.3.4',\n        }\n    )\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    assert 'X-Varnish' not in hdrs\n    assert 'X-Request-Start' not in hdrs\n    assert 'X-Forwarded-For' not in hdrs\n    assert 'Host' in hdrs\n\ntest_headers_default_hides_env_headers()"
+      },
+      {
+        "name": "test_headers_show_env_1_exposes_env_headers",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "show_env=1 query parameter is sent"
+        ],
+        "actions": [
+          "Create Flask test client",
+          "Send GET /headers?show_env=1 with X-Varnish and X-Request-Start headers injected",
+          "Parse JSON response body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "X-Varnish header IS present in response headers dict with exact value",
+          "X-Request-Start header IS present in response headers dict with exact value"
+        ],
+        "trace": [
+          "R-HTTPBIN-013: unless show_env=1 is set, env headers are omitted; with show_env=1 they appear",
+          "get_headers checks 'show_env' not in request.args; when present, skip deletion loop"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_headers_show_env_1_exposes_env_headers():\n    client = app.test_client()\n    r = client.get(\n        '/headers?show_env=1',\n        headers={\n            'X-Varnish': 'abc123',\n            'X-Request-Start': 't=1234567890',\n        }\n    )\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    assert hdrs.get('X-Varnish') == 'abc123'\n    assert hdrs.get('X-Request-Start') == 't=1234567890'\n\ntest_headers_show_env_1_exposes_env_headers()"
+      },
+      {
+        "name": "test_headers_show_env_0_still_hides_env_headers",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "show_env=0 query parameter is sent (boundary: not '1', so env headers should still be hidden)"
+        ],
+        "actions": [
+          "Create Flask test client",
+          "Send GET /headers?show_env=0 with X-Varnish header injected",
+          "Parse JSON response body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "X-Varnish header is absent because show_env key is present but value is 0, not 1",
+          "The code checks 'show_env' not in request.args \u2014 key presence, not value"
+        ],
+        "trace": [
+          "R-HTTPBIN-013: show_env=1 is the trigger; show_env=0 means key IS in args so env headers are NOT hidden",
+          "BVA: boundary between show_env absent (hide) vs show_env present with any value (show)"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_headers_show_env_0_still_hides_env_headers():\n    client = app.test_client()\n    r = client.get(\n        '/headers?show_env=0',\n        headers={'X-Varnish': 'xyz789'}\n    )\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    # show_env=0 means key IS in request.args, so hide_env branch is skipped\n    # env headers should be PRESENT (key presence check, not value check)\n    assert hdrs.get('X-Varnish') == 'xyz789'\n\ntest_headers_show_env_0_still_hides_env_headers()"
+      },
+      {
+        "name": "test_headers_all_env_headers_hidden_by_default",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "All ENV_HEADERS constants are injected as request headers",
+          "No show_env parameter"
+        ],
+        "actions": [
+          "Create Flask test client",
+          "Send GET /headers with every header in ENV_HEADERS tuple injected",
+          "Parse JSON response body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "None of the ENV_HEADERS appear in the response headers dict",
+          "Exact set of ENV_HEADERS constants verified to be absent"
+        ],
+        "trace": [
+          "R-HTTPBIN-013: all ENV_HEADERS must be omitted by default",
+          "DT: decision table row \u2014 hide_env=True AND show_env absent => all env headers deleted"
+        ],
+        "executable": "from httpbin.core import app\nfrom httpbin.helpers import ENV_HEADERS\n\ndef test_headers_all_env_headers_hidden_by_default():\n    client = app.test_client()\n    injected = {h: 'testval' for h in ENV_HEADERS}\n    r = client.get('/headers', headers=injected)\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    for env_hdr in ENV_HEADERS:\n        assert env_hdr not in hdrs, f'{env_hdr} should be hidden but was present'\n\ntest_headers_all_env_headers_hidden_by_default()"
+      },
+      {
+        "name": "test_headers_non_env_headers_always_present",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "A custom non-env header is sent",
+          "No show_env parameter"
+        ],
+        "actions": [
+          "Create Flask test client",
+          "Send GET /headers with a custom header X-Custom-App-Header",
+          "Parse JSON response body"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "X-Custom-App-Header is present with exact value",
+          "Filtering only removes ENV_HEADERS, not arbitrary headers"
+        ],
+        "trace": [
+          "R-HTTPBIN-013: only ENV_HEADERS are omitted; other headers pass through",
+          "EP: equivalence class of non-env headers \u2014 should not be filtered"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_headers_non_env_headers_always_present():\n    client = app.test_client()\n    r = client.get(\n        '/headers',\n        headers={'X-Custom-App-Header': 'my-value-42'}\n    )\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    assert hdrs.get('X-Custom-App-Header') == 'my-value-42'\n\ntest_headers_non_env_headers_always_present()"
+      },
+      {
+        "name": "test_headers_show_env_absent_vs_present_state_transition",
+        "kind": "boundary",
+        "heuristic": "STC",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Two sequential requests: one without show_env, one with show_env=1"
+        ],
+        "actions": [
+          "Send GET /headers without show_env \u2014 verify X-Varnish absent",
+          "Send GET /headers?show_env=1 \u2014 verify X-Varnish present",
+          "Assert exact state transition between hidden and visible"
+        ],
+        "expected": [
+          "First request: X-Varnish absent, status 200",
+          "Second request: X-Varnish present with exact value, status 200",
+          "State transition from hidden to visible is deterministic"
+        ],
+        "trace": [
+          "R-HTTPBIN-013: STC \u2014 state hidden (no show_env) -> state visible (show_env=1)",
+          "STC: catches mutations that invert the boolean condition in get_headers"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_headers_show_env_absent_vs_present_state_transition():\n    client = app.test_client()\n    # State 1: no show_env -> env headers hidden\n    r1 = client.get('/headers', headers={'X-Varnish': 'state1val'})\n    assert r1.status_code == 200\n    d1 = r1.get_json()\n    assert 'X-Varnish' not in d1['headers']\n    # State 2: show_env=1 -> env headers visible\n    r2 = client.get('/headers?show_env=1', headers={'X-Varnish': 'state2val'})\n    assert r2.status_code == 200\n    d2 = r2.get_json()\n    assert d2['headers'].get('X-Varnish') == 'state2val'\n    # Confirm the two states differ\n    assert ('X-Varnish' not in d1['headers']) != ('X-Varnish' not in d2['headers'])\n\ntest_headers_show_env_absent_vs_present_state_transition()"
+      },
+      {
+        "name": "test_headers_response_structure_exact",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "show_env=1 is set"
+        ],
+        "actions": [
+          "Send GET /headers?show_env=1",
+          "Verify top-level JSON key is exactly 'headers'",
+          "Verify status code is exactly 200"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "JSON body has exactly the key 'headers' at top level",
+          "Value of 'headers' is a dict"
+        ],
+        "trace": [
+          "R-HTTPBIN-013: HTTP 2xx response with expected payload",
+          "EP: verifies response structure is correct dict with 'headers' key"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_headers_response_structure_exact():\n    client = app.test_client()\n    r = client.get('/headers?show_env=1')\n    assert r.status_code == 200\n    data = r.get_json()\n    assert isinstance(data, dict)\n    assert 'headers' in data\n    assert isinstance(data['headers'], dict)\n    # Exactly one top-level key\n    assert list(data.keys()) == ['headers']\n\ntest_headers_response_structure_exact()"
+      },
+      {
+        "name": "test_headers_via_and_connect_time_hidden_by_default",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "httpbin Flask app is importable in-process",
+          "Via and Connect-Time headers injected (non-X- prefixed ENV_HEADERS)",
+          "No show_env parameter"
+        ],
+        "actions": [
+          "Send GET /headers with Via and Connect-Time headers",
+          "Parse JSON response"
+        ],
+        "expected": [
+          "HTTP 200 response",
+          "Via header absent from response",
+          "Connect-Time header absent from response",
+          "Confirms ENV_HEADERS includes non-X- prefixed entries too"
+        ],
+        "trace": [
+          "R-HTTPBIN-013: ENV_HEADERS includes Via, Total-Route-Time, Connect-Time \u2014 not just X-* prefix",
+          "NEG: negative path verifying non-X-prefix env headers are also filtered"
+        ],
+        "executable": "from httpbin.core import app\n\ndef test_headers_via_and_connect_time_hidden_by_default():\n    client = app.test_client()\n    r = client.get(\n        '/headers',\n        headers={\n            'Via': '1.1 proxy.example.com',\n            'Connect-Time': '5',\n            'Total-Route-Time': '10',\n        }\n    )\n    assert r.status_code == 200\n    data = r.get_json()\n    assert 'headers' in data\n    hdrs = data['headers']\n    assert 'Via' not in hdrs\n    assert 'Connect-Time' not in hdrs\n    assert 'Total-Route-Time' not in hdrs\n\ntest_headers_via_and_connect_time_hidden_by_default()"
+      }
+    ]
+  },
+  "req_id": "R-HTTPBIN-013",
+  "domain": "http_utilities",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 0,
+  "verify_violations": [
+    "[logical] test[0] negative kind but heuristic=EP"
+  ],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 9481,
+    "output_tokens": 4059,
+    "latency_ms": 53478,
+    "wall_ms": 53478,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-HTTPBIN-013\",\n  \"reasoning\": \"The requirement states that environment-controlled internal headers (X-*-Env prefix, specifically the ENV_HEADERS tuple in helpers.py) must be omitted from /headers unless show_env=1 is set. The get_headers() function in helpers.py implements this via hide_env=True default and checking 'show_env' in request.args. Tests must cover: (1) positive case - show_env=1 allows env headers through, (2) negative case - without show_env, env headers are stripped, (3) boundary case - show_env=0 still hides headers (only '1' or presence matters per the code logic). We also test the exact ENV_HEADERS constants to catch constant-mutation operators, and verify the boolean logic of hide_env AND show_env absence.\",\n  \"tests\": [\n    {\n      \"name\": \"test_headers_default_hides_env_headers\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"No show_env query parameter is sent\"\n      ],\n      \"actions\": [\n        \"Create Flask test client\",\n        \"Send GET /headers with X-Varnish and X-Request-Start headers injected\",\n        \"Parse JSON response body\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"X-Varnish header is absent from response headers dict\",\n        \"X-Request-Start header is absent from response headers dict\",\n        \"X-Forwarded-For header is absent from response headers dict\",\n        \"Non-env headers like Host are still present\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-013: system shall omit ENV_HEADERS from /headers unless show_env=1\",\n        \"get_headers(hide_env=True) deletes keys in ENV_HEADERS when show_env not in request.args\"\n      ],\n      \"executable\": \"from httpbin.core import app\\n\\ndef test_headers_default_hides_env_headers():\\n    client = app.test_client()\\n    r = client.get(\\n        '/headers',\\n        headers={\\n            'X-Varnish': 'abc123',\\n            'X-Request-Start': '1234567890',\\n            'X-Forwarded-For': '1.2.3.4',\\n        }\\n    )\\n    assert r.status_code == 200\\n    data = r.get_json()\\n    assert 'headers' in data\\n    hdrs = data['headers']\\n    assert 'X-Varnish' not in hdrs\\n    assert 'X-Request-Start' not in hdrs\\n    assert 'X-Forwarded-For' not in hdrs\\n    assert 'Host' in hdrs\\n\\ntest_headers_default_hides_env_headers()\"\n    },\n    {\n      \"name\": \"test_headers_show_env_1_exposes_env_headers\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"httpbin Flask app is importable in-process\",\n        \"show_env=1 query parameter is sent\"\n      ],\n      \"actions\": [\n        \"Create Flask test client\",\n        \"Send GET /headers?show_env=1 with X-Varnish and X-Request-Start headers injected\",\n        \"Parse JSON response body\"\n      ],\n      \"expected\": [\n        \"HTTP 200 response\",\n        \"X-Varnish header IS present in response headers dict with exact value\",\n        \"X-Request-Start header IS present in response headers dict with exact value\"\n      ],\n      \"trace\": [\n        \"R-HTTPBIN-013: unless show_env=1 is set, env headers are omitted; with show_env=1 they appear\",\n        \"get_headers checks 'show_env' not in request.args; when present, skip deletion loop\"\n      ],\n      \"executable\": \"from httpbin.core import app\\n\\ndef test_headers_show_env_1_exposes_env_headers():\\n    client = app.test_client()\\n    r = client.get(\\n        '/headers?show_env=1',\\n        headers={\\n            'X-Varnish': 'abc123',\\n            'X-Request-Start': 't=1234567890',\\n        }\\n    )\\n    assert r.status_code == 200\\n    data = r.get_json()\\n    assert 'headers' in data\\n    hdrs = data['headers']\\n    assert hdrs.get('X-Varnish') == 'abc123'\\n    assert hdrs.get('X-Request-Start') == 't=1234567890'\\n\\ntest_headers_show_env_1_exposes_env_headers()\"\n    },\n    {\n      \"name\": \"test_headers_show_env_0_still_hides_env_headers\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \""
+  }
+}

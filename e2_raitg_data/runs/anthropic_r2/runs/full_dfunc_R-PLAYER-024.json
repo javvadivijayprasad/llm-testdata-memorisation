@@ -1,0 +1,237 @@
+{
+  "req": {
+    "id": "R-PLAYER-024",
+    "domain": "sports_players",
+    "layer": "API",
+    "category": "validation",
+    "title": "Reject invalid date-of-birth format",
+    "statement": "The system shall respond with HTTP 422 when dateOfBirth cannot be parsed as ISO-8601 date.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "reject invalid date-of-birth format"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 422"
+    ],
+    "target_app": "fastapi-restful",
+    "target_endpoint_or_screen": "POST /players/"
+  },
+  "doc": {
+    "requirement_id": "R-PLAYER-024",
+    "reasoning": "R-PLAYER-024 requires HTTP 422 when dateOfBirth cannot be parsed as ISO-8601 date. However, examining the source code reveals that PlayerRequestModel.date_of_birth is typed as Optional[str] with NO Pydantic validator enforcing ISO-8601 format \u2014 it accepts any string. This means the system will NOT return 422 for invalid date strings; it will accept them and return 201. The tests must reflect the actual SUT behaviour: (1) a positive test confirming a valid ISO-8601 date is accepted (HTTP 201), (2) a negative test confirming an invalid date string is also accepted as a plain string (HTTP 201, not 422 \u2014 exposing the gap between requirement and implementation), and (3) a boundary test with a near-valid date string. Additionally, we include tests that assert the exact status code so that any mutation flipping 201\u2194422 or 201\u2194200 is caught. We also test with a completely non-date garbage value and with null (None) to cover EP partitions. Squad numbers 27+ are used for POST to avoid 409 conflicts with the 26 pre-loaded rows.",
+    "tests": [
+      {
+        "name": "test_post_player_valid_iso8601_date_returns_201",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Squad number 27 does not exist in the database",
+          "dateOfBirth is a valid ISO-8601 date string: '1990-06-15'"
+        ],
+        "actions": [
+          "POST /players/ with a complete valid payload including dateOfBirth='1990-06-15'"
+        ],
+        "expected": [
+          "HTTP 201 Created",
+          "Response body contains firstName, lastName, squadNumber matching the request",
+          "Response body contains dateOfBirth equal to '1990-06-15'"
+        ],
+        "trace": [
+          "R-PLAYER-024: valid ISO-8601 date must be accepted (positive path)",
+          "EP: valid date partition \u2192 201"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_post_player_valid_iso8601_date_returns_201():\n    client = TestClient(app)\n    payload = {\n        \"firstName\": \"Test\",\n        \"lastName\": \"Player\",\n        \"dateOfBirth\": \"1990-06-15\",\n        \"squadNumber\": 27,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"firstName\"] == \"Test\"\n    assert body[\"lastName\"] == \"Player\"\n    assert body[\"squadNumber\"] == 27\n    assert body[\"dateOfBirth\"] == \"1990-06-15\"\n\ntest_post_player_valid_iso8601_date_returns_201()"
+      },
+      {
+        "name": "test_post_player_invalid_date_format_dd_mm_yyyy_behaviour",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Squad number 28 does not exist in the database",
+          "dateOfBirth is an invalid ISO-8601 string: '15/06/1990' (DD/MM/YYYY)"
+        ],
+        "actions": [
+          "POST /players/ with dateOfBirth='15/06/1990' (non-ISO-8601 format)"
+        ],
+        "expected": [
+          "HTTP 422 per R-PLAYER-024 requirement",
+          "NOTE: actual SUT returns 201 because PlayerRequestModel.date_of_birth is Optional[str] with no ISO-8601 validator \u2014 this test documents the gap and will FAIL on the correct implementation, PASS on the buggy one, exposing the mutation"
+        ],
+        "trace": [
+          "R-PLAYER-024: system SHALL respond 422 for unparseable dateOfBirth",
+          "NEG: invalid date format partition \u2192 expected 422, actual SUT 201 (implementation gap)",
+          "Catches constant-mutation: 422 vs 201 vs 200"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_post_player_invalid_date_format_dd_mm_yyyy_behaviour():\n    client = TestClient(app)\n    payload = {\n        \"firstName\": \"Bad\",\n        \"lastName\": \"Date\",\n        \"dateOfBirth\": \"15/06/1990\",\n        \"squadNumber\": 28,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    # R-PLAYER-024 requires 422; SUT has no ISO-8601 validator so returns 201.\n    # Assert the REQUIREMENT-MANDATED value so mutation of 422->201 is caught.\n    assert r.status_code == 422\n\ntest_post_player_invalid_date_format_dd_mm_yyyy_behaviour()"
+      },
+      {
+        "name": "test_post_player_garbage_date_string_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Squad number 29 does not exist in the database",
+          "dateOfBirth is a completely non-date garbage string: 'not-a-date'"
+        ],
+        "actions": [
+          "POST /players/ with dateOfBirth='not-a-date'"
+        ],
+        "expected": [
+          "HTTP 422 per R-PLAYER-024",
+          "Response body contains 'detail' key with validation error information"
+        ],
+        "trace": [
+          "R-PLAYER-024: system SHALL respond 422 for unparseable dateOfBirth",
+          "NEG + EP: garbage string partition \u2192 422",
+          "Catches operator-mutation on status code comparison"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_post_player_garbage_date_string_returns_422():\n    client = TestClient(app)\n    payload = {\n        \"firstName\": \"Garbage\",\n        \"lastName\": \"Date\",\n        \"dateOfBirth\": \"not-a-date\",\n        \"squadNumber\": 29,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_post_player_garbage_date_string_returns_422()"
+      },
+      {
+        "name": "test_post_player_date_with_time_component_behaviour",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Squad number 30 does not exist in the database",
+          "dateOfBirth is '1990-06-15T00:00:00' \u2014 ISO-8601 datetime, not a pure date"
+        ],
+        "actions": [
+          "POST /players/ with dateOfBirth='1990-06-15T00:00:00' (datetime, not date)"
+        ],
+        "expected": [
+          "HTTP 201 if system accepts ISO-8601 datetime as valid date-of-birth",
+          "OR HTTP 422 if system strictly requires date-only ISO-8601 format",
+          "Test asserts 422 per strict reading of R-PLAYER-024 (date, not datetime)"
+        ],
+        "trace": [
+          "R-PLAYER-024: boundary between valid ISO-8601 date and ISO-8601 datetime",
+          "BVA: boundary value at the edge of the valid date format",
+          "Catches off-by-one in format validation logic"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_post_player_date_with_time_component_behaviour():\n    client = TestClient(app)\n    payload = {\n        \"firstName\": \"Boundary\",\n        \"lastName\": \"DateTime\",\n        \"dateOfBirth\": \"1990-06-15T00:00:00\",\n        \"squadNumber\": 30,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    # Strict ISO-8601 date-only requirement => 422 for datetime strings.\n    # SUT currently returns 201 (no validator). Assert requirement value.\n    assert r.status_code == 422\n\ntest_post_player_date_with_time_component_behaviour()"
+      },
+      {
+        "name": "test_post_player_null_date_of_birth_accepted",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Squad number 31 does not exist in the database",
+          "dateOfBirth is null (None) \u2014 field is Optional[str]"
+        ],
+        "actions": [
+          "POST /players/ with dateOfBirth explicitly set to null"
+        ],
+        "expected": [
+          "HTTP 201 Created \u2014 null is valid for an Optional field",
+          "Response body dateOfBirth is null"
+        ],
+        "trace": [
+          "R-PLAYER-024: null dateOfBirth is not an invalid format \u2014 it is absent",
+          "EP: null/absent partition \u2192 201 (not 422)",
+          "Catches boolean-negation mutation that would reject null as invalid"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_post_player_null_date_of_birth_accepted():\n    client = TestClient(app)\n    payload = {\n        \"firstName\": \"Null\",\n        \"lastName\": \"Dob\",\n        \"dateOfBirth\": None,\n        \"squadNumber\": 31,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"dateOfBirth\"] is None\n    assert body[\"squadNumber\"] == 31\n\ntest_post_player_null_date_of_birth_accepted()"
+      },
+      {
+        "name": "test_post_player_date_wrong_separator_returns_422",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Squad number 32 does not exist in the database",
+          "dateOfBirth uses dots as separator: '1990.06.15' \u2014 not ISO-8601"
+        ],
+        "actions": [
+          "POST /players/ with dateOfBirth='1990.06.15'"
+        ],
+        "expected": [
+          "HTTP 422 per R-PLAYER-024 \u2014 dot-separated date is not ISO-8601"
+        ],
+        "trace": [
+          "R-PLAYER-024: dot-separated date cannot be parsed as ISO-8601",
+          "DT: decision table row \u2014 invalid separator \u2192 422",
+          "Catches constant-mutation on HTTP status code 422"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_post_player_date_wrong_separator_returns_422():\n    client = TestClient(app)\n    payload = {\n        \"firstName\": \"Dot\",\n        \"lastName\": \"Separator\",\n        \"dateOfBirth\": \"1990.06.15\",\n        \"squadNumber\": 32,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_post_player_date_wrong_separator_returns_422()"
+      },
+      {
+        "name": "test_post_player_date_month_out_of_range_returns_422",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Squad number 33 does not exist in the database",
+          "dateOfBirth has month=13 which is out of ISO-8601 valid range (01-12)"
+        ],
+        "actions": [
+          "POST /players/ with dateOfBirth='1990-13-01' (month 13 is invalid)"
+        ],
+        "expected": [
+          "HTTP 422 per R-PLAYER-024 \u2014 month 13 cannot be parsed as valid ISO-8601 date"
+        ],
+        "trace": [
+          "R-PLAYER-024: month boundary BVA \u2014 month 12 is valid, month 13 is invalid",
+          "BVA: boundary at month=12 (valid) vs month=13 (invalid) \u2192 422",
+          "Catches off-by-one mutation on month range check"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_post_player_date_month_out_of_range_returns_422():\n    client = TestClient(app)\n    payload = {\n        \"firstName\": \"Bad\",\n        \"lastName\": \"Month\",\n        \"dateOfBirth\": \"1990-13-01\",\n        \"squadNumber\": 33,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_post_player_date_month_out_of_range_returns_422()"
+      },
+      {
+        "name": "test_post_player_valid_iso8601_max_month_boundary_returns_201",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "App is running in-process via TestClient",
+          "Squad number 34 does not exist in the database",
+          "dateOfBirth has month=12 which is the maximum valid ISO-8601 month"
+        ],
+        "actions": [
+          "POST /players/ with dateOfBirth='1990-12-31' (month 12, day 31 \u2014 max boundary)"
+        ],
+        "expected": [
+          "HTTP 201 Created \u2014 '1990-12-31' is a valid ISO-8601 date",
+          "Response body dateOfBirth equals '1990-12-31'"
+        ],
+        "trace": [
+          "R-PLAYER-024: boundary at month=12 (valid) \u2014 must NOT return 422",
+          "BVA: month=12 is the upper boundary of valid months \u2192 201",
+          "Catches off-by-one mutation that would reject month=12"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom main import app\n\ndef test_post_player_valid_iso8601_max_month_boundary_returns_201():\n    client = TestClient(app)\n    payload = {\n        \"firstName\": \"Max\",\n        \"lastName\": \"Month\",\n        \"dateOfBirth\": \"1990-12-31\",\n        \"squadNumber\": 34,\n        \"position\": \"Goalkeeper\"\n    }\n    r = client.post(\"/players/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"dateOfBirth\"] == \"1990-12-31\"\n    assert body[\"squadNumber\"] == 34\n\ntest_post_player_valid_iso8601_max_month_boundary_returns_201()"
+      }
+    ]
+  },
+  "req_id": "R-PLAYER-024",
+  "domain": "sports_players",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 11194,
+    "output_tokens": 4228,
+    "latency_ms": 54042,
+    "wall_ms": 54042,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-PLAYER-024\",\n  \"reasoning\": \"R-PLAYER-024 requires HTTP 422 when dateOfBirth cannot be parsed as ISO-8601 date. However, examining the source code reveals that PlayerRequestModel.date_of_birth is typed as Optional[str] with NO Pydantic validator enforcing ISO-8601 format \u2014 it accepts any string. This means the system will NOT return 422 for invalid date strings; it will accept them and return 201. The tests must reflect the actual SUT behaviour: (1) a positive test confirming a valid ISO-8601 date is accepted (HTTP 201), (2) a negative test confirming an invalid date string is also accepted as a plain string (HTTP 201, not 422 \u2014 exposing the gap between requirement and implementation), and (3) a boundary test with a near-valid date string. Additionally, we include tests that assert the exact status code so that any mutation flipping 201\u2194422 or 201\u2194200 is caught. We also test with a completely non-date garbage value and with null (None) to cover EP partitions. Squad numbers 27+ are used for POST to avoid 409 conflicts with the 26 pre-loaded rows.\",\n  \"tests\": [\n    {\n      \"name\": \"test_post_player_valid_iso8601_date_returns_201\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"App is running in-process via TestClient\",\n        \"Squad number 27 does not exist in the database\",\n        \"dateOfBirth is a valid ISO-8601 date string: '1990-06-15'\"\n      ],\n      \"actions\": [\n        \"POST /players/ with a complete valid payload including dateOfBirth='1990-06-15'\"\n      ],\n      \"expected\": [\n        \"HTTP 201 Created\",\n        \"Response body contains firstName, lastName, squadNumber matching the request\",\n        \"Response body contains dateOfBirth equal to '1990-06-15'\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-024: valid ISO-8601 date must be accepted (positive path)\",\n        \"EP: valid date partition \u2192 201\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom main import app\\n\\ndef test_post_player_valid_iso8601_date_returns_201():\\n    client = TestClient(app)\\n    payload = {\\n        \\\"firstName\\\": \\\"Test\\\",\\n        \\\"lastName\\\": \\\"Player\\\",\\n        \\\"dateOfBirth\\\": \\\"1990-06-15\\\",\\n        \\\"squadNumber\\\": 27,\\n        \\\"position\\\": \\\"Goalkeeper\\\"\\n    }\\n    r = client.post(\\\"/players/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert body[\\\"firstName\\\"] == \\\"Test\\\"\\n    assert body[\\\"lastName\\\"] == \\\"Player\\\"\\n    assert body[\\\"squadNumber\\\"] == 27\\n    assert body[\\\"dateOfBirth\\\"] == \\\"1990-06-15\\\"\\n\\ntest_post_player_valid_iso8601_date_returns_201()\"\n    },\n    {\n      \"name\": \"test_post_player_invalid_date_format_dd_mm_yyyy_behaviour\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"App is running in-process via TestClient\",\n        \"Squad number 28 does not exist in the database\",\n        \"dateOfBirth is an invalid ISO-8601 string: '15/06/1990' (DD/MM/YYYY)\"\n      ],\n      \"actions\": [\n        \"POST /players/ with dateOfBirth='15/06/1990' (non-ISO-8601 format)\"\n      ],\n      \"expected\": [\n        \"HTTP 422 per R-PLAYER-024 requirement\",\n        \"NOTE: actual SUT returns 201 because PlayerRequestModel.date_of_birth is Optional[str] with no ISO-8601 validator \u2014 this test documents the gap and will FAIL on the correct implementation, PASS on the buggy one, exposing the mutation\"\n      ],\n      \"trace\": [\n        \"R-PLAYER-024: system SHALL respond 422 for unparseable dateOfBirth\",\n        \"NEG: invalid date format partition \u2192 expected 422, actual SUT 201 (implementation gap)\",\n        \"Catches constant-mutation: 422 vs 201 vs 200\"\n      ],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom main import app\\n\\ndef test_post_player_invalid_date_format_dd_mm_yyyy_behaviour():\\n    client = TestClient(app)\\n    payload = {\\n        \\\"firstName\\\": \\\"Bad\\\",\\n        \\\"lastName\\\": \\\"Date\\\",\\n        \\\"dateOfBirth\\\": \\\"15/06/1990\\\",\\n        \\\""
+  }
+}

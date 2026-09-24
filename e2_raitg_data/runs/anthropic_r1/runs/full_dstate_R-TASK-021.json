@@ -1,0 +1,192 @@
+{
+  "req": {
+    "id": "R-TASK-021",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Task creation persists",
+    "statement": "The system shall commit new task rows so subsequent GET calls return them across requests.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task creation persists"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-021",
+    "reasoning": "The requirement states that POST /tasks/ must commit new task rows so subsequent GET calls return them. I design: (1) a positive EP test that creates a valid task and verifies the 201 response payload plus persistence via GET /tasks/{id}; (2) a negative NEG test that sends a missing required field and expects 422; (3) a BVA test at the title length boundary (exactly 100 chars, then 101 chars) to catch off-by-one mutations on the max_length constraint; (4) a STC test verifying the full state transition: task absent \u2192 created \u2192 retrievable via list endpoint with correct count delta; (5) a DT test covering the completed=True branch to catch boolean-negation mutations on the default=False field. All tests use in-process TestClient, assert exact status codes and field values, and account for the 20 pre-loaded rows.",
+    "tests": [
+      {
+        "name": "test_create_task_positive_persists_via_get",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows (ids 1-20)",
+          "FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "POST /tasks/ with valid title, description, completed=false",
+          "Assert 201 response with correct payload fields",
+          "GET /tasks/{id} using id from create response",
+          "Assert GET returns 200 and identical payload"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "Response body contains title, description, completed=false, id=21",
+          "GET /tasks/21 returns HTTP 200 with same title and completed=false"
+        ],
+        "trace": [
+          "R-TASK-021"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_create_task_positive_persists_via_get():\n    client = TestClient(app)\n    payload = {\"title\": \"Integration test task\", \"description\": \"Verify persistence\", \"completed\": False}\n    r_post = client.post(\"/tasks/\", json=payload)\n    assert r_post.status_code == 201\n    body = r_post.json()\n    assert body[\"title\"] == \"Integration test task\"\n    assert body[\"description\"] == \"Verify persistence\"\n    assert body[\"completed\"] == False\n    assert \"id\" in body\n    assert \"created_at\" in body\n    task_id = body[\"id\"]\n    r_get = client.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 200\n    get_body = r_get.json()\n    assert get_body[\"id\"] == task_id\n    assert get_body[\"title\"] == \"Integration test task\"\n    assert get_body[\"description\"] == \"Verify persistence\"\n    assert get_body[\"completed\"] == False\n\ntest_create_task_positive_persists_via_get()"
+      },
+      {
+        "name": "test_create_task_missing_title_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows",
+          "FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "POST /tasks/ with body missing the required 'title' field",
+          "Assert response status is 422 (not 201, not 400, not 500)"
+        ],
+        "expected": [
+          "POST returns HTTP 422 Unprocessable Entity",
+          "No new row is committed to the database"
+        ],
+        "trace": [
+          "R-TASK-021"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_create_task_missing_title_returns_422():\n    client = TestClient(app)\n    payload = {\"description\": \"No title provided\", \"completed\": False}\n    r_post = client.post(\"/tasks/\", json=payload)\n    assert r_post.status_code == 422\n    r_list = client.get(\"/tasks/\")\n    assert r_list.status_code == 200\n    tasks = r_list.json()\n    assert len(tasks) == 20\n\ntest_create_task_missing_title_returns_422()"
+      },
+      {
+        "name": "test_create_task_title_boundary_100_and_101_chars",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows",
+          "FastAPI app is running in-process via TestClient",
+          "Schema defines title max_length=100"
+        ],
+        "actions": [
+          "POST /tasks/ with title of exactly 100 characters \u2014 expect 201",
+          "POST /tasks/ with title of exactly 101 characters \u2014 expect 422"
+        ],
+        "expected": [
+          "100-char title: HTTP 201, title in response equals the 100-char string",
+          "101-char title: HTTP 422, no row committed"
+        ],
+        "trace": [
+          "R-TASK-021"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_create_task_title_boundary_100_and_101_chars():\n    client = TestClient(app)\n    title_100 = \"A\" * 100\n    r_ok = client.post(\"/tasks/\", json={\"title\": title_100, \"completed\": False})\n    assert r_ok.status_code == 201\n    body_ok = r_ok.json()\n    assert body_ok[\"title\"] == title_100\n    assert len(body_ok[\"title\"]) == 100\n    title_101 = \"A\" * 101\n    r_bad = client.post(\"/tasks/\", json={\"title\": title_101, \"completed\": False})\n    assert r_bad.status_code == 422\n    r_list = client.get(\"/tasks/\")\n    assert r_list.status_code == 200\n    tasks = r_list.json()\n    assert len(tasks) == 21\n\ntest_create_task_title_boundary_100_and_101_chars()"
+      },
+      {
+        "name": "test_create_task_state_transition_absent_to_retrievable_in_list",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows",
+          "FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "GET /tasks/ to capture baseline count (must be 20)",
+          "POST /tasks/ with valid payload",
+          "GET /tasks/ again and assert count increased by exactly 1",
+          "Assert the new task appears in the list with correct id and title"
+        ],
+        "expected": [
+          "Baseline GET returns exactly 20 tasks",
+          "After POST, GET returns exactly 21 tasks",
+          "New task found in list by id with matching title"
+        ],
+        "trace": [
+          "R-TASK-021"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_create_task_state_transition_absent_to_retrievable_in_list():\n    client = TestClient(app)\n    r_before = client.get(\"/tasks/\", params={\"limit\": 1000})\n    assert r_before.status_code == 200\n    before = r_before.json()\n    assert len(before) == 20\n    payload = {\"title\": \"State transition task\", \"completed\": False}\n    r_post = client.post(\"/tasks/\", json=payload)\n    assert r_post.status_code == 201\n    new_id = r_post.json()[\"id\"]\n    r_after = client.get(\"/tasks/\", params={\"limit\": 1000})\n    assert r_after.status_code == 200\n    after = r_after.json()\n    assert len(after) == len(before) + 1\n    assert len(after) == 21\n    ids_in_list = [t[\"id\"] for t in after]\n    assert new_id in ids_in_list\n    matched = next(t for t in after if t[\"id\"] == new_id)\n    assert matched[\"title\"] == \"State transition task\"\n    assert matched[\"completed\"] == False\n\ntest_create_task_state_transition_absent_to_retrievable_in_list()"
+      },
+      {
+        "name": "test_create_task_completed_true_persists_correctly",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows",
+          "FastAPI app is running in-process via TestClient"
+        ],
+        "actions": [
+          "POST /tasks/ with completed=True explicitly set",
+          "Assert 201 and completed=True in response",
+          "GET /tasks/{id} and assert completed=True persisted",
+          "GET /tasks/?completed=true and assert new task appears in filtered list"
+        ],
+        "expected": [
+          "POST returns HTTP 201 with completed=true",
+          "GET by id returns completed=true",
+          "Filtered GET with completed=true includes the new task"
+        ],
+        "trace": [
+          "R-TASK-021"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_create_task_completed_true_persists_correctly():\n    client = TestClient(app)\n    payload = {\"title\": \"Already done task\", \"description\": \"Completed on creation\", \"completed\": True}\n    r_post = client.post(\"/tasks/\", json=payload)\n    assert r_post.status_code == 201\n    body = r_post.json()\n    assert body[\"completed\"] == True\n    assert body[\"title\"] == \"Already done task\"\n    task_id = body[\"id\"]\n    r_get = client.get(f\"/tasks/{task_id}\")\n    assert r_get.status_code == 200\n    assert r_get.json()[\"completed\"] == True\n    r_filtered = client.get(\"/tasks/\", params={\"completed\": \"true\", \"limit\": 1000})\n    assert r_filtered.status_code == 200\n    filtered = r_filtered.json()\n    filtered_ids = [t[\"id\"] for t in filtered]\n    assert task_id in filtered_ids\n    for t in filtered:\n        assert t[\"completed\"] == True\n\ntest_create_task_completed_true_persists_correctly()"
+      },
+      {
+        "name": "test_create_task_empty_title_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database contains exactly 20 pre-loaded rows",
+          "FastAPI app is running in-process via TestClient",
+          "Schema defines title min_length=1"
+        ],
+        "actions": [
+          "POST /tasks/ with title as empty string (length 0, below min_length=1)",
+          "Assert response is 422, not 201"
+        ],
+        "expected": [
+          "POST returns HTTP 422 for empty title",
+          "Total task count remains 20"
+        ],
+        "trace": [
+          "R-TASK-021"
+        ],
+        "executable": "from fastapi.testclient import TestClient\nfrom app.main import app\n\ndef test_create_task_empty_title_returns_422():\n    client = TestClient(app)\n    r_post = client.post(\"/tasks/\", json={\"title\": \"\", \"completed\": False})\n    assert r_post.status_code == 422\n    r_list = client.get(\"/tasks/\", params={\"limit\": 1000})\n    assert r_list.status_code == 200\n    tasks = r_list.json()\n    assert len(tasks) == 20\n\ntest_create_task_empty_title_returns_422()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-021",
+  "domain": "task_management",
+  "condition": "full_dstate",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5911,
+    "output_tokens": 3220,
+    "latency_ms": 41233,
+    "wall_ms": 41233,
+    "condition": "full_dstate",
+    "prompt_version": "raitg-prompt-v1.5.1-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-021\",\n  \"reasoning\": \"The requirement states that POST /tasks/ must commit new task rows so subsequent GET calls return them. I design: (1) a positive EP test that creates a valid task and verifies the 201 response payload plus persistence via GET /tasks/{id}; (2) a negative NEG test that sends a missing required field and expects 422; (3) a BVA test at the title length boundary (exactly 100 chars, then 101 chars) to catch off-by-one mutations on the max_length constraint; (4) a STC test verifying the full state transition: task absent \u2192 created \u2192 retrievable via list endpoint with correct count delta; (5) a DT test covering the completed=True branch to catch boolean-negation mutations on the default=False field. All tests use in-process TestClient, assert exact status codes and field values, and account for the 20 pre-loaded rows.\",\n  \"tests\": [\n    {\n      \"name\": \"test_create_task_positive_persists_via_get\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded rows (ids 1-20)\",\n        \"FastAPI app is running in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with valid title, description, completed=false\",\n        \"Assert 201 response with correct payload fields\",\n        \"GET /tasks/{id} using id from create response\",\n        \"Assert GET returns 200 and identical payload\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 201\",\n        \"Response body contains title, description, completed=false, id=21\",\n        \"GET /tasks/21 returns HTTP 200 with same title and completed=false\"\n      ],\n      \"trace\": [\"R-TASK-021\"],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_create_task_positive_persists_via_get():\\n    client = TestClient(app)\\n    payload = {\\\"title\\\": \\\"Integration test task\\\", \\\"description\\\": \\\"Verify persistence\\\", \\\"completed\\\": False}\\n    r_post = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r_post.status_code == 201\\n    body = r_post.json()\\n    assert body[\\\"title\\\"] == \\\"Integration test task\\\"\\n    assert body[\\\"description\\\"] == \\\"Verify persistence\\\"\\n    assert body[\\\"completed\\\"] == False\\n    assert \\\"id\\\" in body\\n    assert \\\"created_at\\\" in body\\n    task_id = body[\\\"id\\\"]\\n    r_get = client.get(f\\\"/tasks/{task_id}\\\")\\n    assert r_get.status_code == 200\\n    get_body = r_get.json()\\n    assert get_body[\\\"id\\\"] == task_id\\n    assert get_body[\\\"title\\\"] == \\\"Integration test task\\\"\\n    assert get_body[\\\"description\\\"] == \\\"Verify persistence\\\"\\n    assert get_body[\\\"completed\\\"] == False\\n\\ntest_create_task_positive_persists_via_get()\"\n    },\n    {\n      \"name\": \"test_create_task_missing_title_returns_422\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database contains exactly 20 pre-loaded rows\",\n        \"FastAPI app is running in-process via TestClient\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with body missing the required 'title' field\",\n        \"Assert response status is 422 (not 201, not 400, not 500)\"\n      ],\n      \"expected\": [\n        \"POST returns HTTP 422 Unprocessable Entity\",\n        \"No new row is committed to the database\"\n      ],\n      \"trace\": [\"R-TASK-021\"],\n      \"executable\": \"from fastapi.testclient import TestClient\\nfrom app.main import app\\n\\ndef test_create_task_missing_title_returns_422():\\n    client = TestClient(app)\\n    payload = {\\\"description\\\": \\\"No title provided\\\", \\\"completed\\\": False}\\n    r_post = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r_post.status_code == 422\\n    r_list = client.get(\\\"/tasks/\\\")\\n    assert r_list.status_code == 200\\n    tasks = r_list.json()\\n    assert len(tasks) == 20\\n\\ntest_create_task_missing_title_returns_422()\"\n    },\n    {\n      \"name\": \"test_create_task_title_boundary_100_and_101_chars\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n "
+  }
+}

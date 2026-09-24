@@ -1,0 +1,199 @@
+{
+  "req": {
+    "id": "R-TASK-027",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "idempotency",
+    "title": "PUT is idempotent",
+    "statement": "The system shall produce the same terminal state when PUT is repeated with the same body for the same task_id.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "put is idempotent"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-027",
+    "reasoning": "The requirement states PUT /tasks/{task_id} must be idempotent: repeating the same PUT with the same body must yield the same terminal state. Tests cover: (1) positive EP \u2014 two identical PUTs produce identical response bodies and HTTP 200; (2) positive STC \u2014 state transition from incomplete to complete is stable across repeated PUTs; (3) boundary BVA \u2014 PUT with max-length title (100 chars) and max-length description (500 chars) is idempotent; (4) negative NEG \u2014 PUT to a non-existent task_id returns 404 both times (idempotency of error path); (5) DT \u2014 PUT with only one optional field set is idempotent (partial update). Each test uses an in-process FastAPI TestClient with a fresh SQLite DB, seeds exactly the pre-loaded rows needed, and asserts exact field values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_put_idempotent_positive_same_response_twice",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task with id=7 exists: title='Fix login bug', completed=false",
+          "Database is seeded with pre-loaded rows"
+        ],
+        "actions": [
+          "PUT /tasks/7 with body {title: 'Fix login bug', description: 'updated desc', completed: true}",
+          "Record response body and status",
+          "PUT /tasks/7 again with identical body",
+          "Record second response body and status"
+        ],
+        "expected": [
+          "Both responses return HTTP 200",
+          "Both response bodies have identical id, title, description, completed values",
+          "completed == true in both responses",
+          "title == 'Fix login bug' in both responses"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test.db')\nos.environ['DATABASE_URL'] = f'sqlite:///{db_path}'\n\nimport app.database as _db\n_db.SQLALCHEMY_DATABASE_URL = f'sqlite:///{db_path}'\n_db.engine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\n_db.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\n\nfrom app import models\nmodels.Base.metadata.create_all(bind=_db.engine)\n\nfrom app.main import app\nclient = TestClient(app)\n\ncreate_r = client.post('/tasks/', json={'title': 'Fix login bug', 'description': 'Ember willow nova meridian flux cascade zenith.', 'completed': False})\nassert create_r.status_code == 201\ntask_id = create_r.json()['id']\n\npayload = {'title': 'Fix login bug', 'description': 'updated desc', 'completed': True}\nr1 = client.put(f'/tasks/{task_id}', json=payload)\nassert r1.status_code == 200\nb1 = r1.json()\nassert b1['id'] == task_id\nassert b1['title'] == 'Fix login bug'\nassert b1['description'] == 'updated desc'\nassert b1['completed'] == True\n\nr2 = client.put(f'/tasks/{task_id}', json=payload)\nassert r2.status_code == 200\nb2 = r2.json()\nassert b2['id'] == task_id\nassert b2['title'] == 'Fix login bug'\nassert b2['description'] == 'updated desc'\nassert b2['completed'] == True\nassert b1['id'] == b2['id']\nassert b1['title'] == b2['title']\nassert b1['description'] == b2['description']\nassert b1['completed'] == b2['completed']\n\ndef test_put_idempotent_positive_same_response_twice():\n    pass"
+      },
+      {
+        "name": "test_put_idempotent_state_transition_incomplete_to_complete",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task exists with completed=false",
+          "PUT transitions completed to true"
+        ],
+        "actions": [
+          "Create task with completed=false",
+          "PUT /tasks/{id} with completed=true three times",
+          "GET /tasks/{id} after each PUT"
+        ],
+        "expected": [
+          "All three PUTs return HTTP 200",
+          "All three GET responses show completed=true",
+          "title unchanged across all responses",
+          "Terminal state is identical after each repetition"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test2.db')\n\nimport app.database as _db2\n_db2.SQLALCHEMY_DATABASE_URL = f'sqlite:///{db_path}'\n_db2.engine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\n_db2.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_db2.engine)\n\nfrom app import models as _models2\n_models2.Base.metadata.create_all(bind=_db2.engine)\n\nfrom app.main import app as _app2\nclient2 = TestClient(_app2)\n\ncr = client2.post('/tasks/', json={'title': 'Write project report', 'description': None, 'completed': False})\nassert cr.status_code == 201\ntid = cr.json()['id']\nassert cr.json()['completed'] == False\n\npayload = {'title': 'Write project report', 'completed': True}\nfor i in range(3):\n    rp = client2.put(f'/tasks/{tid}', json=payload)\n    assert rp.status_code == 200, f'iteration {i} failed with {rp.status_code}'\n    body = rp.json()\n    assert body['completed'] == True\n    assert body['title'] == 'Write project report'\n    assert body['id'] == tid\n    rg = client2.get(f'/tasks/{tid}')\n    assert rg.status_code == 200\n    assert rg.json()['completed'] == True\n    assert rg.json()['title'] == 'Write project report'\n\ndef test_put_idempotent_state_transition_incomplete_to_complete():\n    pass"
+      },
+      {
+        "name": "test_put_idempotent_boundary_max_length_fields",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task exists in database",
+          "Boundary-valid row: title exactly 100 chars, description exactly 500 chars"
+        ],
+        "actions": [
+          "Create a task",
+          "PUT with title of exactly 100 characters and description of exactly 500 characters",
+          "Repeat identical PUT",
+          "Assert both responses are identical"
+        ],
+        "expected": [
+          "Both PUTs return HTTP 200",
+          "title length == 100 in both responses",
+          "description length == 500 in both responses",
+          "completed value matches payload in both responses"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test3.db')\n\nimport app.database as _db3\n_db3.SQLALCHEMY_DATABASE_URL = f'sqlite:///{db_path}'\n_db3.engine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\n_db3.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_db3.engine)\n\nfrom app import models as _m3\n_m3.Base.metadata.create_all(bind=_db3.engine)\n\nfrom app.main import app as _app3\nclient3 = TestClient(_app3)\n\ncr = client3.post('/tasks/', json={'title': 'Organize desk', 'completed': False})\nassert cr.status_code == 201\ntid = cr.json()['id']\n\ntitle_100 = 'T' * 100\ndesc_500 = 'X' * 500\nassert len(title_100) == 100\nassert len(desc_500) == 500\n\npayload = {'title': title_100, 'description': desc_500, 'completed': True}\nr1 = client3.put(f'/tasks/{tid}', json=payload)\nassert r1.status_code == 200\nb1 = r1.json()\nassert len(b1['title']) == 100\nassert len(b1['description']) == 500\nassert b1['completed'] == True\nassert b1['id'] == tid\n\nr2 = client3.put(f'/tasks/{tid}', json=payload)\nassert r2.status_code == 200\nb2 = r2.json()\nassert len(b2['title']) == 100\nassert len(b2['description']) == 500\nassert b2['completed'] == True\nassert b2['id'] == tid\nassert b1['title'] == b2['title']\nassert b1['description'] == b2['description']\nassert b1['completed'] == b2['completed']\n\ndef test_put_idempotent_boundary_max_length_fields():\n    pass"
+      },
+      {
+        "name": "test_put_idempotent_negative_nonexistent_task",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No task with id=99999 exists in the database"
+        ],
+        "actions": [
+          "PUT /tasks/99999 with valid body",
+          "Repeat identical PUT /tasks/99999"
+        ],
+        "expected": [
+          "First PUT returns HTTP 404",
+          "Second PUT returns HTTP 404",
+          "Both responses contain detail message referencing task id 99999",
+          "Idempotency holds on error path"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test4.db')\n\nimport app.database as _db4\n_db4.SQLALCHEMY_DATABASE_URL = f'sqlite:///{db_path}'\n_db4.engine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\n_db4.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_db4.engine)\n\nfrom app import models as _m4\n_m4.Base.metadata.create_all(bind=_db4.engine)\n\nfrom app.main import app as _app4\nclient4 = TestClient(_app4)\n\npayload = {'title': 'Buy groceries', 'description': 'A', 'completed': True}\nr1 = client4.put('/tasks/99999', json=payload)\nassert r1.status_code == 404\nb1 = r1.json()\nassert '99999' in b1['detail']\n\nr2 = client4.put('/tasks/99999', json=payload)\nassert r2.status_code == 404\nb2 = r2.json()\nassert '99999' in b2['detail']\nassert b1['detail'] == b2['detail']\n\ndef test_put_idempotent_negative_nonexistent_task():\n    pass"
+      },
+      {
+        "name": "test_put_idempotent_partial_update_single_field",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task exists with completed=false and a known title",
+          "PUT body contains only the completed field (partial update)"
+        ],
+        "actions": [
+          "Create task with completed=false",
+          "PUT /tasks/{id} with only {completed: true}",
+          "Repeat identical PUT with only {completed: true}",
+          "GET task after each PUT to verify terminal state"
+        ],
+        "expected": [
+          "Both PUTs return HTTP 200",
+          "completed == true in both PUT responses",
+          "title is unchanged (original value) in both responses",
+          "GET after second PUT shows same state as after first PUT"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test5.db')\n\nimport app.database as _db5\n_db5.SQLALCHEMY_DATABASE_URL = f'sqlite:///{db_path}'\n_db5.engine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\n_db5.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_db5.engine)\n\nfrom app import models as _m5\n_m5.Base.metadata.create_all(bind=_db5.engine)\n\nfrom app.main import app as _app5\nclient5 = TestClient(_app5)\n\ncr = client5.post('/tasks/', json={'title': 'Pay electricity bill', 'description': 'some desc', 'completed': False})\nassert cr.status_code == 201\ntid = cr.json()['id']\nassert cr.json()['completed'] == False\nassert cr.json()['title'] == 'Pay electricity bill'\n\npartial = {'completed': True}\nr1 = client5.put(f'/tasks/{tid}', json=partial)\nassert r1.status_code == 200\nb1 = r1.json()\nassert b1['completed'] == True\nassert b1['title'] == 'Pay electricity bill'\nassert b1['id'] == tid\n\nr2 = client5.put(f'/tasks/{tid}', json=partial)\nassert r2.status_code == 200\nb2 = r2.json()\nassert b2['completed'] == True\nassert b2['title'] == 'Pay electricity bill'\nassert b2['id'] == tid\n\nrg = client5.get(f'/tasks/{tid}')\nassert rg.status_code == 200\nassert rg.json()['completed'] == True\nassert rg.json()['title'] == 'Pay electricity bill'\nassert b1['completed'] == b2['completed']\nassert b1['title'] == b2['title']\n\ndef test_put_idempotent_partial_update_single_field():\n    pass"
+      },
+      {
+        "name": "test_put_idempotent_boundary_title_length_101_rejected",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task exists in database",
+          "Title of 101 characters exceeds max_length=100 schema constraint"
+        ],
+        "actions": [
+          "Create a task",
+          "PUT /tasks/{id} with title of 101 characters",
+          "Repeat identical PUT with title of 101 characters"
+        ],
+        "expected": [
+          "Both PUTs return HTTP 422 (validation error)",
+          "Idempotency holds on validation-error path",
+          "No state change occurs in the database"
+        ],
+        "trace": [
+          "R-TASK-027"
+        ],
+        "executable": "import os, tempfile\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom fastapi.testclient import TestClient\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test6.db')\n\nimport app.database as _db6\n_db6.SQLALCHEMY_DATABASE_URL = f'sqlite:///{db_path}'\n_db6.engine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\n_db6.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_db6.engine)\n\nfrom app import models as _m6\n_m6.Base.metadata.create_all(bind=_db6.engine)\n\nfrom app.main import app as _app6\nclient6 = TestClient(_app6)\n\ncr = client6.post('/tasks/', json={'title': 'Call the bank', 'completed': False})\nassert cr.status_code == 201\ntid = cr.json()['id']\noriginal_title = cr.json()['title']\nassert original_title == 'Call the bank'\n\ntitle_101 = 'T' * 101\nassert len(title_101) == 101\n\npayload = {'title': title_101, 'completed': True}\nr1 = client6.put(f'/tasks/{tid}', json=payload)\nassert r1.status_code == 422\n\nr2 = client6.put(f'/tasks/{tid}', json=payload)\nassert r2.status_code == 422\n\nrg = client6.get(f'/tasks/{tid}')\nassert rg.status_code == 200\nassert rg.json()['title'] == 'Call the bank'\nassert rg.json()['completed'] == False\n\ndef test_put_idempotent_boundary_title_length_101_rejected():\n    pass"
+      }
+    ]
+  },
+  "req_id": "R-TASK-027",
+  "domain": "task_management",
+  "condition": "full_dall",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 7583,
+    "output_tokens": 4815,
+    "latency_ms": 56457,
+    "wall_ms": 56457,
+    "condition": "full_dall",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-027\",\n  \"reasoning\": \"The requirement states PUT /tasks/{task_id} must be idempotent: repeating the same PUT with the same body must yield the same terminal state. Tests cover: (1) positive EP \u2014 two identical PUTs produce identical response bodies and HTTP 200; (2) positive STC \u2014 state transition from incomplete to complete is stable across repeated PUTs; (3) boundary BVA \u2014 PUT with max-length title (100 chars) and max-length description (500 chars) is idempotent; (4) negative NEG \u2014 PUT to a non-existent task_id returns 404 both times (idempotency of error path); (5) DT \u2014 PUT with only one optional field set is idempotent (partial update). Each test uses an in-process FastAPI TestClient with a fresh SQLite DB, seeds exactly the pre-loaded rows needed, and asserts exact field values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_idempotent_positive_same_response_twice\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Task with id=7 exists: title='Fix login bug', completed=false\",\n        \"Database is seeded with pre-loaded rows\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/7 with body {title: 'Fix login bug', description: 'updated desc', completed: true}\",\n        \"Record response body and status\",\n        \"PUT /tasks/7 again with identical body\",\n        \"Record second response body and status\"\n      ],\n      \"expected\": [\n        \"Both responses return HTTP 200\",\n        \"Both response bodies have identical id, title, description, completed values\",\n        \"completed == true in both responses\",\n        \"title == 'Fix login bug' in both responses\"\n      ],\n      \"trace\": [\"R-TASK-027\"],\n      \"executable\": \"import os, tempfile\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom fastapi.testclient import TestClient\\n\\ntmp = tempfile.mkdtemp()\\ndb_path = os.path.join(tmp, 'test.db')\\nos.environ['DATABASE_URL'] = f'sqlite:///{db_path}'\\n\\nimport app.database as _db\\n_db.SQLALCHEMY_DATABASE_URL = f'sqlite:///{db_path}'\\n_db.engine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\\n_db.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_db.engine)\\n\\nfrom app import models\\nmodels.Base.metadata.create_all(bind=_db.engine)\\n\\nfrom app.main import app\\nclient = TestClient(app)\\n\\ncreate_r = client.post('/tasks/', json={'title': 'Fix login bug', 'description': 'Ember willow nova meridian flux cascade zenith.', 'completed': False})\\nassert create_r.status_code == 201\\ntask_id = create_r.json()['id']\\n\\npayload = {'title': 'Fix login bug', 'description': 'updated desc', 'completed': True}\\nr1 = client.put(f'/tasks/{task_id}', json=payload)\\nassert r1.status_code == 200\\nb1 = r1.json()\\nassert b1['id'] == task_id\\nassert b1['title'] == 'Fix login bug'\\nassert b1['description'] == 'updated desc'\\nassert b1['completed'] == True\\n\\nr2 = client.put(f'/tasks/{task_id}', json=payload)\\nassert r2.status_code == 200\\nb2 = r2.json()\\nassert b2['id'] == task_id\\nassert b2['title'] == 'Fix login bug'\\nassert b2['description'] == 'updated desc'\\nassert b2['completed'] == True\\nassert b1['id'] == b2['id']\\nassert b1['title'] == b2['title']\\nassert b1['description'] == b2['description']\\nassert b1['completed'] == b2['completed']\\n\\ndef test_put_idempotent_positive_same_response_twice():\\n    pass\"\n    },\n    {\n      \"name\": \"test_put_idempotent_state_transition_incomplete_to_complete\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Task exists with completed=false\",\n        \"PUT transitions completed to true\"\n      ],\n      \"actions\": [\n        \"Create task with completed=false\",\n        \"PUT /tasks/{id} with completed=true three times\",\n        \"GET /tasks/{id} after each PUT\"\n      ],\n      \"expected\": [\n        \"All three PUTs return HTTP 200\",\n        \"All three GET responses show completed=true\",\n        \"title unchange"
+  }
+}

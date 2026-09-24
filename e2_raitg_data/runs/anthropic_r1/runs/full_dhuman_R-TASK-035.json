@@ -1,0 +1,173 @@
+{
+  "req": {
+    "id": "R-TASK-035",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Deleting all tasks leaves empty table",
+    "statement": "The system shall leave GET /tasks/ returning [] after every task has been deleted.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "deleting all tasks leaves empty table"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "DELETE /tasks/{id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-035",
+    "reasoning": "R-TASK-035 requires that after every task is deleted, GET /tasks/ returns an empty list []. We need: (1) a positive test that creates multiple tasks, deletes each one, and asserts GET /tasks/ == []; (2) a negative test that attempts to delete a non-existent task and asserts HTTP 404; (3) a boundary test covering the single-task edge case (exactly one task created then deleted, leaving []). Each test uses an in-memory SQLite DB via override of get_db, ensuring isolation. Assertions are exact-value to kill mutations on status codes, response bodies, and list lengths.",
+    "tests": [
+      {
+        "name": "test_delete_all_tasks_leaves_empty_list",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Fresh in-memory SQLite database with empty tasks table",
+          "Multiple tasks created via POST /tasks/"
+        ],
+        "actions": [
+          "Create 3 tasks via POST /tasks/",
+          "DELETE each task by its returned id",
+          "GET /tasks/ and inspect response"
+        ],
+        "expected": [
+          "Each DELETE returns HTTP 204",
+          "GET /tasks/ returns HTTP 200",
+          "GET /tasks/ response body is exactly []"
+        ],
+        "trace": [
+          "R-TASK-035: system shall leave GET /tasks/ returning [] after every task has been deleted"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r035_pos.db\"\nengine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_all_tasks_leaves_empty_list():\n    titles = [\"Task Alpha\", \"Task Beta\", \"Task Gamma\"]\n    ids = []\n    for t in titles:\n        r = client.post(\"/tasks/\", json={\"title\": t, \"completed\": False})\n        assert r.status_code == 201\n        ids.append(r.json()[\"id\"])\n    assert len(ids) == 3\n    for task_id in ids:\n        r = client.delete(f\"/tasks/{task_id}\")\n        assert r.status_code == 204\n    r = client.get(\"/tasks/\")\n    assert r.status_code == 200\n    assert r.json() == []\n\ntest_delete_all_tasks_leaves_empty_list()\n"
+      },
+      {
+        "name": "test_delete_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Fresh in-memory SQLite database with empty tasks table",
+          "No task with id 99999 exists"
+        ],
+        "actions": [
+          "Send DELETE /tasks/99999 without creating any task"
+        ],
+        "expected": [
+          "Response status code is exactly 404",
+          "Response body contains detail field with message about task not found"
+        ],
+        "trace": [
+          "R-TASK-035: error pathway HTTP 4xx on client error",
+          "app/main.py delete_task raises HTTP_404_NOT_FOUND when crud.delete_task returns False"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r035_neg.db\"\nengine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_nonexistent_task_returns_404():\n    r = client.delete(\"/tasks/99999\")\n    assert r.status_code == 404\n    body = r.json()\n    assert \"detail\" in body\n    assert \"99999\" in body[\"detail\"]\n    r2 = client.get(\"/tasks/\")\n    assert r2.status_code == 200\n    assert r2.json() == []\n\ntest_delete_nonexistent_task_returns_404()\n"
+      },
+      {
+        "name": "test_delete_single_task_leaves_empty_list",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Fresh in-memory SQLite database with empty tasks table",
+          "Exactly one task created"
+        ],
+        "actions": [
+          "Create exactly 1 task via POST /tasks/",
+          "Verify GET /tasks/ returns list of length 1",
+          "DELETE the single task",
+          "Verify GET /tasks/ returns exactly []"
+        ],
+        "expected": [
+          "POST returns HTTP 201",
+          "GET before delete returns list with exactly 1 element",
+          "DELETE returns HTTP 204 with no body",
+          "GET after delete returns HTTP 200 and body == []"
+        ],
+        "trace": [
+          "R-TASK-035: boundary of N=1 task; after deletion list length transitions from 1 to 0",
+          "BVA: boundary at count=1 (minimum non-empty state)"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r035_bva.db\"\nengine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_single_task_leaves_empty_list():\n    r = client.post(\"/tasks/\", json={\"title\": \"Only Task\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n    r_before = client.get(\"/tasks/\")\n    assert r_before.status_code == 200\n    assert len(r_before.json()) == 1\n    assert r_before.json()[0][\"id\"] == task_id\n    r_del = client.delete(f\"/tasks/{task_id}\")\n    assert r_del.status_code == 204\n    r_after = client.get(\"/tasks/\")\n    assert r_after.status_code == 200\n    assert r_after.json() == []\n    assert len(r_after.json()) == 0\n\ntest_delete_single_task_leaves_empty_list()\n"
+      },
+      {
+        "name": "test_delete_already_deleted_task_returns_404",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Fresh in-memory SQLite database with empty tasks table",
+          "One task created and then deleted"
+        ],
+        "actions": [
+          "Create a task via POST /tasks/",
+          "DELETE the task (first time) \u2014 expect 204",
+          "DELETE the same task id again (second time) \u2014 expect 404",
+          "GET /tasks/ \u2014 expect []"
+        ],
+        "expected": [
+          "First DELETE returns exactly HTTP 204",
+          "Second DELETE returns exactly HTTP 404",
+          "GET /tasks/ returns exactly []"
+        ],
+        "trace": [
+          "R-TASK-035: error pathway \u2014 deleting already-deleted task is a client error (4xx)",
+          "DT: decision table row where task does not exist in DB; crud.delete_task returns False"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r035_dt.db\"\nengine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_already_deleted_task_returns_404():\n    r = client.post(\"/tasks/\", json={\"title\": \"Ephemeral Task\", \"completed\": False})\n    assert r.status_code == 201\n    task_id = r.json()[\"id\"]\n    r1 = client.delete(f\"/tasks/{task_id}\")\n    assert r1.status_code == 204\n    r2 = client.delete(f\"/tasks/{task_id}\")\n    assert r2.status_code == 404\n    body = r2.json()\n    assert \"detail\" in body\n    r3 = client.get(\"/tasks/\")\n    assert r3.status_code == 200\n    assert r3.json() == []\n\ntest_delete_already_deleted_task_returns_404()\n"
+      },
+      {
+        "name": "test_delete_tasks_one_by_one_state_transitions",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Fresh in-memory SQLite database with empty tasks table",
+          "Two tasks created"
+        ],
+        "actions": [
+          "Create task A and task B",
+          "DELETE task A; verify GET /tasks/ returns exactly [task B]",
+          "DELETE task B; verify GET /tasks/ returns exactly []"
+        ],
+        "expected": [
+          "After deleting task A: GET /tasks/ returns list of length 1 containing only task B",
+          "After deleting task B: GET /tasks/ returns exactly []",
+          "All DELETE responses are HTTP 204"
+        ],
+        "trace": [
+          "R-TASK-035: state transitions from 2 tasks -> 1 task -> 0 tasks, verifying [] at final state",
+          "STC: covers intermediate states, not just final state"
+        ],
+        "executable": "import pytest\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app.database import get_db, Base\n\nSQLALCHEMY_DATABASE_URL = \"sqlite:///./test_r035_stc.db\"\nengine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={\"check_same_thread\": False})\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nBase.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_delete_tasks_one_by_one_state_transitions():\n    rA = client.post(\"/tasks/\", json={\"title\": \"Task A\", \"completed\": False})\n    assert rA.status_code == 201\n    id_a = rA.json()[\"id\"]\n    rB = client.post(\"/tasks/\", json={\"title\": \"Task B\", \"completed\": True})\n    assert rB.status_code == 201\n    id_b = rB.json()[\"id\"]\n    d1 = client.delete(f\"/tasks/{id_a}\")\n    assert d1.status_code == 204\n    g1 = client.get(\"/tasks/\")\n    assert g1.status_code == 200\n    g1_body = g1.json()\n    assert len(g1_body) == 1\n    assert g1_body[0][\"id\"] == id_b\n    assert g1_body[0][\"title\"] == \"Task B\"\n    d2 = client.delete(f\"/tasks/{id_b}\")\n    assert d2.status_code == 204\n    g2 = client.get(\"/tasks/\")\n    assert g2.status_code == 200\n    assert g2.json() == []\n\ntest_delete_tasks_one_by_one_state_transitions()\n"
+      }
+    ]
+  },
+  "req_id": "R-TASK-035",
+  "domain": "task_management",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 4851,
+    "output_tokens": 3731,
+    "latency_ms": 42808,
+    "wall_ms": 42808,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-035\",\n  \"reasoning\": \"R-TASK-035 requires that after every task is deleted, GET /tasks/ returns an empty list []. We need: (1) a positive test that creates multiple tasks, deletes each one, and asserts GET /tasks/ == []; (2) a negative test that attempts to delete a non-existent task and asserts HTTP 404; (3) a boundary test covering the single-task edge case (exactly one task created then deleted, leaving []). Each test uses an in-memory SQLite DB via override of get_db, ensuring isolation. Assertions are exact-value to kill mutations on status codes, response bodies, and list lengths.\",\n  \"tests\": [\n    {\n      \"name\": \"test_delete_all_tasks_leaves_empty_list\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"STC\",\n      \"preconditions\": [\n        \"Fresh in-memory SQLite database with empty tasks table\",\n        \"Multiple tasks created via POST /tasks/\"\n      ],\n      \"actions\": [\n        \"Create 3 tasks via POST /tasks/\",\n        \"DELETE each task by its returned id\",\n        \"GET /tasks/ and inspect response\"\n      ],\n      \"expected\": [\n        \"Each DELETE returns HTTP 204\",\n        \"GET /tasks/ returns HTTP 200\",\n        \"GET /tasks/ response body is exactly []\"\n      ],\n      \"trace\": [\n        \"R-TASK-035: system shall leave GET /tasks/ returning [] after every task has been deleted\"\n      ],\n      \"executable\": \"import pytest\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\n\\nSQLALCHEMY_DATABASE_URL = \\\"sqlite:///./test_r035_pos.db\\\"\\nengine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={\\\"check_same_thread\\\": False})\\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_delete_all_tasks_leaves_empty_list():\\n    titles = [\\\"Task Alpha\\\", \\\"Task Beta\\\", \\\"Task Gamma\\\"]\\n    ids = []\\n    for t in titles:\\n        r = client.post(\\\"/tasks/\\\", json={\\\"title\\\": t, \\\"completed\\\": False})\\n        assert r.status_code == 201\\n        ids.append(r.json()[\\\"id\\\"])\\n    assert len(ids) == 3\\n    for task_id in ids:\\n        r = client.delete(f\\\"/tasks/{task_id}\\\")\\n        assert r.status_code == 204\\n    r = client.get(\\\"/tasks/\\\")\\n    assert r.status_code == 200\\n    assert r.json() == []\\n\\ntest_delete_all_tasks_leaves_empty_list()\\n\"\n    },\n    {\n      \"name\": \"test_delete_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Fresh in-memory SQLite database with empty tasks table\",\n        \"No task with id 99999 exists\"\n      ],\n      \"actions\": [\n        \"Send DELETE /tasks/99999 without creating any task\"\n      ],\n      \"expected\": [\n        \"Response status code is exactly 404\",\n        \"Response body contains detail field with message about task not found\"\n      ],\n      \"trace\": [\n        \"R-TASK-035: error pathway HTTP 4xx on client error\",\n        \"app/main.py delete_task raises HTTP_404_NOT_FOUND when crud.delete_task returns False\"\n      ],\n      \"executable\": \"import pytest\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app.database import get_db, Base\\n\\nSQLALCHEMY_DATABASE_URL = \\\"sqlite:///./test_r035_neg.db\\\"\\nengine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={\\\"check_same_thread\\\": False})\\nTestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nBase.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    db = TestingSessionLocal()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\napp.dependency_overrides[get_db] = override"
+  }
+}

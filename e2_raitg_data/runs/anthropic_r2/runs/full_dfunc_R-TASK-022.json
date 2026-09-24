@@ -1,0 +1,201 @@
+{
+  "req": {
+    "id": "R-TASK-022",
+    "domain": "task_management",
+    "layer": "Integration",
+    "category": "persistence",
+    "title": "Task update persists",
+    "statement": "The system shall persist PUT changes so subsequent GET requests reflect the update.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "task update persists"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "PUT /tasks/{task_id}"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-022",
+    "reasoning": "The requirement mandates that PUT /tasks/{task_id} persists changes so a subsequent GET reflects them. I design: (1) a positive EP/STC test that updates an existing task and verifies the GET response matches exactly; (2) a negative NEG test that PUTs to a non-existent task_id and asserts HTTP 404 with exact detail; (3) a BVA boundary test that updates only the title field to exactly 1 character (min_length boundary) and verifies persistence; (4) a DT test covering all three optional fields simultaneously; (5) a BVA test with title at max_length=100 chars. Each test uses an in-process TestClient with a fresh SQLite DB via dependency override, seeded with the pre-loaded rows, and asserts exact values to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_put_persists_title_and_completed_positive",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Task with id=7 exists: title='Fix login bug', completed=false",
+          "Database seeded with 20 pre-loaded rows"
+        ],
+        "actions": [
+          "PUT /tasks/7 with {\"title\": \"Fixed login bug\", \"completed\": true}",
+          "Assert PUT response status == 200",
+          "Assert PUT response body fields match update",
+          "GET /tasks/7",
+          "Assert GET response status == 200",
+          "Assert GET response body reflects persisted changes"
+        ],
+        "expected": [
+          "PUT returns HTTP 200",
+          "PUT body: id=7, title='Fixed login bug', completed=true",
+          "GET returns HTTP 200",
+          "GET body: id=7, title='Fixed login bug', completed=true"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_pos.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\ndb = TestingSession()\ndb.add(models.Task(id=7, title='Fix login bug', description='Ember willow nova meridian flux cascade zenith.', completed=False))\ndb.commit(); db.close()\n\ndef override_get_db():\n    db = TestingSession()\n    try: yield db\n    finally: db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_put_persists_title_and_completed_positive():\n    r_put = client.put('/tasks/7', json={'title': 'Fixed login bug', 'completed': True})\n    assert r_put.status_code == 200\n    body = r_put.json()\n    assert body['id'] == 7\n    assert body['title'] == 'Fixed login bug'\n    assert body['completed'] == True\n    r_get = client.get('/tasks/7')\n    assert r_get.status_code == 200\n    g = r_get.json()\n    assert g['id'] == 7\n    assert g['title'] == 'Fixed login bug'\n    assert g['completed'] == True\n\ntest_put_persists_title_and_completed_positive()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_put_nonexistent_task_returns_404",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "No task with id=9999 exists in the database"
+        ],
+        "actions": [
+          "PUT /tasks/9999 with {\"title\": \"Ghost task\"}",
+          "Assert response status == 404",
+          "Assert response detail contains task id"
+        ],
+        "expected": [
+          "HTTP 404 Not Found",
+          "Response body detail mentions task id 9999"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_neg.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = TestingSession()\n    try: yield db\n    finally: db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_put_nonexistent_task_returns_404():\n    r = client.put('/tasks/9999', json={'title': 'Ghost task'})\n    assert r.status_code == 404\n    body = r.json()\n    assert 'detail' in body\n    assert '9999' in body['detail']\n\ntest_put_nonexistent_task_returns_404()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_put_title_min_length_boundary_persists",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task with id=10 exists: title='Organize desk', completed=false",
+          "min_length for title is 1 character"
+        ],
+        "actions": [
+          "PUT /tasks/10 with {\"title\": \"X\"} (exactly 1 char, the minimum)",
+          "Assert PUT response status == 200",
+          "Assert PUT body title == 'X'",
+          "GET /tasks/10 and assert title == 'X'",
+          "PUT /tasks/10 with {\"title\": \"\"} (0 chars, below minimum)",
+          "Assert that response status == 422"
+        ],
+        "expected": [
+          "PUT with 1-char title returns HTTP 200 and persists",
+          "GET reflects 1-char title",
+          "PUT with 0-char title returns HTTP 422 (validation error)"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_bva_min.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\ndb = TestingSession()\ndb.add(models.Task(id=10, title='Organize desk', description=None, completed=False))\ndb.commit(); db.close()\n\ndef override_get_db():\n    db = TestingSession()\n    try: yield db\n    finally: db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_put_title_min_length_boundary_persists():\n    r = client.put('/tasks/10', json={'title': 'X'})\n    assert r.status_code == 200\n    assert r.json()['title'] == 'X'\n    r_get = client.get('/tasks/10')\n    assert r_get.status_code == 200\n    assert r_get.json()['title'] == 'X'\n    r_bad = client.put('/tasks/10', json={'title': ''})\n    assert r_bad.status_code == 422\n\ntest_put_title_min_length_boundary_persists()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_put_all_fields_persists_state_transition",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Task with id=4 exists: title='Prepare meeting agenda', description='Harbor matrix prism summit beacon ember matrix.', completed=false"
+        ],
+        "actions": [
+          "PUT /tasks/4 with all three fields: title, description, completed=true",
+          "Assert PUT status == 200 and all fields in response",
+          "GET /tasks/4 and assert all three fields persisted"
+        ],
+        "expected": [
+          "PUT returns 200 with updated title, description, completed=true",
+          "GET returns 200 with same updated values",
+          "State transition: completed false -> true is persisted"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_stc.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\ndb = TestingSession()\ndb.add(models.Task(id=4, title='Prepare meeting agenda', description='Harbor matrix prism summit beacon ember matrix.', completed=False))\ndb.commit(); db.close()\n\ndef override_get_db():\n    db = TestingSession()\n    try: yield db\n    finally: db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_put_all_fields_persists_state_transition():\n    payload = {'title': 'Updated agenda', 'description': 'New description text.', 'completed': True}\n    r = client.put('/tasks/4', json=payload)\n    assert r.status_code == 200\n    b = r.json()\n    assert b['id'] == 4\n    assert b['title'] == 'Updated agenda'\n    assert b['description'] == 'New description text.'\n    assert b['completed'] == True\n    r2 = client.get('/tasks/4')\n    assert r2.status_code == 200\n    g = r2.json()\n    assert g['title'] == 'Updated agenda'\n    assert g['description'] == 'New description text.'\n    assert g['completed'] == True\n\ntest_put_all_fields_persists_state_transition()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_put_title_max_length_boundary_persists",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Task with id=12 exists: title='Review pull request', completed=false",
+          "max_length for title is 100 characters"
+        ],
+        "actions": [
+          "PUT /tasks/12 with title of exactly 100 chars",
+          "Assert PUT status == 200 and title persisted",
+          "GET /tasks/12 and assert title == 100-char string",
+          "PUT /tasks/12 with title of 101 chars",
+          "Assert response status == 422"
+        ],
+        "expected": [
+          "PUT with 100-char title returns HTTP 200 and persists",
+          "GET reflects 100-char title exactly",
+          "PUT with 101-char title returns HTTP 422"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_bva_max.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\ndb = TestingSession()\ndb.add(models.Task(id=12, title='Review pull request', description=None, completed=False))\ndb.commit(); db.close()\n\ndef override_get_db():\n    db = TestingSession()\n    try: yield db\n    finally: db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_put_title_max_length_boundary_persists():\n    title_100 = 'A' * 100\n    r = client.put('/tasks/12', json={'title': title_100})\n    assert r.status_code == 200\n    assert r.json()['title'] == title_100\n    assert len(r.json()['title']) == 100\n    r_get = client.get('/tasks/12')\n    assert r_get.status_code == 200\n    assert r_get.json()['title'] == title_100\n    title_101 = 'A' * 101\n    r_bad = client.put('/tasks/12', json={'title': title_101})\n    assert r_bad.status_code == 422\n\ntest_put_title_max_length_boundary_persists()\napp.dependency_overrides.clear()"
+      },
+      {
+        "name": "test_put_partial_update_only_completed_field",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Task with id=1 exists: title='Read chapter 5', completed=true"
+        ],
+        "actions": [
+          "PUT /tasks/1 with only {\"completed\": false} (partial update)",
+          "Assert PUT status == 200",
+          "Assert title unchanged == 'Read chapter 5'",
+          "Assert completed == false",
+          "GET /tasks/1 and assert same values persisted"
+        ],
+        "expected": [
+          "PUT returns 200",
+          "Title remains 'Read chapter 5' (unset field not overwritten)",
+          "completed is now false",
+          "GET confirms persistence of partial update"
+        ],
+        "trace": [
+          "R-TASK-022"
+        ],
+        "executable": "import os, tempfile\nfrom fastapi.testclient import TestClient\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\n\ntmp = tempfile.mkdtemp()\ndb_path = os.path.join(tmp, 'test_dt.db')\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\nmodels.Base.metadata.create_all(bind=engine)\ndb = TestingSession()\ndb.add(models.Task(id=1, title='Read chapter 5', description='Signal pulse ember orbit.', completed=True))\ndb.commit(); db.close()\n\ndef override_get_db():\n    db = TestingSession()\n    try: yield db\n    finally: db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_put_partial_update_only_completed_field():\n    r = client.put('/tasks/1', json={'completed': False})\n    assert r.status_code == 200\n    b = r.json()\n    assert b['id'] == 1\n    assert b['title'] == 'Read chapter 5'\n    assert b['completed'] == False\n    r2 = client.get('/tasks/1')\n    assert r2.status_code == 200\n    g = r2.json()\n    assert g['title'] == 'Read chapter 5'\n    assert g['completed'] == False\n\ntest_put_partial_update_only_completed_field()\napp.dependency_overrides.clear()"
+      }
+    ]
+  },
+  "req_id": "R-TASK-022",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5660,
+    "output_tokens": 4534,
+    "latency_ms": 50985,
+    "wall_ms": 50985,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-022\",\n  \"reasoning\": \"The requirement mandates that PUT /tasks/{task_id} persists changes so a subsequent GET reflects them. I design: (1) a positive EP/STC test that updates an existing task and verifies the GET response matches exactly; (2) a negative NEG test that PUTs to a non-existent task_id and asserts HTTP 404 with exact detail; (3) a BVA boundary test that updates only the title field to exactly 1 character (min_length boundary) and verifies persistence; (4) a DT test covering all three optional fields simultaneously; (5) a BVA test with title at max_length=100 chars. Each test uses an in-process TestClient with a fresh SQLite DB via dependency override, seeded with the pre-loaded rows, and asserts exact values to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_put_persists_title_and_completed_positive\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Task with id=7 exists: title='Fix login bug', completed=false\",\n        \"Database seeded with 20 pre-loaded rows\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/7 with {\\\"title\\\": \\\"Fixed login bug\\\", \\\"completed\\\": true}\",\n        \"Assert PUT response status == 200\",\n        \"Assert PUT response body fields match update\",\n        \"GET /tasks/7\",\n        \"Assert GET response status == 200\",\n        \"Assert GET response body reflects persisted changes\"\n      ],\n      \"expected\": [\n        \"PUT returns HTTP 200\",\n        \"PUT body: id=7, title='Fixed login bug', completed=true\",\n        \"GET returns HTTP 200\",\n        \"GET body: id=7, title='Fixed login bug', completed=true\"\n      ],\n      \"trace\": [\"R-TASK-022\"],\n      \"executable\": \"import os, tempfile\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom app.database import get_db\\n\\ntmp = tempfile.mkdtemp()\\ndb_path = os.path.join(tmp, 'test_pos.db')\\nengine = create_engine(f'sqlite:///{db_path}', connect_args={'check_same_thread': False})\\nTestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)\\nmodels.Base.metadata.create_all(bind=engine)\\ndb = TestingSession()\\ndb.add(models.Task(id=7, title='Fix login bug', description='Ember willow nova meridian flux cascade zenith.', completed=False))\\ndb.commit(); db.close()\\n\\ndef override_get_db():\\n    db = TestingSession()\\n    try: yield db\\n    finally: db.close()\\n\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_put_persists_title_and_completed_positive():\\n    r_put = client.put('/tasks/7', json={'title': 'Fixed login bug', 'completed': True})\\n    assert r_put.status_code == 200\\n    body = r_put.json()\\n    assert body['id'] == 7\\n    assert body['title'] == 'Fixed login bug'\\n    assert body['completed'] == True\\n    r_get = client.get('/tasks/7')\\n    assert r_get.status_code == 200\\n    g = r_get.json()\\n    assert g['id'] == 7\\n    assert g['title'] == 'Fixed login bug'\\n    assert g['completed'] == True\\n\\ntest_put_persists_title_and_completed_positive()\\napp.dependency_overrides.clear()\"\n    },\n    {\n      \"name\": \"test_put_nonexistent_task_returns_404\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"No task with id=9999 exists in the database\"\n      ],\n      \"actions\": [\n        \"PUT /tasks/9999 with {\\\"title\\\": \\\"Ghost task\\\"}\",\n        \"Assert response status == 404\",\n        \"Assert response detail contains task id\"\n      ],\n      \"expected\": [\n        \"HTTP 404 Not Found\",\n        \"Response body detail mentions task id 9999\"\n      ],\n      \"trace\": [\"R-TASK-022\"],\n      \"executable\": \"import os, tempfile\\nfrom fastapi.testclient import TestClient\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom app.database import get_db\\n\\ntmp = tempfile.mkdtemp()\\ndb_pa"
+  }
+}

@@ -1,0 +1,234 @@
+{
+  "req": {
+    "id": "R-FLASKR-025",
+    "domain": "blogging",
+    "layer": "Integration",
+    "category": "db_conn",
+    "title": "Reuse db connection per request",
+    "statement": "The system shall reuse a single sqlite3 connection per Flask request via flask.g.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "reuse db connection per request"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "internal"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-025",
+    "reasoning": "R-FLASKR-025 requires that a single sqlite3 connection is reused per Flask request via flask.g. The key behaviors to test are: (1) positive \u2014 get_db() called twice within the same app context returns the identical connection object; (2) negative \u2014 get_db() called in separate request contexts returns distinct connection objects (no cross-request leakage); (3) boundary \u2014 after a request context tears down, g.db is removed (close_db clears it), so a fresh context starts with no cached connection. Additional tests cover that the connection is a real sqlite3.Connection, that row_factory is set to sqlite3.Row, and that the HTTP endpoint still returns 200 while the connection reuse invariant holds.",
+    "tests": [
+      {
+        "name": "test_get_db_returns_same_object_within_single_request_context",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp DATABASE path",
+          "Database initialised with init_db()"
+        ],
+        "actions": [
+          "Push a single app context",
+          "Call get_db() twice within that context",
+          "Compare the two returned objects with 'is'"
+        ],
+        "expected": [
+          "Both calls return the exact same sqlite3.Connection instance (identity check)",
+          "The connection has row_factory == sqlite3.Row"
+        ],
+        "trace": [
+          "R-FLASKR-025: single connection per request reused via flask.g"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\ndef test_get_db_returns_same_object_within_single_request_context():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        conn1 = get_db()\n        conn2 = get_db()\n        assert conn1 is conn2, \"get_db() must return the same connection object within one context\"\n        assert conn1.row_factory is sqlite3.Row, \"row_factory must be sqlite3.Row\"\n    os.unlink(path)\n\ntest_get_db_returns_same_object_within_single_request_context()"
+      },
+      {
+        "name": "test_get_db_returns_different_objects_across_separate_request_contexts",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp DATABASE path",
+          "Database initialised with init_db()"
+        ],
+        "actions": [
+          "Push first app context, call get_db(), record id, pop context",
+          "Push second app context, call get_db(), record id, pop context",
+          "Compare the two connection ids"
+        ],
+        "expected": [
+          "The two connection objects are NOT the same instance (different ids)",
+          "Each context produces its own fresh connection"
+        ],
+        "trace": [
+          "R-FLASKR-025: connection must NOT leak across request boundaries"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\ndef test_get_db_returns_different_objects_across_separate_request_contexts():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    with app.app_context():\n        conn1 = get_db()\n        id1 = id(conn1)\n    with app.app_context():\n        conn2 = get_db()\n        id2 = id(conn2)\n    assert id1 != id2, \"Separate request contexts must produce distinct connection objects\"\n    os.unlink(path)\n\ntest_get_db_returns_different_objects_across_separate_request_contexts()"
+      },
+      {
+        "name": "test_close_db_removes_connection_from_g_at_context_teardown",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp DATABASE path",
+          "Database initialised with init_db()"
+        ],
+        "actions": [
+          "Push app context, call get_db() to populate g.db",
+          "Manually call close_db() to simulate teardown",
+          "Check that g no longer has 'db' attribute",
+          "Call get_db() again and verify a new connection is created"
+        ],
+        "expected": [
+          "After close_db(), 'db' is absent from flask.g",
+          "Subsequent get_db() call creates a new connection (not None)"
+        ],
+        "trace": [
+          "R-FLASKR-025: boundary \u2014 connection lifecycle ends exactly at teardown"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import get_db, close_db, init_db\n\ndef test_close_db_removes_connection_from_g_at_context_teardown():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        conn = get_db()\n        assert 'db' in g.__dict__ or hasattr(g, 'db'), \"g.db must exist after get_db()\"\n        close_db()\n        assert g.get('db') is None, \"g.db must be absent after close_db()\"\n        conn2 = get_db()\n        assert conn2 is not None, \"get_db() after close_db() must return a new connection\"\n    os.unlink(path)\n\ntest_close_db_removes_connection_from_g_at_context_teardown()"
+      },
+      {
+        "name": "test_http_request_reuses_single_db_connection_and_returns_200",
+        "kind": "positive",
+        "heuristic": "STC",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp DATABASE path",
+          "Database initialised with init_db() (pre-loaded rows present)"
+        ],
+        "actions": [
+          "Use app.test_client() to GET /",
+          "Assert HTTP 200 response",
+          "Within a separate app context, call get_db() twice and assert identity"
+        ],
+        "expected": [
+          "GET / returns status 200",
+          "Within one app context get_db() is idempotent (same object)"
+        ],
+        "trace": [
+          "R-FLASKR-025: HTTP request completes successfully while connection reuse holds"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\ndef test_http_request_reuses_single_db_connection_and_returns_200():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r = client.get('/')\n    assert r.status_code == 200\n    with app.app_context():\n        c1 = get_db()\n        c2 = get_db()\n        assert c1 is c2\n        assert isinstance(c1, sqlite3.Connection)\n    os.unlink(path)\n\ntest_http_request_reuses_single_db_connection_and_returns_200()"
+      },
+      {
+        "name": "test_get_db_connection_is_sqlite3_connection_with_correct_row_factory",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp DATABASE path",
+          "Database initialised with init_db()"
+        ],
+        "actions": [
+          "Push app context",
+          "Call get_db()",
+          "Assert type is sqlite3.Connection",
+          "Assert row_factory is exactly sqlite3.Row (not None, not another factory)"
+        ],
+        "expected": [
+          "get_db() returns an instance of sqlite3.Connection",
+          "row_factory attribute is sqlite3.Row (exact identity)"
+        ],
+        "trace": [
+          "R-FLASKR-025: connection attributes must match spec \u2014 catches row_factory mutation"
+        ],
+        "executable": "import tempfile, os, sqlite3\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\ndef test_get_db_connection_is_sqlite3_connection_with_correct_row_factory():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        conn = get_db()\n        assert isinstance(conn, sqlite3.Connection), \"must be sqlite3.Connection\"\n        assert conn.row_factory is sqlite3.Row, \"row_factory must be exactly sqlite3.Row\"\n        assert conn.row_factory is not None\n    os.unlink(path)\n\ntest_get_db_connection_is_sqlite3_connection_with_correct_row_factory()"
+      },
+      {
+        "name": "test_get_db_called_zero_times_means_no_db_in_g",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp DATABASE path",
+          "Fresh app context pushed but get_db() never called"
+        ],
+        "actions": [
+          "Push app context without calling get_db()",
+          "Check that flask.g does not have 'db' key"
+        ],
+        "expected": [
+          "g.get('db') returns None when get_db() has not been called",
+          "No connection is created eagerly"
+        ],
+        "trace": [
+          "R-FLASKR-025: boundary \u2014 connection only created on first call, not before"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_get_db_called_zero_times_means_no_db_in_g():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    with app.app_context():\n        result = g.get('db', None)\n        assert result is None, \"g.db must not exist before get_db() is called\"\n    os.unlink(path)\n\ntest_get_db_called_zero_times_means_no_db_in_g()"
+      },
+      {
+        "name": "test_get_db_called_three_times_still_returns_same_object",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp DATABASE path",
+          "Database initialised with init_db()"
+        ],
+        "actions": [
+          "Push app context",
+          "Call get_db() three times",
+          "Assert all three return values are the identical object"
+        ],
+        "expected": [
+          "All three calls return the same sqlite3.Connection instance",
+          "No new connection is created on the second or third call"
+        ],
+        "trace": [
+          "R-FLASKR-025: boundary N=3 calls \u2014 catches mutation that creates new conn on every call"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import get_db, init_db\n\ndef test_get_db_called_three_times_still_returns_same_object():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n        c1 = get_db()\n        c2 = get_db()\n        c3 = get_db()\n        assert c1 is c2, \"2nd call must return same object as 1st\"\n        assert c2 is c3, \"3rd call must return same object as 2nd\"\n        assert id(c1) == id(c2) == id(c3), \"all ids must be identical\"\n    os.unlink(path)\n\ntest_get_db_called_three_times_still_returns_same_object()"
+      },
+      {
+        "name": "test_db_not_in_g_after_request_context_exits_via_teardown",
+        "kind": "negative",
+        "heuristic": "STC",
+        "preconditions": [
+          "Flask app created with TESTING=True and a temp DATABASE path",
+          "Database initialised with init_db()"
+        ],
+        "actions": [
+          "Use test_client() to make a GET / request (triggers full request lifecycle)",
+          "After request completes, push a fresh app context",
+          "Verify g.get('db') is None in the new context (no leaked connection)"
+        ],
+        "expected": [
+          "GET / returns 200",
+          "After request teardown, a new context has no pre-existing g.db"
+        ],
+        "trace": [
+          "R-FLASKR-025: state transition \u2014 connection absent after request teardown"
+        ],
+        "executable": "import tempfile, os\nfrom flask import g\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_db_not_in_g_after_request_context_exits_via_teardown():\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r = client.get('/')\n    assert r.status_code == 200\n    with app.app_context():\n        leaked = g.get('db', None)\n        assert leaked is None, \"g.db must not leak into a new context after request teardown\"\n    os.unlink(path)\n\ntest_db_not_in_g_after_request_context_exits_via_teardown()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-025",
+  "domain": "blogging",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 0,
+  "verify_violations": [
+    "[logical] test[7] negative kind but heuristic=STC"
+  ],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 6329,
+    "output_tokens": 3971,
+    "latency_ms": 49103,
+    "wall_ms": 49103,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-025\",\n  \"reasoning\": \"R-FLASKR-025 requires that a single sqlite3 connection is reused per Flask request via flask.g. The key behaviors to test are: (1) positive \u2014 get_db() called twice within the same app context returns the identical connection object; (2) negative \u2014 get_db() called in separate request contexts returns distinct connection objects (no cross-request leakage); (3) boundary \u2014 after a request context tears down, g.db is removed (close_db clears it), so a fresh context starts with no cached connection. Additional tests cover that the connection is a real sqlite3.Connection, that row_factory is set to sqlite3.Row, and that the HTTP endpoint still returns 200 while the connection reuse invariant holds.\",\n  \"tests\": [\n    {\n      \"name\": \"test_get_db_returns_same_object_within_single_request_context\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp DATABASE path\",\n        \"Database initialised with init_db()\"\n      ],\n      \"actions\": [\n        \"Push a single app context\",\n        \"Call get_db() twice within that context\",\n        \"Compare the two returned objects with 'is'\"\n      ],\n      \"expected\": [\n        \"Both calls return the exact same sqlite3.Connection instance (identity check)\",\n        \"The connection has row_factory == sqlite3.Row\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-025: single connection per request reused via flask.g\"\n      ],\n      \"executable\": \"import tempfile, os, sqlite3\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, init_db\\n\\ndef test_get_db_returns_same_object_within_single_request_context():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        init_db()\\n        conn1 = get_db()\\n        conn2 = get_db()\\n        assert conn1 is conn2, \\\"get_db() must return the same connection object within one context\\\"\\n        assert conn1.row_factory is sqlite3.Row, \\\"row_factory must be sqlite3.Row\\\"\\n    os.unlink(path)\\n\\ntest_get_db_returns_same_object_within_single_request_context()\"\n    },\n    {\n      \"name\": \"test_get_db_returns_different_objects_across_separate_request_contexts\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp DATABASE path\",\n        \"Database initialised with init_db()\"\n      ],\n      \"actions\": [\n        \"Push first app context, call get_db(), record id, pop context\",\n        \"Push second app context, call get_db(), record id, pop context\",\n        \"Compare the two connection ids\"\n      ],\n      \"expected\": [\n        \"The two connection objects are NOT the same instance (different ids)\",\n        \"Each context produces its own fresh connection\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-025: connection must NOT leak across request boundaries\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import get_db, init_db\\n\\ndef test_get_db_returns_different_objects_across_separate_request_contexts():\\n    fd, path = tempfile.mkstemp(suffix='.sqlite')\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        init_db()\\n    with app.app_context():\\n        conn1 = get_db()\\n        id1 = id(conn1)\\n    with app.app_context():\\n        conn2 = get_db()\\n        id2 = id(conn2)\\n    assert id1 != id2, \\\"Separate request contexts must produce distinct connection objects\\\"\\n    os.unlink(path)\\n\\ntest_get_db_returns_different_objects_across_separate_request_contexts()\"\n    },\n    {\n      \"name\": \"test_close_db_removes_connection_from_g_at_context_teardown\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Flask app created with TESTING=True and a temp DATABASE path\",\n        \"Database initialised with init_db()\"\n"
+  }
+}

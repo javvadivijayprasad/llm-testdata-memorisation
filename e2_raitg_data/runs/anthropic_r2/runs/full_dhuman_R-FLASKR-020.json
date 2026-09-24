@@ -1,0 +1,166 @@
+{
+  "req": {
+    "id": "R-FLASKR-020",
+    "domain": "blogging",
+    "layer": "UI",
+    "category": "authz",
+    "title": "Delete only by author",
+    "statement": "The system shall respond with HTTP 403 Forbidden when a user attempts to delete a post they did not author.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "delete only by author"
+    ],
+    "expected_outcomes": [
+      "HTTP 2xx response with expected payload"
+    ],
+    "error_pathways": [
+      "HTTP 403"
+    ],
+    "target_app": "flaskr",
+    "target_endpoint_or_screen": "POST /<id>/delete"
+  },
+  "doc": {
+    "requirement_id": "R-FLASKR-020",
+    "reasoning": "The requirement states that a non-author user attempting to delete a post must receive HTTP 403. Three test cases are designed: (1) Positive \u2014 the actual author deletes their own post and receives HTTP 302 redirect (success path, EP); (2) Negative \u2014 a different logged-in user attempts to delete a post they did not author and receives HTTP 403 (NEG + DT); (3) Boundary \u2014 the exact post id boundary (id=1, the only seeded post) is used by a non-author, confirming 403 is returned for that specific id and not a 404 or 200 (BVA). Each test is self-contained, uses the in-process Flask test client, seeds the DB from scratch, and asserts exact status codes to maximise mutation kill rate.",
+    "tests": [
+      {
+        "name": "test_author_can_delete_own_post",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "Database is initialised with seeded data (user id=1 'test', post id=1 authored by user id=1)",
+          "User 'test' is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username='test', password='test'",
+          "POST /1/delete"
+        ],
+        "expected": [
+          "HTTP 302 redirect to '/' (post deleted successfully)",
+          "Status code is exactly 302, not 403 or 200"
+        ],
+        "trace": [
+          "R-FLASKR-020: success path \u2014 author deletes own post",
+          "blog.delete calls get_post(id, check_author=True); author_id==g.user['id'] so no abort(403)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_author_can_delete_own_post():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\n    assert r.status_code == 302\n    r = client.post('/1/delete')\n    assert r.status_code == 302\n    assert r.headers['Location'] == '/'\n\ntest_author_can_delete_own_post()"
+      },
+      {
+        "name": "test_non_author_delete_returns_403",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "Database is initialised with seeded data (user id=2 'other', post id=1 authored by user id=1)",
+          "User 'other' (not the author of post 1) is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username='other', password='other'",
+          "POST /1/delete"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden",
+          "Status code is exactly 403, not 200, 302, or 404"
+        ],
+        "trace": [
+          "R-FLASKR-020: error pathway \u2014 non-author receives 403",
+          "blog.delete -> get_post(id, check_author=True) -> post['author_id'](1) != g.user['id'](2) -> abort(403)"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_non_author_delete_returns_403():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'other', 'password': 'other'})\n    assert r.status_code == 302\n    r = client.post('/1/delete')\n    assert r.status_code == 403\n\ntest_non_author_delete_returns_403()"
+      },
+      {
+        "name": "test_non_author_delete_boundary_post_id_1",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is initialised with seeded data; post id=1 is the only post and is authored by user id=1",
+          "User 'other' (id=2) is logged in \u2014 this is the minimum non-author id boundary"
+        ],
+        "actions": [
+          "POST /auth/login with username='other', password='other'",
+          "POST /1/delete (id=1, the exact seeded boundary post id)"
+        ],
+        "expected": [
+          "HTTP 403 Forbidden for the exact boundary post id=1",
+          "Status code is exactly 403 \u2014 not 404 (post exists) and not 302 (not deleted)"
+        ],
+        "trace": [
+          "R-FLASKR-020: boundary \u2014 smallest valid post id used by non-author",
+          "BVA: id=1 is the minimum seeded post id; confirms 403 is returned rather than 404 or success",
+          "Catches mutations that swap abort(403) with abort(404) or remove the author check"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_non_author_delete_boundary_post_id_1():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'other', 'password': 'other'})\n    assert r.status_code == 302\n    # Boundary: post id=1 exists (not 404) but user 'other' is not the author\n    r = client.post('/1/delete')\n    assert r.status_code == 403\n    # Confirm post still exists (was not deleted)\n    with app.app_context():\n        from flaskr.db import get_db\n        post = get_db().execute('SELECT id FROM post WHERE id = 1').fetchone()\n        assert post is not None\n        assert post['id'] == 1\n\ntest_non_author_delete_boundary_post_id_1()"
+      },
+      {
+        "name": "test_unauthenticated_delete_redirects_not_403",
+        "kind": "negative",
+        "heuristic": "DT",
+        "preconditions": [
+          "Database is initialised with seeded data",
+          "No user is logged in (anonymous session)"
+        ],
+        "actions": [
+          "POST /1/delete without any prior login"
+        ],
+        "expected": [
+          "HTTP 302 redirect to /auth/login (login_required decorator fires before author check)",
+          "Status code is exactly 302, not 403 \u2014 distinguishes unauthenticated from unauthorised"
+        ],
+        "trace": [
+          "R-FLASKR-020: decision table \u2014 unauthenticated user hits login_required before get_post author check",
+          "DT: two conditions \u2014 authenticated(F) -> redirect 302; authenticated(T) + is_author(F) -> 403",
+          "Catches mutations that remove login_required or swap redirect with abort"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_unauthenticated_delete_redirects_not_403():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    # No login \u2014 anonymous request\n    r = client.post('/1/delete')\n    assert r.status_code == 302\n    assert '/auth/login' in r.headers['Location']\n\ntest_unauthenticated_delete_redirects_not_403()"
+      },
+      {
+        "name": "test_non_author_delete_nonexistent_post_returns_404",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "Database is initialised with seeded data; only post id=1 exists",
+          "User 'other' is logged in"
+        ],
+        "actions": [
+          "POST /auth/login with username='other', password='other'",
+          "POST /2/delete (id=2 does not exist \u2014 one beyond the seeded boundary)"
+        ],
+        "expected": [
+          "HTTP 404 Not Found (post does not exist, abort(404) fires before author check)",
+          "Status code is exactly 404, not 403 \u2014 confirms 403 is only for existing posts with wrong author"
+        ],
+        "trace": [
+          "R-FLASKR-020: boundary \u2014 id=2 is one beyond the only seeded post id=1",
+          "BVA: boundary+1 of seeded post ids; get_post aborts 404 before reaching author check",
+          "Catches mutations that swap abort(404) with abort(403) or skip the existence check"
+        ],
+        "executable": "import tempfile, os\nfrom flaskr import create_app\nfrom flaskr.db import init_db\n\ndef test_non_author_delete_nonexistent_post_returns_404():\n    fd, path = tempfile.mkstemp()\n    os.close(fd)\n    app = create_app({'TESTING': True, 'DATABASE': path})\n    with app.app_context():\n        init_db()\n    client = app.test_client()\n    r = client.post('/auth/login', data={'username': 'other', 'password': 'other'})\n    assert r.status_code == 302\n    # id=2 does not exist in seeded data (boundary+1)\n    r = client.post('/2/delete')\n    assert r.status_code == 404\n\ntest_non_author_delete_nonexistent_post_returns_404()"
+      }
+    ]
+  },
+  "req_id": "R-FLASKR-020",
+  "domain": "blogging",
+  "condition": "full_dhuman",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 1,
+  "verify_violations": [],
+  "repair_attempts": 0,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5452,
+    "output_tokens": 2756,
+    "latency_ms": 37280,
+    "wall_ms": 37280,
+    "condition": "full_dhuman",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-FLASKR-020\",\n  \"reasoning\": \"The requirement states that a non-author user attempting to delete a post must receive HTTP 403. Three test cases are designed: (1) Positive \u2014 the actual author deletes their own post and receives HTTP 302 redirect (success path, EP); (2) Negative \u2014 a different logged-in user attempts to delete a post they did not author and receives HTTP 403 (NEG + DT); (3) Boundary \u2014 the exact post id boundary (id=1, the only seeded post) is used by a non-author, confirming 403 is returned for that specific id and not a 404 or 200 (BVA). Each test is self-contained, uses the in-process Flask test client, seeds the DB from scratch, and asserts exact status codes to maximise mutation kill rate.\",\n  \"tests\": [\n    {\n      \"name\": \"test_author_can_delete_own_post\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"Database is initialised with seeded data (user id=1 'test', post id=1 authored by user id=1)\",\n        \"User 'test' is logged in\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='test', password='test'\",\n        \"POST /1/delete\"\n      ],\n      \"expected\": [\n        \"HTTP 302 redirect to '/' (post deleted successfully)\",\n        \"Status code is exactly 302, not 403 or 200\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-020: success path \u2014 author deletes own post\",\n        \"blog.delete calls get_post(id, check_author=True); author_id==g.user['id'] so no abort(403)\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\ndef test_author_can_delete_own_post():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'test', 'password': 'test'})\\n    assert r.status_code == 302\\n    r = client.post('/1/delete')\\n    assert r.status_code == 302\\n    assert r.headers['Location'] == '/'\\n\\ntest_author_can_delete_own_post()\"\n    },\n    {\n      \"name\": \"test_non_author_delete_returns_403\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"Database is initialised with seeded data (user id=2 'other', post id=1 authored by user id=1)\",\n        \"User 'other' (not the author of post 1) is logged in\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='other', password='other'\",\n        \"POST /1/delete\"\n      ],\n      \"expected\": [\n        \"HTTP 403 Forbidden\",\n        \"Status code is exactly 403, not 200, 302, or 404\"\n      ],\n      \"trace\": [\n        \"R-FLASKR-020: error pathway \u2014 non-author receives 403\",\n        \"blog.delete -> get_post(id, check_author=True) -> post['author_id'](1) != g.user['id'](2) -> abort(403)\"\n      ],\n      \"executable\": \"import tempfile, os\\nfrom flaskr import create_app\\nfrom flaskr.db import init_db\\n\\ndef test_non_author_delete_returns_403():\\n    fd, path = tempfile.mkstemp()\\n    os.close(fd)\\n    app = create_app({'TESTING': True, 'DATABASE': path})\\n    with app.app_context():\\n        init_db()\\n    client = app.test_client()\\n    r = client.post('/auth/login', data={'username': 'other', 'password': 'other'})\\n    assert r.status_code == 302\\n    r = client.post('/1/delete')\\n    assert r.status_code == 403\\n\\ntest_non_author_delete_returns_403()\"\n    },\n    {\n      \"name\": \"test_non_author_delete_boundary_post_id_1\",\n      \"kind\": \"boundary\",\n      \"heuristic\": \"BVA\",\n      \"preconditions\": [\n        \"Database is initialised with seeded data; post id=1 is the only post and is authored by user id=1\",\n        \"User 'other' (id=2) is logged in \u2014 this is the minimum non-author id boundary\"\n      ],\n      \"actions\": [\n        \"POST /auth/login with username='other', password='other'\",\n        \"POST /1/delete (id=1, the exact seeded boundary post id)\"\n      ],\n      \"expected\": [\n        \"HTTP 403 Forbidden for th"
+  }
+}

@@ -1,0 +1,248 @@
+{
+  "req": {
+    "id": "R-TASK-001",
+    "domain": "task_management",
+    "layer": "API",
+    "category": "functional",
+    "title": "Create task",
+    "statement": "The system shall create a new task and respond with HTTP 201 and the created task body when POST /tasks/ receives a valid TaskCreate payload.",
+    "actors": [
+      "client"
+    ],
+    "preconditions": [],
+    "triggers": [
+      "create task"
+    ],
+    "expected_outcomes": [
+      "HTTP 201",
+      "response body includes id, title, completed=false"
+    ],
+    "error_pathways": [
+      "HTTP 4xx on client error",
+      "HTTP 5xx on server error"
+    ],
+    "target_app": "fastapi-task-manager",
+    "target_endpoint_or_screen": "POST /tasks/"
+  },
+  "doc": {
+    "requirement_id": "R-TASK-001",
+    "reasoning": "The requirement mandates that POST /tasks/ with a valid TaskCreate payload returns HTTP 201 and a body containing id, title, and completed=false. I designed: (1) a positive EP test with a fully valid payload including title and description, asserting exact status 201 and all response fields; (2) a negative NEG test with a missing required 'title' field, asserting exact 422 status; (3) a BVA boundary test with title at exactly 1 character (minimum allowed by min_length=1), asserting 201; (4) a BVA boundary test with title at exactly 100 characters (maximum allowed by max_length=100), asserting 201; (5) a BVA boundary test with title at 101 characters (one over max), asserting 422; (6) a DT test with completed=true explicitly set, asserting the field is stored as true; (7) a NEG test with an empty string title, asserting 422. These collectively kill mutations on status codes, field presence, boolean defaults, and boundary constants.",
+    "tests": [
+      {
+        "name": "test_create_task_valid_payload_returns_201_with_body",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is running in-process",
+          "Database is initialized with pre-loaded rows"
+        ],
+        "actions": [
+          "POST /tasks/ with valid title and description"
+        ],
+        "expected": [
+          "HTTP 201",
+          "Response body contains id (integer > 0)",
+          "Response body title matches submitted title",
+          "Response body completed == false",
+          "Response body contains created_at"
+        ],
+        "trace": [
+          "R-TASK-001: valid payload -> HTTP 201 + task body"
+        ],
+        "executable": "import sqlalchemy, os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom fastapi.testclient import TestClient\n\ntest_db_url = \"sqlite:///./test_r_task_001_ep.db\"\nengine = create_engine(test_db_url, connect_args={\"check_same_thread\": False})\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    from app.database import SessionLocal as _SL\n    db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()\n    try:\n        yield db\n    finally:\n        db.close()\n\nfrom app.database import get_db\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_create_task_valid_payload_returns_201_with_body():\n    payload = {\"title\": \"Buy groceries\", \"description\": \"Milk and eggs\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert isinstance(body[\"id\"], int)\n    assert body[\"id\"] > 0\n    assert body[\"title\"] == \"Buy groceries\"\n    assert body[\"completed\"] == False\n    assert body[\"description\"] == \"Milk and eggs\"\n    assert \"created_at\" in body\n\ntest_create_task_valid_payload_returns_201_with_body()\napp.dependency_overrides.clear()\nmodels.Base.metadata.drop_all(bind=engine)\nengine.dispose()\nos.remove(\"./test_r_task_001_ep.db\") if os.path.exists(\"./test_r_task_001_ep.db\") else None"
+      },
+      {
+        "name": "test_create_task_missing_title_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is running in-process",
+          "Database is initialized"
+        ],
+        "actions": [
+          "POST /tasks/ with payload missing required 'title' field"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Response body contains validation error detail"
+        ],
+        "trace": [
+          "R-TASK-001: missing required field -> HTTP 4xx client error"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntest_db_url = \"sqlite:///./test_r_task_001_neg1.db\"\nengine = create_engine(test_db_url, connect_args={\"check_same_thread\": False})\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_create_task_missing_title_returns_422():\n    payload = {\"description\": \"No title here\", \"completed\": False}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_create_task_missing_title_returns_422()\napp.dependency_overrides.clear()\nmodels.Base.metadata.drop_all(bind=engine)\nengine.dispose()\nos.remove(\"./test_r_task_001_neg1.db\") if os.path.exists(\"./test_r_task_001_neg1.db\") else None"
+      },
+      {
+        "name": "test_create_task_title_min_length_1_returns_201",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is running in-process",
+          "Database is initialized"
+        ],
+        "actions": [
+          "POST /tasks/ with title of exactly 1 character (min_length boundary)"
+        ],
+        "expected": [
+          "HTTP 201",
+          "Response body title equals the single-character string",
+          "completed == false"
+        ],
+        "trace": [
+          "R-TASK-001: title at min_length=1 boundary -> HTTP 201"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntest_db_url = \"sqlite:///./test_r_task_001_bva_min.db\"\nengine = create_engine(test_db_url, connect_args={\"check_same_thread\": False})\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_create_task_title_min_length_1_returns_201():\n    payload = {\"title\": \"A\"}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == \"A\"\n    assert body[\"completed\"] == False\n    assert isinstance(body[\"id\"], int)\n\ntest_create_task_title_min_length_1_returns_201()\napp.dependency_overrides.clear()\nmodels.Base.metadata.drop_all(bind=engine)\nengine.dispose()\nos.remove(\"./test_r_task_001_bva_min.db\") if os.path.exists(\"./test_r_task_001_bva_min.db\") else None"
+      },
+      {
+        "name": "test_create_task_title_max_length_100_returns_201",
+        "kind": "boundary",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is running in-process",
+          "Database is initialized"
+        ],
+        "actions": [
+          "POST /tasks/ with title of exactly 100 characters (max_length boundary)"
+        ],
+        "expected": [
+          "HTTP 201",
+          "Response body title length equals 100",
+          "completed == false"
+        ],
+        "trace": [
+          "R-TASK-001: title at max_length=100 boundary -> HTTP 201; catches off-by-one mutation on max_length constant"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntest_db_url = \"sqlite:///./test_r_task_001_bva_max.db\"\nengine = create_engine(test_db_url, connect_args={\"check_same_thread\": False})\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_create_task_title_max_length_100_returns_201():\n    title_100 = \"T\" * 100\n    assert len(title_100) == 100\n    payload = {\"title\": title_100}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"title\"] == title_100\n    assert len(body[\"title\"]) == 100\n    assert body[\"completed\"] == False\n\ntest_create_task_title_max_length_100_returns_201()\napp.dependency_overrides.clear()\nmodels.Base.metadata.drop_all(bind=engine)\nengine.dispose()\nos.remove(\"./test_r_task_001_bva_max.db\") if os.path.exists(\"./test_r_task_001_bva_max.db\") else None"
+      },
+      {
+        "name": "test_create_task_title_length_101_returns_422",
+        "kind": "negative",
+        "heuristic": "BVA",
+        "preconditions": [
+          "FastAPI app is running in-process",
+          "Database is initialized"
+        ],
+        "actions": [
+          "POST /tasks/ with title of 101 characters (one over max_length=100)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Validation error in response body"
+        ],
+        "trace": [
+          "R-TASK-001: title exceeds max_length=100 -> HTTP 4xx; catches max_length mutation 100->101"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntest_db_url = \"sqlite:///./test_r_task_001_bva_over.db\"\nengine = create_engine(test_db_url, connect_args={\"check_same_thread\": False})\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_create_task_title_length_101_returns_422():\n    title_101 = \"X\" * 101\n    assert len(title_101) == 101\n    payload = {\"title\": title_101}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_create_task_title_length_101_returns_422()\napp.dependency_overrides.clear()\nmodels.Base.metadata.drop_all(bind=engine)\nengine.dispose()\nos.remove(\"./test_r_task_001_bva_over.db\") if os.path.exists(\"./test_r_task_001_bva_over.db\") else None"
+      },
+      {
+        "name": "test_create_task_empty_title_returns_422",
+        "kind": "negative",
+        "heuristic": "NEG",
+        "preconditions": [
+          "FastAPI app is running in-process",
+          "Database is initialized"
+        ],
+        "actions": [
+          "POST /tasks/ with title as empty string (below min_length=1)"
+        ],
+        "expected": [
+          "HTTP 422 Unprocessable Entity",
+          "Validation error in response body"
+        ],
+        "trace": [
+          "R-TASK-001: empty title violates min_length=1 -> HTTP 4xx; catches min_length mutation 1->0"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntest_db_url = \"sqlite:///./test_r_task_001_neg_empty.db\"\nengine = create_engine(test_db_url, connect_args={\"check_same_thread\": False})\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_create_task_empty_title_returns_422():\n    payload = {\"title\": \"\"}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 422\n    body = r.json()\n    assert \"detail\" in body\n\ntest_create_task_empty_title_returns_422()\napp.dependency_overrides.clear()\nmodels.Base.metadata.drop_all(bind=engine)\nengine.dispose()\nos.remove(\"./test_r_task_001_neg_empty.db\") if os.path.exists(\"./test_r_task_001_neg_empty.db\") else None"
+      },
+      {
+        "name": "test_create_task_completed_default_is_false",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is running in-process",
+          "Database is initialized"
+        ],
+        "actions": [
+          "POST /tasks/ with only title provided (no completed field)"
+        ],
+        "expected": [
+          "HTTP 201",
+          "Response body completed == false (default value)",
+          "Response body id is a positive integer",
+          "Response body title matches submitted title"
+        ],
+        "trace": [
+          "R-TASK-001: completed defaults to false when not supplied; catches boolean default mutation false->true"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntest_db_url = \"sqlite:///./test_r_task_001_dt_default.db\"\nengine = create_engine(test_db_url, connect_args={\"check_same_thread\": False})\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_create_task_completed_default_is_false():\n    payload = {\"title\": \"Schedule dentist appointment\"}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"completed\"] == False\n    assert body[\"completed\"] is not True\n    assert body[\"title\"] == \"Schedule dentist appointment\"\n    assert isinstance(body[\"id\"], int)\n    assert body[\"id\"] > 0\n\ntest_create_task_completed_default_is_false()\napp.dependency_overrides.clear()\nmodels.Base.metadata.drop_all(bind=engine)\nengine.dispose()\nos.remove(\"./test_r_task_001_dt_default.db\") if os.path.exists(\"./test_r_task_001_dt_default.db\") else None"
+      },
+      {
+        "name": "test_create_task_completed_true_stored_correctly",
+        "kind": "positive",
+        "heuristic": "DT",
+        "preconditions": [
+          "FastAPI app is running in-process",
+          "Database is initialized"
+        ],
+        "actions": [
+          "POST /tasks/ with completed=true explicitly set"
+        ],
+        "expected": [
+          "HTTP 201",
+          "Response body completed == true",
+          "Response body title matches submitted title"
+        ],
+        "trace": [
+          "R-TASK-001: completed=true is accepted and stored; catches boolean negation mutation on completed field"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntest_db_url = \"sqlite:///./test_r_task_001_dt_true.db\"\nengine = create_engine(test_db_url, connect_args={\"check_same_thread\": False})\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_create_task_completed_true_stored_correctly():\n    payload = {\"title\": \"Renew gym membership\", \"completed\": True}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert body[\"completed\"] == True\n    assert body[\"completed\"] is not False\n    assert body[\"title\"] == \"Renew gym membership\"\n    assert isinstance(body[\"id\"], int)\n\ntest_create_task_completed_true_stored_correctly()\napp.dependency_overrides.clear()\nmodels.Base.metadata.drop_all(bind=engine)\nengine.dispose()\nos.remove(\"./test_r_task_001_dt_true.db\") if os.path.exists(\"./test_r_task_001_dt_true.db\") else None"
+      },
+      {
+        "name": "test_create_task_response_contains_required_fields",
+        "kind": "positive",
+        "heuristic": "EP",
+        "preconditions": [
+          "FastAPI app is running in-process",
+          "Database is initialized"
+        ],
+        "actions": [
+          "POST /tasks/ with valid payload including description=null"
+        ],
+        "expected": [
+          "HTTP 201",
+          "Response body contains exactly: id, title, description, completed, created_at",
+          "description is null",
+          "completed == false"
+        ],
+        "trace": [
+          "R-TASK-001: response schema completeness; catches mutations that drop fields from response"
+        ],
+        "executable": "import os\nfrom sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker\nfrom app.main import app\nfrom app import models\nfrom app.database import get_db\nfrom fastapi.testclient import TestClient\n\ntest_db_url = \"sqlite:///./test_r_task_001_ep_fields.db\"\nengine = create_engine(test_db_url, connect_args={\"check_same_thread\": False})\nmodels.Base.metadata.create_all(bind=engine)\n\ndef override_get_db():\n    db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()\n    try:\n        yield db\n    finally:\n        db.close()\n\napp.dependency_overrides[get_db] = override_get_db\nclient = TestClient(app)\n\ndef test_create_task_response_contains_required_fields():\n    payload = {\"title\": \"Run unit tests\", \"description\": None}\n    r = client.post(\"/tasks/\", json=payload)\n    assert r.status_code == 201\n    body = r.json()\n    assert \"id\" in body\n    assert \"title\" in body\n    assert \"completed\" in body\n    assert \"created_at\" in body\n    assert body[\"title\"] == \"Run unit tests\"\n    assert body[\"description\"] is None\n    assert body[\"completed\"] == False\n    assert isinstance(body[\"id\"], int)\n    assert body[\"id\"] > 0\n\ntest_create_task_response_contains_required_fields()\napp.dependency_overrides.clear()\nmodels.Base.metadata.drop_all(bind=engine)\nengine.dispose()\nos.remove(\"./test_r_task_001_ep_fields.db\") if os.path.exists(\"./test_r_task_001_ep_fields.db\") else None"
+      }
+    ]
+  },
+  "req_id": "R-TASK-001",
+  "domain": "task_management",
+  "condition": "full_dfunc",
+  "coverage": {
+    "positive": true,
+    "negative": true,
+    "boundary": true
+  },
+  "mutation_score": 0.0,
+  "verify_first_pass": 0,
+  "verify_violations": [
+    "[logical] test[4] negative kind but heuristic=BVA"
+  ],
+  "repair_attempts": 1,
+  "telemetry": {
+    "backend": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "input_tokens": 5675,
+    "output_tokens": 6051,
+    "latency_ms": 63174,
+    "wall_ms": 63174,
+    "condition": "full_dfunc",
+    "prompt_version": "raitg-prompt-v1.5.0-oss-grounded-testdata",
+    "raw_response_head": "```json\n{\n  \"requirement_id\": \"R-TASK-001\",\n  \"reasoning\": \"The requirement mandates that POST /tasks/ with a valid TaskCreate payload returns HTTP 201 and a body containing id, title, and completed=false. I designed: (1) a positive EP test with a fully valid payload including title and description, asserting exact status 201 and all response fields; (2) a negative NEG test with a missing required 'title' field, asserting exact 422 status; (3) a BVA boundary test with title at exactly 1 character (minimum allowed by min_length=1), asserting 201; (4) a BVA boundary test with title at exactly 100 characters (maximum allowed by max_length=100), asserting 201; (5) a BVA boundary test with title at 101 characters (one over max), asserting 422; (6) a DT test with completed=true explicitly set, asserting the field is stored as true; (7) a NEG test with an empty string title, asserting 422. These collectively kill mutations on status codes, field presence, boolean defaults, and boundary constants.\",\n  \"tests\": [\n    {\n      \"name\": \"test_create_task_valid_payload_returns_201_with_body\",\n      \"kind\": \"positive\",\n      \"heuristic\": \"EP\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process\",\n        \"Database is initialized with pre-loaded rows\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with valid title and description\"\n      ],\n      \"expected\": [\n        \"HTTP 201\",\n        \"Response body contains id (integer > 0)\",\n        \"Response body title matches submitted title\",\n        \"Response body completed == false\",\n        \"Response body contains created_at\"\n      ],\n      \"trace\": [\n        \"R-TASK-001: valid payload -> HTTP 201 + task body\"\n      ],\n      \"executable\": \"import sqlalchemy, os\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom fastapi.testclient import TestClient\\n\\ntest_db_url = \\\"sqlite:///./test_r_task_001_ep.db\\\"\\nengine = create_engine(test_db_url, connect_args={\\\"check_same_thread\\\": False})\\nmodels.Base.metadata.create_all(bind=engine)\\n\\ndef override_get_db():\\n    from app.database import SessionLocal as _SL\\n    db = sessionmaker(autocommit=False, autoflush=False, bind=engine)()\\n    try:\\n        yield db\\n    finally:\\n        db.close()\\n\\nfrom app.database import get_db\\napp.dependency_overrides[get_db] = override_get_db\\nclient = TestClient(app)\\n\\ndef test_create_task_valid_payload_returns_201_with_body():\\n    payload = {\\\"title\\\": \\\"Buy groceries\\\", \\\"description\\\": \\\"Milk and eggs\\\", \\\"completed\\\": False}\\n    r = client.post(\\\"/tasks/\\\", json=payload)\\n    assert r.status_code == 201\\n    body = r.json()\\n    assert isinstance(body[\\\"id\\\"], int)\\n    assert body[\\\"id\\\"] > 0\\n    assert body[\\\"title\\\"] == \\\"Buy groceries\\\"\\n    assert body[\\\"completed\\\"] == False\\n    assert body[\\\"description\\\"] == \\\"Milk and eggs\\\"\\n    assert \\\"created_at\\\" in body\\n\\ntest_create_task_valid_payload_returns_201_with_body()\\napp.dependency_overrides.clear()\\nmodels.Base.metadata.drop_all(bind=engine)\\nengine.dispose()\\nos.remove(\\\"./test_r_task_001_ep.db\\\") if os.path.exists(\\\"./test_r_task_001_ep.db\\\") else None\"\n    },\n    {\n      \"name\": \"test_create_task_missing_title_returns_422\",\n      \"kind\": \"negative\",\n      \"heuristic\": \"NEG\",\n      \"preconditions\": [\n        \"FastAPI app is running in-process\",\n        \"Database is initialized\"\n      ],\n      \"actions\": [\n        \"POST /tasks/ with payload missing required 'title' field\"\n      ],\n      \"expected\": [\n        \"HTTP 422 Unprocessable Entity\",\n        \"Response body contains validation error detail\"\n      ],\n      \"trace\": [\n        \"R-TASK-001: missing required field -> HTTP 4xx client error\"\n      ],\n      \"executable\": \"import os\\nfrom sqlalchemy import create_engine\\nfrom sqlalchemy.orm import sessionmaker\\nfrom app.main import app\\nfrom app import models\\nfrom app.database import get_db\\nfrom fastapi.testclient import TestClient\\n\\ntest_db_url = \\\"s"
+  }
+}
